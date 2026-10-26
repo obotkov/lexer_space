@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -19,6 +20,14 @@ CREATE TABLE IF NOT EXISTS panels (
     sub_base_url  TEXT    NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL,
     api_token_enc TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS hosters (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider        TEXT    NOT NULL,
+    name            TEXT    NOT NULL,
+    credentials_enc TEXT    NOT NULL,
+    created_at      INTEGER NOT NULL
 );
 """
 
@@ -141,3 +150,52 @@ def delete_panel(panel_id: int) -> bool:
 def count_panels() -> int:
     with connect() as conn:
         return conn.execute("SELECT COUNT(*) FROM panels").fetchone()[0]
+
+
+# ---------- hosting accounts (VPN API Hoster) ----------
+
+@dataclass
+class Hoster:
+    id: int
+    provider: str
+    name: str
+    credentials: dict
+    created_at: int
+
+
+def _row_to_hoster(row: sqlite3.Row) -> Hoster:
+    return Hoster(id=row["id"], provider=row["provider"], name=row["name"],
+                  credentials=json.loads(decrypt(row["credentials_enc"]) or "{}"), created_at=row["created_at"])
+
+
+def list_hosters() -> list[Hoster]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM hosters ORDER BY id").fetchall()
+    return [_row_to_hoster(r) for r in rows]
+
+
+def get_hoster(hoster_id: int) -> Hoster | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM hosters WHERE id = ?", (hoster_id,)).fetchone()
+    return _row_to_hoster(row) if row else None
+
+
+def create_hoster(provider: str, name: str, credentials: dict) -> Hoster:
+    with connect() as conn:
+        cur = conn.execute("INSERT INTO hosters (provider, name, credentials_enc, created_at) VALUES (?, ?, ?, ?)",
+                           (provider, name, encrypt(json.dumps(credentials)), int(time.time())))
+        hoster_id = cur.lastrowid
+    return get_hoster(hoster_id)
+
+
+def update_hoster(hoster_id: int, name: str, credentials: dict) -> Hoster | None:
+    with connect() as conn:
+        conn.execute("UPDATE hosters SET name=?, credentials_enc=? WHERE id=?",
+                     (name, encrypt(json.dumps(credentials)), hoster_id))
+    return get_hoster(hoster_id)
+
+
+def delete_hoster(hoster_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM hosters WHERE id = ?", (hoster_id,))
+    return cur.rowcount > 0

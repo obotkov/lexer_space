@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import clients, db, nodes, site, system, tls
+from . import clients, db, hosters, nodes, site, system, tls
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -278,6 +278,68 @@ async def nodes_test(body: NodeCheckIn):
 @app.post("/api/nodes/inbound-options", dependencies=[Depends(require_admin)])
 async def nodes_inbound_options(body: NodeCheckIn):
     return await _nodes_call(nodes.inbound_options(body.panel_id, body, body.node_id))
+
+
+# ---------- VPN API Hoster: hosting accounts (DigitalOcean, OVHcloud) ----------
+
+def _hoster_credentials(body: hosters.HosterIn, stored: db.Hoster | None) -> dict[str, str]:
+    try:
+        return hosters.merge_credentials(body.provider, body.credentials,
+                                         stored.credentials if stored and stored.provider == body.provider else None)
+    except hosters.HosterError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+async def _hoster_check(provider: str, credentials: dict[str, str]) -> dict:
+    try:
+        return await hosters.check(provider, credentials)
+    except hosters.HosterError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/hosters/providers", dependencies=[Depends(require_admin)])
+async def hosters_providers():
+    return hosters.PROVIDERS
+
+
+@app.get("/api/hosters", dependencies=[Depends(require_admin)])
+async def hosters_list(refresh: bool = False):
+    return await hosters.list_all(refresh)
+
+
+@app.post("/api/hosters/test", dependencies=[Depends(require_admin)])
+async def hosters_test(body: hosters.HosterTestIn):
+    stored = db.get_hoster(body.hoster_id) if body.hoster_id else None
+    return await _hoster_check(body.provider, _hoster_credentials(body, stored))
+
+
+@app.post("/api/hosters", dependencies=[Depends(require_admin)])
+async def hosters_create(body: hosters.HosterIn):
+    credentials = _hoster_credentials(body, None)
+    await _hoster_check(body.provider, credentials)  # never store keys the provider rejects
+    return hosters.public(db.create_hoster(body.provider, body.name.strip(), credentials))
+
+
+@app.put("/api/hosters/{hoster_id}", dependencies=[Depends(require_admin)])
+async def hosters_update(hoster_id: int, body: hosters.HosterIn):
+    stored = db.get_hoster(hoster_id)
+    if not stored:
+        raise HTTPException(404, "Аккаунт не найден")
+    if body.provider != stored.provider:
+        raise HTTPException(422, "Хостинг аккаунта менять нельзя: добавьте новый аккаунт")
+    credentials = _hoster_credentials(body, stored)
+    if credentials != stored.credentials:
+        await _hoster_check(body.provider, credentials)
+    hosters.invalidate(hoster_id)
+    return hosters.public(db.update_hoster(hoster_id, body.name.strip(), credentials))
+
+
+@app.delete("/api/hosters/{hoster_id}", dependencies=[Depends(require_admin)])
+async def hosters_delete(hoster_id: int):
+    if not db.delete_hoster(hoster_id):
+        raise HTTPException(404, "Аккаунт не найден")
+    hosters.invalidate(hoster_id)
+    return {"ok": True}
 
 
 # ---------- version & self-update ----------

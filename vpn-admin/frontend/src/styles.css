@@ -280,3 +280,22 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 @media (max-width: 600px) {
   .traffic-row { grid-template-columns: minmax(70px, 110px) 1fr 64px; gap: 8px; }
 }
+
+/* VPN API Hoster */
+.dot-warn { background: var(--warn); margin-top: 0; }
+.hoster-card { margin-bottom: 14px; gap: 12px; }
+.hoster-title { display: flex; gap: 12px; align-items: center; min-width: 0; }
+.hoster-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.provider-badge {
+  flex: none; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+  border: 1px solid var(--border); background: var(--bg-hover); color: var(--text);
+}
+.provider-digitalocean { border-color: rgba(79, 140, 255, 0.45); color: var(--accent); }
+.provider-ovh { border-color: rgba(138, 147, 166, 0.5); }
+.hoster-error { max-width: none; }
+.hoster-servers .hoster-ipv6 { word-break: break-all; }
+.hoster-card .table-wrap { margin: 0; }
+@media (max-width: 600px) {
+  .hoster-card .card-head { flex-direction: column; }
+  .hoster-actions { justify-content: flex-start; }
+}

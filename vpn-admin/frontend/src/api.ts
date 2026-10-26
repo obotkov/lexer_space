@@ -358,6 +358,74 @@ export interface NodeHeartbeat {
   uptimeSecs?: number;
 }
 
+export interface HosterField {
+  key: string;
+  label: string;
+  secret?: boolean;
+  placeholder?: string;
+  options?: { value: string; label: string }[];
+  default?: string;
+}
+
+export interface HosterProvider {
+  title: string;
+  site: string;
+  fields: HosterField[];
+  help: string;
+  help_url: string;
+  /** per value of the "endpoint" field, when the key page depends on it */
+  help_urls?: Record<string, string>;
+}
+
+export interface HosterServer {
+  id: string;
+  name: string;
+  status: "running" | "stopped" | "pending" | "error" | "unknown";
+  status_label: string;
+  region: string;
+  plan: string;
+  specs: string;
+  price: string;
+  ipv4: string[];
+  ipv6: string[];
+  created_at: string;
+  /** Droplet, VPS, Public Cloud… */
+  kind: string;
+}
+
+export interface Hoster {
+  id: number;
+  provider: string;
+  name: string;
+  created_at: number;
+  /** non-secret credential fields */
+  credentials: Record<string, string>;
+  /** keys of secret fields that are stored */
+  secrets_set: string[];
+}
+
+export interface HosterAccount {
+  login: string;
+  name: string;
+  status: string;
+  balance: string | null;
+  limits: string;
+}
+
+export interface HosterInfo extends Hoster {
+  ok: boolean;
+  error: string | null;
+  account: HosterAccount | null;
+  servers: HosterServer[];
+  servers_error: string | null;
+}
+
+export interface HosterForm {
+  provider: string;
+  name: string;
+  credentials: Record<string, string>;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -412,6 +480,12 @@ export const api = {
   startUpdate: () => request<UpdateStatus>("POST", "/api/system/update"),
   health: () => request<{ ok: boolean }>("GET", "/api/health"),
   nodes: () => request<NodesData>("GET", "/api/nodes"),
+  hosterProviders: () => request<Record<string, HosterProvider>>("GET", "/api/hosters/providers"),
+  hosters: (refresh = false) => request<HosterInfo[]>("GET", `/api/hosters${refresh ? "?refresh=true" : ""}`),
+  createHoster: (form: HosterForm) => request<Hoster>("POST", "/api/hosters", form),
+  updateHoster: (id: number, form: HosterForm) => request<Hoster>("PUT", `/api/hosters/${id}`, form),
+  deleteHoster: (id: number) => request("DELETE", `/api/hosters/${id}`),
+  testHoster: (form: HosterForm, hosterId?: number) => request<HosterAccount>("POST", "/api/hosters/test", { ...form, hoster_id: hosterId ?? null }),
   addNode: (panelId: number, form: NodeForm) => request<unknown>("POST", "/api/nodes", { ...form, panel_id: panelId }),
   updateNode: (panelId: number, id: number, form: NodeForm) => request("PUT", `/api/nodes/${panelId}/${id}`, form),
   deleteNode: (panelId: number, id: number) => request("DELETE", `/api/nodes/${panelId}/${id}`),
