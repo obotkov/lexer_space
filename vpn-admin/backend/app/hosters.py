@@ -31,7 +31,9 @@ OVH_ENDPOINTS = {
 
 
 class HosterError(Exception):
-    pass
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(message)
+        self.code = code
 
 
 class HosterIn(BaseModel):
@@ -64,15 +66,16 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "fields": [
             {"key": "endpoint", "label": "Регион API", "options": [
                 {"value": "ovh-eu", "label": "OVHcloud Europe (eu.api.ovh.com)"},
-                {"value": "ovh-ca", "label": "OVHcloud Canada (ca.api.ovh.com)"},
+                {"value": "ovh-ca", "label": "OVHcloud Canada и остальной мир (ca.api.ovh.com)"},
                 {"value": "ovh-us", "label": "OVHcloud US (api.us.ovhcloud.com)"},
             ], "default": "ovh-eu"},
             {"key": "application_key", "label": "Application Key", "secret": False},
             {"key": "application_secret", "label": "Application Secret", "secret": True},
             {"key": "consumer_key", "label": "Consumer Key", "secret": True},
         ],
-        "help": "Все три ключа выдаёт страница createToken (ссылка ниже, уже с правами GET/POST/PUT/DELETE на /*). "
-                "Срок действия выберите Unlimited.",
+        "help": "Регион API зависит от того, где зарегистрирован аккаунт OVHcloud: Европа — eu, США — us, "
+                "Канада и остальные страны — ca. Все три ключа выдаёт страница createToken этого региона "
+                "(ссылка ниже, уже с правами GET/POST/PUT/DELETE на /*). Срок действия выберите Unlimited.",
         "help_url": "https://eu.api.ovh.com/createToken/?GET=/*&POST=/*&PUT=/*&DELETE=/*",
         "help_urls": {
             "ovh-eu": "https://eu.api.ovh.com/createToken/?GET=/*&POST=/*&PUT=/*&DELETE=/*",
@@ -90,21 +93,25 @@ def _server(*, id: Any, name: str, status: str, status_label: str, region: str, 
             "kind": kind}
 
 
-OVH_ERROR_HINTS = {
-    "INVALID_KEY": "неверный Application Key",
-    "INVALID_SIGNATURE": "подпись не сошлась: проверьте Application Secret и Consumer Key",
-    "INVALID_CREDENTIAL": "Consumer Key недействителен: истёк срок или ключ не подтверждён на странице входа OVH",
-    "NOT_CREDENTIAL": "Consumer Key не найден",
-    "NOT_GRANTED_CALL": "у Consumer Key нет прав на этот запрос",
-}
+# OVH answers {"class": "Client::Forbidden", "message": "..."}: the message is all there is to go by
+OVH_ERROR_HINTS = [
+    ("application key is invalid", "INVALID_KEY", "Application Key не найден на этом API"),
+    ("invalid signature", "INVALID_SIGNATURE", "подпись не сошлась: проверьте Application Secret и Consumer Key"),
+    ("credential does not exist", "NOT_CREDENTIAL", "Consumer Key не найден"),
+    ("credential is not valid", "INVALID_CREDENTIAL",
+     "Consumer Key недействителен: истёк срок или его не подтвердили входом в аккаунт OVHcloud"),
+    ("has not been granted", "NOT_GRANTED_CALL", "у Consumer Key нет прав на этот запрос"),
+    ("query out of time", "QUERY_TIME_OUT", "время на сервере админки сильно расходится с OVHcloud"),
+]
 
 
 def _http_error(resp: httpx.Response, provider: str) -> HosterError:
     try:
         data = resp.json()
         detail = data.get("message") or data.get("error") or data.get("id") or ""
-        if data.get("errorCode") in OVH_ERROR_HINTS:
-            return HosterError(f"{provider}: {OVH_ERROR_HINTS[data['errorCode']]} ({detail})")
+        for needle, code, hint in OVH_ERROR_HINTS:
+            if needle in detail.lower() or data.get("errorCode") == code:
+                return HosterError(f"{provider}: {hint} ({detail})", code)
     except (ValueError, AttributeError):
         detail = resp.text[:200]
     if resp.status_code == 401:
@@ -227,6 +234,7 @@ class OVHcloud:
         endpoint = credentials.get("endpoint") or "ovh-eu"
         if endpoint not in OVH_ENDPOINTS:
             raise HosterError(f"Неизвестный регион API OVHcloud: {endpoint}")
+        self.endpoint = endpoint
         self.base = OVH_ENDPOINTS[endpoint]
         self.app_key = credentials.get("application_key", "").strip()
         self.app_secret = credentials.get("application_secret", "").strip()
@@ -266,8 +274,31 @@ class OVHcloud:
             headers["Content-Type"] = "application/json"
         resp = await self._send(method, url, headers=headers, content=content)
         if resp.status_code >= 400:
-            raise _http_error(resp, self.title)
+            error = _http_error(resp, self.title)
+            if error.code == "INVALID_KEY":
+                raise await self._wrong_endpoint(error)
+            raise error
         return resp.json() if resp.content else None
+
+    async def _wrong_endpoint(self, error: HosterError) -> HosterError:
+        """An application key exists on one API only (EU, CA or US). Find which one knows it:
+        there the same call fails on the signature or credential instead of on the key."""
+        for endpoint, base in OVH_ENDPOINTS.items():
+            if endpoint == self.endpoint:
+                continue
+            try:
+                ts = (await self.http.get(f"{base}/auth/time")).text.strip()
+                resp = await self.http.get(f"{base}/me", headers={
+                    "X-Ovh-Application": self.app_key, "X-Ovh-Consumer": "0" * 32, "X-Ovh-Timestamp": ts,
+                    "X-Ovh-Signature": "$1$" + "0" * 40})
+            except httpx.HTTPError:
+                continue
+            if "application key is invalid" not in resp.text.lower():
+                label = next(o["label"] for o in PROVIDERS["ovh"]["fields"][0]["options"] if o["value"] == endpoint)
+                return HosterError(f"OVHcloud: этот Application Key создан на другом API. Выберите в поле "
+                                   f"«Регион API» вариант «{label}»", "WRONG_ENDPOINT")
+        return HosterError(f"{error}. Проверьте, что ключ скопирован целиком и выбран регион API, "
+                           "на странице которого он создан", error.code)
 
     async def _get(self, path: str) -> Any:
         return await self._request("GET", path)
