@@ -231,6 +231,38 @@ class XUIClient:
         await self._call("POST", f"/panel/api/clients/resetTraffic/{quote(email, safe='')}")
 
 
+    # ---------- v3 nodes: remote 3x-ui panels managed by this (main) panel ----------
+
+    async def v3_nodes(self) -> list[dict]:
+        return await self._call("GET", "/panel/api/nodes/list") or []
+
+    async def v3_node(self, node_id: int) -> dict:
+        return await self._call("GET", f"/panel/api/nodes/get/{node_id}") or {}
+
+    async def v3_node_add(self, node: dict) -> dict:
+        return await self._call("POST", "/panel/api/nodes/add", json=node) or {}
+
+    async def v3_node_update(self, node_id: int, node: dict) -> None:
+        await self._call("POST", f"/panel/api/nodes/update/{node_id}", json=node)
+
+    async def v3_node_delete(self, node_id: int) -> None:
+        await self._call("POST", f"/panel/api/nodes/del/{node_id}")
+
+    async def v3_node_set_enable(self, node_id: int, enable: bool) -> None:
+        await self._call("POST", f"/panel/api/nodes/setEnable/{node_id}", json={"enable": enable})
+
+    async def v3_node_test(self, node: dict) -> dict:
+        """Probe connection details without saving: the same heartbeat a registered node gets."""
+        return await self._call("POST", "/panel/api/nodes/test", json=node) or {}
+
+    async def v3_node_probe(self, node_id: int) -> dict:
+        return await self._call("POST", f"/panel/api/nodes/probe/{node_id}") or {}
+
+    async def v3_node_inbounds(self, node: dict) -> list[dict]:
+        """Inbounds of a (possibly unsaved) node, for selective import."""
+        return await self._call("POST", "/panel/api/nodes/inbounds", json=node) or []
+
+
 # Fields of a v3 ClientRecord that the update endpoint (model.Client) accepts as-is
 _V3_CLIENT_FIELDS = (
     "email", "subId", "password", "auth", "flow", "security", "clientHostRuleIds", "limitIp", "totalGB",

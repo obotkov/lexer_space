@@ -164,7 +164,7 @@ export function ClientDialog({ clients, title, onClose, onChanged }: { clients: 
 
         {clients.some((c) => c.api === "v3") && (
           <div className="notice notice-info small">
-            В 3x-ui v3 клиент один на все свои узлы: изменения, продление и удаление применяются сразу ко всем узлам, к которым он привязан.
+            В 3x-ui v3 клиент один на все свои коннекты: изменения, продление и удаление применяются сразу ко всем коннектам, к которым он привязан.
           </div>
         )}
 

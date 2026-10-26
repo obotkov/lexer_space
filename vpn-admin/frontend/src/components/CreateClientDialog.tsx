@@ -46,7 +46,7 @@ export function CreateClientDialog({
     e.preventDefault();
     setError("");
     const targets = available.filter((n) => selected.has(nodeKey(n))).map((n) => ({ panel_id: n.panel_id, inbound_id: n.id }));
-    if (!targets.length) return setError("Выберите хотя бы один узел");
+    if (!targets.length) return setError("Выберите хотя бы один коннект");
     const totalBytes = gbToBytes(limitGb || "0");
     const dayCount = parseInt(days || "0", 10);
     if (Number.isNaN(totalBytes) || !(dayCount >= 0)) return setError("Проверьте лимит трафика и срок");
@@ -94,15 +94,15 @@ export function CreateClientDialog({
           <span>Email / имя</span>
           <input className="input" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ivan" />
           <small className="muted">
-            В 3x-ui v3 создаётся один клиент на все выбранные узлы сервера. В 3x-ui 2.x email должен быть уникальным на весь сервер, поэтому на втором и следующих узлах к
+            В 3x-ui v3 создаётся один клиент на все выбранные коннекты сервера. В 3x-ui 2.x email должен быть уникальным на весь сервер, поэтому на втором и следующих коннектах к
             имени добавится -2, -3 и т. д.
           </small>
         </label>
 
         <div className="field">
-          <span>Узлы</span>
+          <span>Коннекты</span>
           {available.length === 0 ? (
-            <div className="muted">Нет узлов с поддерживаемыми протоколами (VLESS, VMess, Trojan, Shadowsocks)</div>
+            <div className="muted">Нет коннектов с поддерживаемыми протоколами (VLESS, VMess, Trojan, Shadowsocks)</div>
           ) : (
             <div className="node-picker">
               {available.map((n) => (
@@ -164,7 +164,7 @@ export function CreateClientDialog({
           <>
             <ResultsNotice action="Создание" total={total} failed={failed} notes={[]} />
             <div className="muted small">
-              Успешно созданные клиенты уже в 3x-ui, подписка <span className="mono">{subId}</span>. Можно исправить ошибки и создать клиента на оставшихся узлах с этим же subId.
+              Успешно созданные клиенты уже в 3x-ui, подписка <span className="mono">{subId}</span>. Можно исправить ошибки и создать клиента на оставшихся коннектах с этим же subId.
             </div>
           </>
         )}

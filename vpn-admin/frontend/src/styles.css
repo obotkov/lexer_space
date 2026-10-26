@@ -216,3 +216,35 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .site-editor { min-height: 180px; resize: vertical; font-size: 12px; line-height: 1.5; }
 .modal-preview { max-width: 1100px; height: calc(100vh - 48px); }
 .site-preview { flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+
+/* nodes */
+.switch {
+  width: 40px; height: 22px; border-radius: 11px; border: none; padding: 2px; cursor: pointer; flex-shrink: 0;
+  background: var(--border); transition: background .15s; display: inline-flex; align-items: center;
+}
+.switch span { width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.switch.on { background: var(--accent); }
+.switch.on span { transform: translateX(18px); }
+.switch:disabled { opacity: .5; cursor: default; }
+.blurred { filter: blur(5px); user-select: none; }
+.status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.status-on { color: var(--good); }
+.status-off { color: var(--bad); }
+.dot-off { background: var(--bad); margin-top: 0; }
+.status .dot { margin-top: 0; }
+.row-actions { display: flex; gap: 4px; }
+.icon-btn {
+  width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border); background: transparent;
+  color: var(--text); cursor: pointer; font-size: 14px; line-height: 1;
+}
+.icon-btn:hover:not(:disabled) { background: var(--bg-hover); }
+.icon-btn.danger { color: var(--bad); }
+.icon-btn:disabled { opacity: .4; cursor: default; }
+.link-button { background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 0; white-space: nowrap; }
+.input-with-button { display: flex; gap: 8px; }
+.input-with-button .input { flex: 1; }
+.field-narrow { flex: 0 0 130px; }
+.badge-gap { margin-left: 8px; }
+.nodes-table th, .nodes-table td { padding: 10px 8px; }
+.node-addr { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-error { max-width: 200px; word-break: break-word; }

@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import clients, db, site, system, tls
+from . import clients, db, nodes, site, system, tls
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -213,6 +213,71 @@ async def clients_reset(body: RefsIn):
 @app.post("/api/clients/delete", dependencies=[Depends(require_admin)])
 async def clients_delete(body: RefsIn):
     return {"results": await clients.delete_clients(body.refs)}
+
+
+# ---------- nodes (remote 3x-ui servers of a main v3 panel) ----------
+
+class NodeCreateIn(nodes.NodeIn):
+    panel_id: int
+
+
+class NodeCheckIn(nodes.NodeIn):
+    panel_id: int
+    node_id: int = 0  # editing an existing node: an empty token means the stored one
+
+
+class NodeEnableIn(BaseModel):
+    enable: bool
+
+
+async def _nodes_call(coro):
+    try:
+        return await coro
+    except nodes.NodeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.get("/api/nodes", dependencies=[Depends(require_admin)])
+async def nodes_list():
+    return await nodes.list_all()
+
+
+@app.post("/api/nodes", dependencies=[Depends(require_admin)])
+async def nodes_add(body: NodeCreateIn):
+    return await _nodes_call(nodes.add(body.panel_id, body))
+
+
+@app.put("/api/nodes/{panel_id}/{node_id}", dependencies=[Depends(require_admin)])
+async def nodes_update(panel_id: int, node_id: int, body: nodes.NodeIn):
+    await _nodes_call(nodes.update(panel_id, node_id, body))
+    return {"ok": True}
+
+
+@app.delete("/api/nodes/{panel_id}/{node_id}", dependencies=[Depends(require_admin)])
+async def nodes_delete(panel_id: int, node_id: int):
+    await _nodes_call(nodes.delete(panel_id, node_id))
+    return {"ok": True}
+
+
+@app.post("/api/nodes/{panel_id}/{node_id}/enable", dependencies=[Depends(require_admin)])
+async def nodes_enable(panel_id: int, node_id: int, body: NodeEnableIn):
+    await _nodes_call(nodes.set_enable(panel_id, node_id, body.enable))
+    return {"ok": True}
+
+
+@app.post("/api/nodes/{panel_id}/{node_id}/probe", dependencies=[Depends(require_admin)])
+async def nodes_probe(panel_id: int, node_id: int):
+    return await _nodes_call(nodes.probe(panel_id, node_id))
+
+
+@app.post("/api/nodes/test", dependencies=[Depends(require_admin)])
+async def nodes_test(body: NodeCheckIn):
+    return await _nodes_call(nodes.test(body.panel_id, body, body.node_id))
+
+
+@app.post("/api/nodes/inbound-options", dependencies=[Depends(require_admin)])
+async def nodes_inbound_options(body: NodeCheckIn):
+    return await _nodes_call(nodes.inbound_options(body.panel_id, body, body.node_id))
 
 
 # ---------- version & self-update ----------

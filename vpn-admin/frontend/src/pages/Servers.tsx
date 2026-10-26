@@ -42,7 +42,7 @@ export function Servers({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
                 <dd>{p.auth_mode === "token" ? "API-токен" : `логин ${p.username}`}</dd>
                 <dt>Версия API</dt>
                 <dd>{p.api_version ? API_LABELS[p.api_version] : "—"}</dd>
-                <dt>Узлов / клиентов</dt>
+                <dt>Коннектов / клиентов</dt>
                 <dd>
                   {p.nodes} / {p.clients}
                 </dd>
@@ -196,7 +196,7 @@ function ServerDialog({ panel, onClose, onSaved }: { panel: PanelInfo | null; on
         {test && (
           <div className={`notice ${test.ok ? "notice-ok" : "notice-bad"}`}>
             {test.ok
-              ? `Подключено (${test.api_version ? API_LABELS[test.api_version] : "3x-ui"}): узлов ${test.nodes}, клиентов ${test.clients}${test.xray_version ? `, Xray ${test.xray_version}` : ""}`
+              ? `Подключено (${test.api_version ? API_LABELS[test.api_version] : "3x-ui"}): коннектов ${test.nodes}, клиентов ${test.clients}${test.xray_version ? `, Xray ${test.xray_version}` : ""}`
               : test.error}
           </div>
         )}

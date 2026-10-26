@@ -50,7 +50,7 @@ export function Subscriptions({ data, onChanged }: { data: Overview; onChanged: 
                 <th></th>
                 <th>Подписка</th>
                 <th>Клиенты</th>
-                <th>Узлы</th>
+                <th>Коннекты</th>
                 <th className="num">Трафик</th>
                 <th>Срок</th>
                 <th>Статус</th>

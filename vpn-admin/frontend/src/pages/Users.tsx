@@ -100,7 +100,7 @@ export function Users({ data, onChanged }: { data: Overview; onChanged: () => vo
                 </th>
                 <th></th>
                 <th>Email</th>
-                <th>Узел</th>
+                <th>Коннект</th>
                 <th>Подписка</th>
                 <th>Трафик</th>
                 <th>Срок</th>

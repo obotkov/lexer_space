@@ -21,11 +21,11 @@ export function Overview({ data, onGoServers }: { data: OverviewData; onGoServer
   return (
     <>
       <div className="stats">
-        <StatCard label="Пользователей" value={t.users} hint={`${t.clients} клиентов во всех узлах`} />
+        <StatCard label="Пользователей" value={t.users} hint={`${t.clients} клиентов во всех коннектах`} />
         <StatCard label="Активных" value={t.users_active} tone="good" hint={`онлайн сейчас: ${t.users_online}`} />
         <StatCard label="Истекших / отключённых" value={`${t.users_expired} / ${t.users_disabled}`} tone={t.users_expired ? "warn" : undefined} />
         <StatCard label="Подписок" value={t.subscriptions} />
-        <StatCard label="Узлов" value={t.nodes} hint={`включено: ${t.nodes_enabled}`} />
+        <StatCard label="Коннектов" value={t.nodes} hint={`включено: ${t.nodes_enabled}`} />
         <StatCard
           label="Серверов"
           value={`${t.panels_ok} / ${t.panels}`}
@@ -46,7 +46,7 @@ export function Overview({ data, onGoServers }: { data: OverviewData; onGoServer
               <th>CPU</th>
               <th>RAM</th>
               <th>Аптайм</th>
-              <th className="num">Узлов</th>
+              <th className="num">Коннектов</th>
               <th className="num">Клиентов</th>
               <th className="num">Онлайн</th>
             </tr>

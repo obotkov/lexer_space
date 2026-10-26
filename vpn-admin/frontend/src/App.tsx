@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Overview as OverviewData, type UpdateCheck } from "./api";
 import { Login, Shield } from "./pages/Login";
+import { Connections } from "./pages/Connections";
 import { Nodes } from "./pages/Nodes";
 import { Overview } from "./pages/Overview";
 import { Servers } from "./pages/Servers";
@@ -11,6 +12,7 @@ import { Users } from "./pages/Users";
 const TABS = [
   { id: "overview", title: "Обзор" },
   { id: "nodes", title: "Узлы" },
+  { id: "connections", title: "Коннекты" },
   { id: "subscriptions", title: "Подписки" },
   { id: "users", title: "Пользователи" },
   { id: "servers", title: "Серверы 3x-ui" },
@@ -83,7 +85,7 @@ export function App() {
   if (user === null) return <Login onLogin={setUser} />;
 
   const counts: Partial<Record<TabId, number>> = data
-    ? { nodes: data.totals.nodes, subscriptions: data.totals.subscriptions, users: data.totals.clients, servers: data.totals.panels }
+    ? { connections: data.totals.nodes, subscriptions: data.totals.subscriptions, users: data.totals.clients, servers: data.totals.panels }
     : {};
 
   return (
@@ -130,7 +132,8 @@ export function App() {
           <>
             {error && <div className="notice notice-bad">{error}</div>}
             {tab === "overview" && <Overview data={data} onGoServers={() => go("servers")} />}
-            {tab === "nodes" && <Nodes data={data} onChanged={() => load(true)} />}
+            {tab === "nodes" && <Nodes panels={data.panels} onChanged={() => load(true)} />}
+            {tab === "connections" && <Connections data={data} onChanged={() => load(true)} />}
             {tab === "subscriptions" && <Subscriptions data={data} onChanged={() => load(true)} />}
             {tab === "users" && <Users data={data} onChanged={() => load(true)} />}
             {tab === "servers" && <Servers panels={data.panels} onChanged={() => load(true)} />}

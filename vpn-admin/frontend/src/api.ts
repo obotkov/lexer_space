@@ -264,6 +264,88 @@ export interface DomainCheck {
   matches: boolean;
 }
 
+export type TlsVerifyMode = "verify" | "skip" | "pin";
+
+/** A remote 3x-ui server attached to a main v3 panel (3x-ui "Nodes" page) */
+export interface XNode {
+  id: number;
+  name: string;
+  remark: string;
+  scheme: "http" | "https";
+  address: string;
+  port: number;
+  base_path: string;
+  enable: boolean;
+  /** "online" | "offline" | "unknown" … as reported by the main panel's heartbeat */
+  status: string;
+  last_error: string;
+  last_heartbeat: number;
+  latency_ms: number | null;
+  cpu: number | null;
+  mem: number | null;
+  uptime: number | null;
+  xray_version: string;
+  xray_state: string;
+  xray_error: string;
+  panel_version: string;
+  update_available: boolean;
+  net_up: number;
+  net_down: number;
+  inbounds: number;
+  clients: number;
+  online: number;
+  allow_private_address: boolean;
+  tls_verify_mode: TlsVerifyMode;
+  pinned_cert_sha256: string;
+  has_api_token: boolean;
+  inbound_sync_mode: "all" | "selected";
+  inbound_tags: string[];
+  transitive: boolean;
+}
+
+export interface NodesPanel {
+  panel_id: number;
+  panel_name: string;
+  ok: boolean;
+  /** false for 3x-ui 2.x: no nodes there */
+  supported: boolean;
+  error: string | null;
+  nodes: XNode[];
+}
+
+export interface NodesData {
+  panels: NodesPanel[];
+  latest_panel_version: string | null;
+  totals: { nodes: number; online: number; offline: number; disabled: number; avg_latency_ms: number | null; clients: number; online_clients: number };
+}
+
+export interface NodeForm {
+  name: string;
+  remark: string;
+  scheme: "http" | "https";
+  address: string;
+  port: number;
+  base_path: string;
+  enable: boolean;
+  allow_private_address: boolean;
+  tls_verify_mode: TlsVerifyMode;
+  pinned_cert_sha256: string;
+  api_token: string;
+  inbound_sync_mode: "all" | "selected";
+  inbound_tags: string[];
+}
+
+export interface NodeHeartbeat {
+  status: string;
+  error?: string;
+  latencyMs?: number;
+  cpuPct?: number;
+  memPct?: number;
+  panelVersion?: string;
+  xrayVersion?: string;
+  uptimeSecs?: number;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -317,6 +399,15 @@ export const api = {
   updateStatus: () => request<UpdateStatus>("GET", "/api/system/update"),
   startUpdate: () => request<UpdateStatus>("POST", "/api/system/update"),
   health: () => request<{ ok: boolean }>("GET", "/api/health"),
+  nodes: () => request<NodesData>("GET", "/api/nodes"),
+  addNode: (panelId: number, form: NodeForm) => request<unknown>("POST", "/api/nodes", { ...form, panel_id: panelId }),
+  updateNode: (panelId: number, id: number, form: NodeForm) => request("PUT", `/api/nodes/${panelId}/${id}`, form),
+  deleteNode: (panelId: number, id: number) => request("DELETE", `/api/nodes/${panelId}/${id}`),
+  enableNode: (panelId: number, id: number, enable: boolean) => request("POST", `/api/nodes/${panelId}/${id}/enable`, { enable }),
+  probeNode: (panelId: number, id: number) => request<NodeHeartbeat>("POST", `/api/nodes/${panelId}/${id}/probe`),
+  testNode: (panelId: number, form: NodeForm, nodeId = 0) => request<NodeHeartbeat>("POST", "/api/nodes/test", { ...form, panel_id: panelId, node_id: nodeId }),
+  nodeInboundOptions: (panelId: number, form: NodeForm, nodeId = 0) =>
+    request<{ tag: string; remark: string; protocol: string; port: number }[]>("POST", "/api/nodes/inbound-options", { ...form, panel_id: panelId, node_id: nodeId }),
   site: () => request<SiteStatus>("GET", "/api/site"),
   siteTemplate: (id: string) => request<{ id: string; html: string }>("GET", `/api/site/templates/${id}`),
   siteApply: (template: string) => request<SiteStatus>("POST", "/api/site/apply", { template }),
