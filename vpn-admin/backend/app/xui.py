@@ -16,6 +16,7 @@ page, in which case we log in again and retry once.
 
 import json
 import re
+import ssl
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -51,7 +52,7 @@ def _local_url(url: str) -> str:
 
 
 class XUIClient:
-    def __init__(self, url: str, username: str = "", password: str = "", verify_tls: bool = True,
+    def __init__(self, url: str, username: str = "", password: str = "", verify_tls: bool | ssl.SSLContext = True,
                  api_token: str = "", timeout: float = 15.0):
         self.base_url = _local_url(normalize_url(url))
         self.username = username
@@ -239,6 +240,14 @@ class XUIClient:
 
     async def v3_node(self, node_id: int) -> dict:
         return await self._call("GET", f"/panel/api/nodes/get/{node_id}") or {}
+
+    async def v3_create_api_token(self, name: str, scope: str = "node-admin") -> str:
+        """Mint an API token on this panel (3x-ui v3.0.2+); the plaintext is returned only once."""
+        row = await self._call("POST", "/panel/api/setting/apiTokens/create",
+                               json={"name": name, "scope": scope, "expiresAt": 0}) or {}
+        if not row.get("token"):
+            raise XUIError("3x-ui не вернула API-токен")
+        return row["token"]
 
     async def v3_node_add(self, node: dict) -> dict:
         return await self._call("POST", "/panel/api/nodes/add", json=node) or {}

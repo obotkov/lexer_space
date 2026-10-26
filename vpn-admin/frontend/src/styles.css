@@ -299,3 +299,24 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   .hoster-card .card-head { flex-direction: column; }
   .hoster-actions { justify-content: flex-start; }
 }
+
+/* new servers (provisioning jobs) */
+.provisions { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }
+.provision { gap: 12px; }
+.provision .card-actions { flex-wrap: wrap; }
+.steps { display: flex; gap: 6px; margin: 0; padding: 0; list-style: none; flex-wrap: wrap; }
+.step { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding: 4px 10px 4px 4px;
+  border: 1px solid var(--border); border-radius: 999px; }
+.step-mark { width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 11px;
+  background: var(--bg-hover); color: var(--muted); font-weight: 600; }
+.step-done { color: var(--text); }
+.step-done .step-mark { background: rgba(52, 199, 123, 0.18); color: var(--good); }
+.step-active { color: var(--text); border-color: rgba(79, 140, 255, 0.5); }
+.step-active .step-mark { background: var(--accent); color: #fff; animation: step-pulse 1.4s ease-in-out infinite; }
+.step-failed { color: var(--bad); border-color: rgba(242, 85, 90, 0.5); }
+.step-failed .step-mark { background: rgba(242, 85, 90, 0.18); color: var(--bad); }
+@keyframes step-pulse { 50% { opacity: 0.55; } }
+.provision-error { max-width: none; }
+.provision-log { max-height: 220px; margin: 0; list-style: none; white-space: normal; word-break: break-word; }
+@media (max-width: 600px) { .provisions { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .step-active .step-mark { animation: none; } }

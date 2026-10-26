@@ -22,6 +22,32 @@ CREATE TABLE IF NOT EXISTS panels (
     api_token_enc TEXT    NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS provisions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    hoster_id    INTEGER NOT NULL,
+    panel_id     INTEGER NOT NULL,
+    name         TEXT    NOT NULL,
+    region       TEXT    NOT NULL,
+    plan         TEXT    NOT NULL,
+    project      TEXT    NOT NULL DEFAULT '',
+    ssh_keys     TEXT    NOT NULL DEFAULT '[]',
+    server_id    TEXT    NOT NULL DEFAULT '',
+    ip           TEXT    NOT NULL DEFAULT '',
+    port         INTEGER NOT NULL,
+    base_path    TEXT    NOT NULL,
+    username     TEXT    NOT NULL,
+    secrets_enc  TEXT    NOT NULL,
+    cert_pem     TEXT    NOT NULL,
+    cert_pin     TEXT    NOT NULL,
+    node_id      INTEGER,
+    step         TEXT    NOT NULL,
+    state        TEXT    NOT NULL,
+    error        TEXT    NOT NULL DEFAULT '',
+    log          TEXT    NOT NULL DEFAULT '[]',
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS hosters (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     provider        TEXT    NOT NULL,
@@ -198,4 +224,85 @@ def update_hoster(hoster_id: int, name: str, credentials: dict) -> Hoster | None
 def delete_hoster(hoster_id: int) -> bool:
     with connect() as conn:
         cur = conn.execute("DELETE FROM hosters WHERE id = ?", (hoster_id,))
+    return cur.rowcount > 0
+
+
+# ---------- new servers ordered through a hosting account ----------
+
+@dataclass
+class Provision:
+    id: int
+    hoster_id: int
+    panel_id: int
+    name: str
+    region: str
+    plan: str
+    project: str
+    ssh_keys: list
+    server_id: str
+    ip: str
+    port: int
+    base_path: str
+    username: str
+    secrets: dict  # password of the node panel, TLS key until the server is created
+    cert_pem: str
+    cert_pin: str
+    node_id: int | None
+    step: str
+    state: str
+    error: str
+    log: list
+    created_at: int
+    updated_at: int
+
+
+_JSON_FIELDS = {"ssh_keys", "log"}
+
+
+def _row_to_provision(row: sqlite3.Row) -> Provision:
+    values = {k: row[k] for k in row.keys() if k != "secrets_enc"}
+    for key in _JSON_FIELDS:
+        values[key] = json.loads(values[key])
+    return Provision(**values, secrets=json.loads(decrypt(row["secrets_enc"])))
+
+
+def list_provisions() -> list[Provision]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM provisions ORDER BY id DESC").fetchall()
+    return [_row_to_provision(r) for r in rows]
+
+
+def get_provision(provision_id: int) -> Provision | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM provisions WHERE id = ?", (provision_id,)).fetchone()
+    return _row_to_provision(row) if row else None
+
+
+def create_provision(**fields) -> Provision:
+    now = int(time.time())
+    fields = {**fields, "created_at": now, "updated_at": now}
+    fields["secrets_enc"] = encrypt(json.dumps(fields.pop("secrets")))
+    for key in _JSON_FIELDS & fields.keys():
+        fields[key] = json.dumps(fields[key])
+    with connect() as conn:
+        cur = conn.execute(f"INSERT INTO provisions ({', '.join(fields)}) VALUES ({', '.join('?' * len(fields))})",
+                           tuple(fields.values()))
+        provision_id = cur.lastrowid
+    return get_provision(provision_id)
+
+
+def update_provision(provision_id: int, **fields) -> None:
+    fields["updated_at"] = int(time.time())
+    if "secrets" in fields:
+        fields["secrets_enc"] = encrypt(json.dumps(fields.pop("secrets")))
+    for key in _JSON_FIELDS & fields.keys():
+        fields[key] = json.dumps(fields[key])
+    with connect() as conn:
+        conn.execute(f"UPDATE provisions SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                     (*fields.values(), provision_id))
+
+
+def delete_provision(provision_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM provisions WHERE id = ?", (provision_id,))
     return cur.rowcount > 0

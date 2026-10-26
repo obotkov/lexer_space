@@ -426,6 +426,57 @@ export interface HosterForm {
   credentials: Record<string, string>;
 }
 
+export interface CreateOptions {
+  /** OVHcloud: Public Cloud projects; null when the provider has none */
+  projects: { id: string; name: string }[] | null;
+  project: string | null;
+  /** false: the provider takes a single SSH key per server */
+  ssh_multiple: boolean;
+  regions: { id: string; name: string }[];
+  plans: { id: string; label: string; specs: string; price: string; regions: string[] }[];
+  ssh_keys: { id: string; name: string }[];
+}
+
+export interface ProvisionForm {
+  hoster_id: number;
+  panel_id: number;
+  name: string;
+  region: string;
+  plan: string;
+  project: string | null;
+  ssh_keys: string[];
+}
+
+export type ProvisionStep = "create" | "boot" | "install" | "connect" | "done";
+
+export interface Provision {
+  id: number;
+  hoster_id: number;
+  panel_id: number;
+  name: string;
+  region: string;
+  plan: string;
+  server_id: string;
+  ip: string;
+  node_id: number | null;
+  /** the step being run, or the one that failed */
+  step: ProvisionStep;
+  state: "running" | "done" | "failed" | "deleted";
+  error: string;
+  log: { t: number; msg: string }[];
+  created_at: number;
+  updated_at: number;
+  panel_url: string;
+  username: string;
+}
+
+export interface ProvisionCredentials {
+  panel_url: string;
+  username: string;
+  password: string;
+  cert_pin: string;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -485,6 +536,14 @@ export const api = {
   createHoster: (form: HosterForm) => request<Hoster>("POST", "/api/hosters", form),
   updateHoster: (id: number, form: HosterForm) => request<Hoster>("PUT", `/api/hosters/${id}`, form),
   deleteHoster: (id: number) => request("DELETE", `/api/hosters/${id}`),
+  hosterOptions: (id: number, project?: string | null) =>
+    request<CreateOptions>("GET", `/api/hosters/${id}/options${project ? `?project=${encodeURIComponent(project)}` : ""}`),
+  provisions: () => request<Provision[]>("GET", "/api/provisions"),
+  startProvision: (form: ProvisionForm) => request<Provision>("POST", "/api/provisions", form),
+  retryProvision: (id: number) => request<Provision>("POST", `/api/provisions/${id}/retry`),
+  deleteProvisionServer: (id: number) => request<Provision>("POST", `/api/provisions/${id}/delete-server`),
+  provisionCredentials: (id: number) => request<ProvisionCredentials>("GET", `/api/provisions/${id}/credentials`),
+  forgetProvision: (id: number) => request("DELETE", `/api/provisions/${id}`),
   testHoster: (form: HosterForm, hosterId?: number) => request<HosterAccount>("POST", "/api/hosters/test", { ...form, hoster_id: hosterId ?? null }),
   addNode: (panelId: number, form: NodeForm) => request<unknown>("POST", "/api/nodes", { ...form, panel_id: panelId }),
   updateNode: (panelId: number, id: number, form: NodeForm) => request("PUT", `/api/nodes/${panelId}/${id}`, form),

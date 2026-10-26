@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import clients, db, hosters, nodes, site, system, tls
+from . import clients, db, hosters, nodes, provision, site, system, tls
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -31,6 +31,7 @@ async def lifespan(_: FastAPI):
     db.init_db()
     seed_panel_from_env()
     renewal = asyncio.create_task(tls.renewal_loop())
+    provision.resume_all()
     yield
     renewal.cancel()
     await pool.close_all()
@@ -334,6 +335,17 @@ async def hosters_update(hoster_id: int, body: hosters.HosterIn):
     return hosters.public(db.update_hoster(hoster_id, body.name.strip(), credentials))
 
 
+@app.get("/api/hosters/{hoster_id}/options", dependencies=[Depends(require_admin)])
+async def hosters_options(hoster_id: int, project: str | None = None):
+    hoster = db.get_hoster(hoster_id)
+    if not hoster:
+        raise HTTPException(404, "Аккаунт не найден")
+    try:
+        return await hosters.create_options(hoster, project)
+    except hosters.HosterError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.delete("/api/hosters/{hoster_id}", dependencies=[Depends(require_admin)])
 async def hosters_delete(hoster_id: int):
     if not db.delete_hoster(hoster_id):
@@ -473,9 +485,53 @@ async def overview(refresh: bool = False):
 async def health():
     return {"ok": True}
 
+# ---------- new servers: order at a hosting account, install 3x-ui, attach as a node ----------
+
+def _provision_call(action):
+    try:
+        return action()
+    except provision.ProvisionError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/provisions", dependencies=[Depends(require_admin)])
+async def provisions_list():
+    return provision.list_all()
+
+
+@app.post("/api/provisions", dependencies=[Depends(require_admin)])
+async def provisions_start(body: provision.ProvisionIn):
+    try:
+        return await provision.start(body)
+    except provision.ProvisionError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/provisions/{provision_id}/retry", dependencies=[Depends(require_admin)])
+async def provisions_retry(provision_id: int):
+    return _provision_call(lambda: provision.retry(provision_id))
+
+
+@app.post("/api/provisions/{provision_id}/delete-server", dependencies=[Depends(require_admin)])
+async def provisions_delete_server(provision_id: int):
+    try:
+        return await provision.delete_server(provision_id)
+    except (provision.ProvisionError, hosters.HosterError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/provisions/{provision_id}/credentials", dependencies=[Depends(require_admin)])
+async def provisions_credentials(provision_id: int):
+    return _provision_call(lambda: provision.credentials(provision_id))
+
+
+@app.delete("/api/provisions/{provision_id}", dependencies=[Depends(require_admin)])
+async def provisions_forget(provision_id: int):
+    _provision_call(lambda: provision.forget(provision_id))
+    return {"ok": True}
+
 
 # ---------- frontend (built SPA) ----------
-
 if (settings.static_dir / "index.html").exists():
     app.mount("/assets", StaticFiles(directory=settings.static_dir / "assets"), name="assets")
 
@@ -488,3 +544,4 @@ if (settings.static_dir / "index.html").exists():
             return FileResponse(file)
         # assets have hashed names, but index.html must be re-fetched after an update
         return FileResponse(settings.static_dir / "index.html", headers={"Cache-Control": "no-cache"})
+

@@ -8,6 +8,7 @@ normalized shape. Secrets are stored encrypted in the hosters table.
 
 import asyncio
 import hashlib
+import json
 import os
 import time
 from typing import Any
@@ -115,6 +116,7 @@ def _http_error(resp: httpx.Response, provider: str) -> HosterError:
 
 class DigitalOcean:
     title = "DigitalOcean"
+    image = "ubuntu-24-04-x64"
 
     def __init__(self, credentials: dict[str, str]):
         token = credentials.get("token", "").strip()
@@ -126,14 +128,17 @@ class DigitalOcean:
     async def close(self) -> None:
         await self.http.aclose()
 
-    async def _get(self, path: str, **params) -> dict:
+    async def _request(self, method: str, path: str, params: dict | None = None, json: dict | None = None) -> dict:
         try:
-            resp = await self.http.get(path, params=params or None)
+            resp = await self.http.request(method, path, params=params, json=json)
         except httpx.HTTPError as exc:
             raise HosterError(f"DigitalOcean недоступен: {exc}") from exc
         if resp.status_code >= 400:
             raise _http_error(resp, self.title)
-        return resp.json()
+        return resp.json() if resp.content else {}
+
+    async def _get(self, path: str, **params) -> dict:
+        return await self._request("GET", path, params=params or None)
 
     async def account(self) -> dict:
         acc = (await self._get("/account")).get("account") or {}
@@ -147,37 +152,76 @@ class DigitalOcean:
             pass
         return out
 
-    async def servers(self) -> list[dict]:
-        droplets, page = [], 1
-        while True:
-            data = await self._get("/droplets", per_page=200, page=page)
-            droplets += data.get("droplets") or []
-            if not ((data.get("links") or {}).get("pages") or {}).get("next"):
-                break
-            page += 1
+    @staticmethod
+    def _droplet(d: dict) -> dict:
         status_map = {"active": "running", "off": "stopped", "archive": "stopped", "new": "pending"}
         labels = {"active": "Работает", "off": "Выключен", "archive": "В архиве", "new": "Создаётся"}
-        out = []
-        for d in droplets:
-            nets = d.get("networks") or {}
-            size = d.get("size") or {}
-            out.append(_server(
-                id=d.get("id"), name=d.get("name", ""), kind="Droplet",
-                status=status_map.get(d.get("status"), "unknown"), status_label=labels.get(d.get("status"), d.get("status", "")),
-                region=(d.get("region") or {}).get("name") or (d.get("region") or {}).get("slug", ""),
-                plan=d.get("size_slug", ""),
-                specs=f"{d.get('vcpus', '?')} vCPU · {round((d.get('memory') or 0) / 1024, 1):g} GB · {d.get('disk', '?')} GB",
-                price=f"${size['price_monthly']}/мес" if size.get("price_monthly") else "",
-                ipv4=[n["ip_address"] for n in nets.get("v4") or [] if n.get("type") == "public"],
-                ipv6=[n["ip_address"] for n in nets.get("v6") or [] if n.get("type") == "public"],
-                created_at=d.get("created_at", ""),
-            ))
-        return out
+        nets = d.get("networks") or {}
+        size = d.get("size") or {}
+        return _server(
+            id=d.get("id"), name=d.get("name", ""), kind="Droplet",
+            status=status_map.get(d.get("status"), "unknown"), status_label=labels.get(d.get("status"), d.get("status", "")),
+            region=(d.get("region") or {}).get("name") or (d.get("region") or {}).get("slug", ""),
+            plan=d.get("size_slug", ""),
+            specs=f"{d.get('vcpus', '?')} vCPU · {round((d.get('memory') or 0) / 1024, 1):g} GB · {d.get('disk', '?')} GB",
+            price=f"${size['price_monthly']}/мес" if size.get("price_monthly") else "",
+            ipv4=[n["ip_address"] for n in nets.get("v4") or [] if n.get("type") == "public"],
+            ipv6=[n["ip_address"] for n in nets.get("v6") or [] if n.get("type") == "public"],
+            created_at=d.get("created_at", ""),
+        )
+
+    async def _all(self, path: str, key: str) -> list[dict]:
+        items, page = [], 1
+        while True:
+            data = await self._get(path, per_page=200, page=page)
+            items += data.get(key) or []
+            if not ((data.get("links") or {}).get("pages") or {}).get("next"):
+                return items
+            page += 1
+
+    async def servers(self) -> list[dict]:
+        return [self._droplet(d) for d in await self._all("/droplets", "droplets")]
+
+    async def create_options(self, project: str | None = None) -> dict:
+        regions, sizes, keys = await asyncio.gather(
+            self._all("/regions", "regions"), self._all("/sizes", "sizes"), self._all("/account/keys", "ssh_keys"))
+        plans = sorted((s for s in sizes if s.get("available")), key=lambda s: (s.get("price_monthly") or 0, s["slug"]))
+        return {
+            "projects": None, "project": None, "ssh_multiple": True,
+            "regions": [{"id": r["slug"], "name": f"{r.get('name', r['slug'])} ({r['slug']})"}
+                        for r in regions if r.get("available")],
+            "plans": [{"id": s["slug"], "label": s["slug"],
+                       "specs": f"{s.get('vcpus')} vCPU · {round((s.get('memory') or 0) / 1024, 1):g} GB · {s.get('disk')} GB"
+                                + (f" · {s['transfer']:g} TB трафика" if s.get("transfer") else ""),
+                       "price": f"${s['price_monthly']:g}/мес" if s.get("price_monthly") else "",
+                       "regions": s.get("regions") or []} for s in plans],
+            "ssh_keys": [{"id": str(k["id"]), "name": k.get("name") or k.get("fingerprint", "")} for k in keys],
+        }
+
+    async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
+                            project: str | None = None) -> str:
+        data = await self._request("POST", "/droplets", json={
+            "name": name, "region": region, "size": plan, "image": self.image, "ipv6": True, "monitoring": True,
+            "ssh_keys": [int(k) if k.isdigit() else k for k in ssh_keys], "user_data": user_data,
+            "tags": ["vpn-admin"],
+        })
+        return str((data.get("droplet") or {})["id"])
+
+    async def get_server(self, server_id: str, project: str | None = None) -> dict:
+        return self._droplet((await self._get(f"/droplets/{server_id}")).get("droplet") or {})
+
+    async def delete_server(self, server_id: str, project: str | None = None) -> None:
+        await self._request("DELETE", f"/droplets/{server_id}")
 
 
 class OVHcloud:
-    """Classic OVH API keys: every call is signed with the application secret and consumer key."""
+    """Classic OVH API keys: every call is signed with the application secret and consumer key.
+    New servers are Public Cloud instances (hourly billing); classic VPS can only be ordered, not created."""
     title = "OVHcloud"
+    images = ("Ubuntu 24.04", "Ubuntu 22.04")
+    instance_labels = {"ACTIVE": "Работает", "SHUTOFF": "Выключен", "BUILD": "Создаётся", "REBOOT": "Перезагрузка",
+                       "HARD_REBOOT": "Перезагрузка", "RESCUE": "Rescue", "ERROR": "Ошибка", "SHELVED": "Отложен",
+                       "SHELVED_OFFLOADED": "Отложен", "STOPPED": "Выключен", "SUSPENDED": "Приостановлен"}
 
     def __init__(self, credentials: dict[str, str]):
         endpoint = credentials.get("endpoint") or "ovh-eu"
@@ -195,9 +239,9 @@ class OVHcloud:
     async def close(self) -> None:
         await self.http.aclose()
 
-    async def _send(self, method: str, url: str, headers: dict | None = None) -> httpx.Response:
+    async def _send(self, method: str, url: str, headers: dict | None = None, content: str = "") -> httpx.Response:
         try:
-            return await self.http.request(method, url, headers=headers)
+            return await self.http.request(method, url, headers=headers, content=content or None)
         except httpx.HTTPError as exc:
             raise HosterError(f"OVHcloud недоступен: {exc}") from exc
 
@@ -210,18 +254,23 @@ class OVHcloud:
             self._time_delta = int(resp.text) - int(time.time())
         return int(time.time()) + self._time_delta
 
-    async def _get(self, path: str) -> Any:
+    async def _request(self, method: str, path: str, body: dict | None = None) -> Any:
         url = f"{self.base}{path}"
+        content = json.dumps(body, separators=(",", ":")) if body is not None else ""
         ts = str(await self._timestamp())
         signature = "$1$" + hashlib.sha1(
-            "+".join([self.app_secret, self.consumer_key, "GET", url, "", ts]).encode()).hexdigest()
-        resp = await self._send("GET", url, headers={
-            "X-Ovh-Application": self.app_key, "X-Ovh-Consumer": self.consumer_key,
-            "X-Ovh-Timestamp": ts, "X-Ovh-Signature": signature,
-        })
+            "+".join([self.app_secret, self.consumer_key, method, url, content, ts]).encode()).hexdigest()
+        headers = {"X-Ovh-Application": self.app_key, "X-Ovh-Consumer": self.consumer_key,
+                   "X-Ovh-Timestamp": ts, "X-Ovh-Signature": signature}
+        if content:
+            headers["Content-Type"] = "application/json"
+        resp = await self._send(method, url, headers=headers, content=content)
         if resp.status_code >= 400:
             raise _http_error(resp, self.title)
-        return resp.json()
+        return resp.json() if resp.content else None
+
+    async def _get(self, path: str) -> Any:
+        return await self._request("GET", path)
 
     async def account(self) -> dict:
         me = await self._get("/me")
@@ -256,29 +305,81 @@ class OVHcloud:
 
         return list(await asyncio.gather(*(one(n) for n in names)))
 
+    def _instance(self, i: dict) -> dict:
+        status = i.get("status", "")
+        addrs = [a for a in i.get("ipAddresses") or [] if a.get("type") == "public"]
+        return _server(
+            id=i.get("id"), name=i.get("name", ""), kind="Public Cloud",
+            status="running" if status == "ACTIVE" else "error" if status == "ERROR"
+            else "stopped" if status in ("SHUTOFF", "STOPPED", "SHELVED", "SHELVED_OFFLOADED", "SUSPENDED") else "pending",
+            status_label=self.instance_labels.get(status, status), region=i.get("region", ""),
+            plan=(i.get("planCode") or "").split(".")[0], created_at=i.get("created", ""),
+            ipv4=[a["ip"] for a in addrs if a.get("version") == 4],
+            ipv6=[a["ip"] for a in addrs if a.get("version") == 6],
+        )
+
     async def _cloud(self) -> list[dict]:
         projects = await self._get("/cloud/project")
-        labels = {"ACTIVE": "Работает", "SHUTOFF": "Выключен", "BUILD": "Создаётся", "REBOOT": "Перезагрузка",
-                  "HARD_REBOOT": "Перезагрузка", "RESCUE": "Rescue", "ERROR": "Ошибка", "SHELVED": "Отложен",
-                  "SHELVED_OFFLOADED": "Отложен", "STOPPED": "Выключен", "SUSPENDED": "Приостановлен"}
 
         async def project(pid: str) -> list[dict]:
-            out = []
-            for i in await self._get(f"/cloud/project/{pid}/instance"):
-                status = i.get("status", "")
-                addrs = [a for a in i.get("ipAddresses") or [] if a.get("type") == "public"]
-                out.append(_server(
-                    id=i.get("id"), name=i.get("name", ""), kind="Public Cloud",
-                    status="running" if status == "ACTIVE" else "error" if status == "ERROR"
-                    else "stopped" if status in ("SHUTOFF", "STOPPED", "SHELVED", "SHELVED_OFFLOADED", "SUSPENDED") else "pending",
-                    status_label=labels.get(status, status), region=i.get("region", ""),
-                    plan=(i.get("planCode") or "").split(".")[0], created_at=i.get("created", ""),
-                    ipv4=[a["ip"] for a in addrs if a.get("version") == 4],
-                    ipv6=[a["ip"] for a in addrs if a.get("version") == 6],
-                ))
-            return out
+            return [self._instance(i) for i in await self._get(f"/cloud/project/{pid}/instance")]
 
         return [s for chunk in await asyncio.gather(*(project(p) for p in projects)) for s in chunk]
+
+    async def create_options(self, project: str | None = None) -> dict:
+        ids = await self._get("/cloud/project")
+        if not ids:
+            raise HosterError("В аккаунте OVHcloud нет проектов Public Cloud: создайте проект в панели OVHcloud "
+                              "(Public Cloud → Create project), серверы создаются в нём")
+        infos = await asyncio.gather(*(self._get(f"/cloud/project/{p}") for p in ids))
+        projects = [{"id": p, "name": info.get("description") or p} for p, info in zip(ids, infos)]
+        project = project if project in ids else ids[0]
+        regions, flavors, keys = await asyncio.gather(
+            self._get(f"/cloud/project/{project}/region"), self._get(f"/cloud/project/{project}/flavor"),
+            self._get(f"/cloud/project/{project}/sshkey"))
+        plans: dict[str, dict] = {}
+        for f in flavors:
+            if f.get("osType") not in (None, "linux") or not f.get("available", True):
+                continue
+            plan = plans.setdefault(f["name"], {
+                "id": f["name"], "label": f["name"], "price": "почасовая оплата", "regions": [],
+                "specs": f"{f.get('vcpus')} vCPU · {round((f.get('ram') or 0) / 1024, 1):g} GB · {f.get('disk')} GB",
+                "_size": (f.get("vcpus") or 0, f.get("ram") or 0)})
+            plan["regions"].append(f.get("region"))
+        ordered = sorted(plans.values(), key=lambda p: (p["_size"], p["id"]))  # smallest first
+        for plan in ordered:
+            del plan["_size"]
+        return {
+            "projects": projects, "project": project, "ssh_multiple": False,
+            "regions": [{"id": r, "name": r} for r in sorted(regions)],
+            "plans": ordered,
+            "ssh_keys": [{"id": k["id"], "name": k.get("name") or k["id"]} for k in keys],
+        }
+
+    async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
+                            project: str | None = None) -> str:
+        if not project:
+            raise HosterError("Не выбран проект Public Cloud OVHcloud")
+        flavors, images = await asyncio.gather(
+            self._get(f"/cloud/project/{project}/flavor?region={region}"),
+            self._get(f"/cloud/project/{project}/image?osType=linux&region={region}"))
+        flavor = next((f for f in flavors if f.get("name") == plan and f.get("region") == region), None)
+        if not flavor:
+            raise HosterError(f"Тариф {plan} недоступен в регионе {region}")
+        image = next((i for want in self.images for i in images if i.get("name") == want), None)
+        if not image:
+            raise HosterError(f"В регионе {region} нет образа Ubuntu 24.04 / 22.04")
+        body = {"name": name, "region": region, "flavorId": flavor["id"], "imageId": image["id"],
+                "userData": user_data, "monthlyBilling": False}
+        if ssh_keys:
+            body["sshKeyId"] = ssh_keys[0]  # OVH takes a single key per instance
+        return str((await self._request("POST", f"/cloud/project/{project}/instance", body))["id"])
+
+    async def get_server(self, server_id: str, project: str | None = None) -> dict:
+        return self._instance(await self._get(f"/cloud/project/{project}/instance/{server_id}"))
+
+    async def delete_server(self, server_id: str, project: str | None = None) -> None:
+        await self._request("DELETE", f"/cloud/project/{project}/instance/{server_id}")
 
 
 CLIENTS = {"digitalocean": DigitalOcean, "ovh": OVHcloud}
@@ -311,6 +412,19 @@ def public(hoster: db.Hoster) -> dict:
         "credentials": {f["key"]: hoster.credentials.get(f["key"], "") for f in fields if not f.get("secret")},
         "secrets_set": [f["key"] for f in fields if f.get("secret") and hoster.credentials.get(f["key"])],
     }
+
+
+def client_for(hoster: db.Hoster):
+    _check_provider(hoster.provider)
+    return CLIENTS[hoster.provider](hoster.credentials)
+
+
+async def create_options(hoster: db.Hoster, project: str | None = None) -> dict:
+    client = client_for(hoster)
+    try:
+        return await client.create_options(project)
+    finally:
+        await client.close()
 
 
 async def check(provider: str, credentials: dict[str, str]) -> dict:

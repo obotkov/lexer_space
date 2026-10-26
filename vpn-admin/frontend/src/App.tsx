@@ -73,6 +73,8 @@ export function App() {
     if (user) api.checkUpdate().then(setUpdateCheck, () => undefined);
   }, [user]);
 
+  const refreshOverview = useCallback(() => load(true), [load]);
+
   const go = (id: TabId) => {
     window.location.hash = `#/${id}`;
   };
@@ -139,7 +141,7 @@ export function App() {
             {tab === "subscriptions" && <Subscriptions data={data} onChanged={() => load(true)} />}
             {tab === "users" && <Users data={data} onChanged={() => load(true)} />}
             {tab === "servers" && <Servers panels={data.panels} onChanged={() => load(true)} />}
-            {tab === "hosters" && <Hosters panels={data.panels} />}
+            {tab === "hosters" && <Hosters panels={data.panels} onChanged={refreshOverview} />}
           </>
         )}
       </main>

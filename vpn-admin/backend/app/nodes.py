@@ -84,7 +84,7 @@ async def latest_panel_version() -> str | None:
     return _latest["version"]
 
 
-async def _main_panel(panel_id: int):
+async def main_panel(panel_id: int):
     panel = db.get_panel(panel_id)
     if not panel:
         raise NodeError("Сервер не найден")
@@ -135,7 +135,7 @@ async def list_all() -> dict[str, Any]:
 
 
 async def _call(panel_id: int, action) -> Any:
-    _, xui = await _main_panel(panel_id)
+    _, xui = await main_panel(panel_id)
     try:
         result = await action(xui)
     except XUIError as exc:
@@ -168,7 +168,7 @@ async def probe(panel_id: int, node_id: int) -> dict[str, Any]:
 
 async def test(panel_id: int, body: NodeIn, node_id: int = 0) -> dict[str, Any]:
     """Unsaved connection check. On edit with an empty token the panel uses the stored one."""
-    _, xui = await _main_panel(panel_id)
+    _, xui = await main_panel(panel_id)
     try:
         return await xui.v3_node_test(_to_request(body, node_id))
     except XUIError as exc:
@@ -176,7 +176,7 @@ async def test(panel_id: int, body: NodeIn, node_id: int = 0) -> dict[str, Any]:
 
 
 async def inbound_options(panel_id: int, body: NodeIn, node_id: int = 0) -> list[dict[str, Any]]:
-    _, xui = await _main_panel(panel_id)
+    _, xui = await main_panel(panel_id)
     try:
         return await xui.v3_node_inbounds(_to_request(body, node_id))
     except XUIError as exc:

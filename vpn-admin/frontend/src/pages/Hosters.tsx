@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { api, type HosterAccount, type HosterForm, type HosterInfo, type HosterProvider, type HosterServer, type PanelInfo } from "../api";
+import { api, type HosterAccount, type HosterForm, type HosterInfo, type HosterProvider, type HosterServer, type PanelInfo, type Provision } from "../api";
+import { CreateServerDialog } from "../components/CreateServerDialog";
+import { Provisions } from "../components/Provisions";
 import { Empty, StatCard } from "../components/ui";
+
+const PROVISION_POLL_MS = 5000;
 
 const STATUS_CLASS: Record<HosterServer["status"], string> = {
   running: "dot-on",
@@ -30,12 +34,14 @@ function adminIndex(panels: PanelInfo[]): Map<string, string> {
 }
 
 /** Hosting accounts (DigitalOcean, OVHcloud…) whose API keys let the admin see and later create servers. */
-export function Hosters({ panels }: { panels: PanelInfo[] }) {
+export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged: () => void }) {
   const [providers, setProviders] = useState<Record<string, HosterProvider> | null>(null);
   const [accounts, setAccounts] = useState<HosterInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<HosterInfo | "new" | null>(null);
+  const [creating, setCreating] = useState<HosterInfo | null>(null);
+  const [provisions, setProvisions] = useState<Provision[]>([]);
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -49,10 +55,25 @@ export function Hosters({ panels }: { panels: PanelInfo[] }) {
     }
   }, []);
 
+  const loadProvisions = useCallback(() => api.provisions().then(setProvisions, (e) => setError((e as Error).message)), []);
+
   useEffect(() => {
     api.hosterProviders().then(setProviders, (e) => setError((e as Error).message));
     load();
-  }, [load]);
+    loadProvisions();
+  }, [load, loadProvisions]);
+
+  // follow running jobs; when one ends, the new server and node show up elsewhere too
+  const running = provisions.filter((p) => p.state === "running").length;
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(loadProvisions, PROVISION_POLL_MS);
+    return () => {
+      clearInterval(timer);
+      load(true);
+      onChanged();
+    };
+  }, [running, loadProvisions, load, onChanged]);
 
   const remove = async (h: HosterInfo) => {
     if (!confirm(`Удалить аккаунт «${h.name}» из админки? Ключи будут стёрты, серверы у хостинга не пострадают.`)) return;
@@ -91,14 +112,48 @@ export function Hosters({ panels }: { panels: PanelInfo[] }) {
 
       {error && <div className="notice notice-bad small">{error}</div>}
 
+      {provisions.length > 0 && (
+        <Provisions
+          items={provisions}
+          accounts={accounts}
+          onChanged={() => {
+            loadProvisions();
+            load(true);
+          }}
+        />
+      )}
+
+      {provisions.length > 0 && accounts.length > 0 && <h2 className="section-title">Аккаунты</h2>}
+
       {accounts.length === 0 ? (
         <Empty>
           Добавьте API-ключ хостинга: админка покажет серверы аккаунта, а дальше через него можно будет заказывать новые серверы под VPN.
         </Empty>
       ) : (
         accounts.map((h) => (
-          <AccountBlock key={h.id} hoster={h} provider={providers[h.provider]} index={index} onEdit={() => setEditing(h)} onDelete={() => remove(h)} />
+          <AccountBlock
+            key={h.id}
+            hoster={h}
+            provider={providers[h.provider]}
+            index={index}
+            onCreate={() => setCreating(h)}
+            onEdit={() => setEditing(h)}
+            onDelete={() => remove(h)}
+          />
         ))
+      )}
+
+      {creating && (
+        <CreateServerDialog
+          hoster={creating}
+          providerTitle={providers[creating.provider]?.title ?? creating.provider}
+          panels={panels}
+          onClose={() => setCreating(null)}
+          onStarted={() => {
+            setCreating(null);
+            loadProvisions();
+          }}
+        />
       )}
 
       {editing && (
@@ -120,12 +175,14 @@ function AccountBlock({
   hoster: h,
   provider,
   index,
+  onCreate,
   onEdit,
   onDelete,
 }: {
   hoster: HosterInfo;
   provider: HosterProvider | undefined;
   index: Map<string, string>;
+  onCreate: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -146,6 +203,11 @@ function AccountBlock({
         <div className="hoster-actions">
           {h.ok ? <span className="badge badge-active">Ключ работает</span> : <span className="badge badge-expired">Ошибка</span>}
           {h.account?.balance && <span className="badge badge-disabled">{h.account.balance}</span>}
+          {h.ok && (
+            <button className="btn btn-small btn-primary" onClick={onCreate}>
+              + Создать сервер
+            </button>
+          )}
           <button className="btn btn-small" onClick={onEdit}>
             Изменить
           </button>
