@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 from typing import Any
 
@@ -100,7 +101,8 @@ OVH_ERROR_HINTS = [
     ("credential does not exist", "NOT_CREDENTIAL", "Consumer Key не найден"),
     ("credential is not valid", "INVALID_CREDENTIAL",
      "Consumer Key недействителен: истёк срок или его не подтвердили входом в аккаунт OVHcloud"),
-    ("has not been granted", "NOT_GRANTED_CALL", "у Consumer Key нет прав на этот запрос"),
+    ("has not been granted", "NOT_GRANTED_CALL", "у Consumer Key нет прав на этот запрос. Создайте новый ключ по "
+     "ссылке «Получить ключ»: она запрашивает права GET/POST/PUT/DELETE на /*"),
     ("query out of time", "QUERY_TIME_OUT", "время на сервере админки сильно расходится с OVHcloud"),
 ]
 
@@ -303,11 +305,44 @@ class OVHcloud:
     async def _get(self, path: str) -> Any:
         return await self._request("GET", path)
 
+    # (method, sample path, what to show) for every call the admin makes; a consumer key carries
+    # rules like "GET /cloud/*", so a key made with narrow rights fails in the middle of the work
+    REQUIRED_CALLS = [
+        ("GET", "/cloud/project/p/instance", "GET /cloud/*"),
+        ("POST", "/cloud/project/p/instance", "POST /cloud/*"),
+        ("DELETE", "/cloud/project/p/instance/i", "DELETE /cloud/*"),
+    ]
+
+    @staticmethod
+    def _granted(rules: list[dict], method: str, path: str) -> bool:
+        return any(r.get("method") == method and re.fullmatch(re.escape(r.get("path", "")).replace(r"\*", ".*"), path)
+                   for r in rules)
+
     async def account(self) -> dict:
-        me = await self._get("/me")
+        cred = await self._get("/auth/currentCredential")
+        if cred.get("status") not in (None, "validated"):
+            raise HosterError(f"OVHcloud: Consumer Key не подтверждён (статус {cred.get('status')}): откройте ссылку "
+                              "подтверждения и войдите в аккаунт OVHcloud, или создайте ключ заново")
+        rules = cred.get("rules") or []
+        missing = [label for method, path, label in self.REQUIRED_CALLS if not self._granted(rules, method, path)]
+        if missing:
+            granted = ", ".join(f"{r.get('method')} {r.get('path')}" for r in rules) or "никаких"
+            raise HosterError(f"OVHcloud: у Consumer Key не хватает прав: {', '.join(missing)} (сейчас: {granted}). "
+                              "Создайте новый ключ по ссылке «Получить ключ»: она запрашивает права "
+                              "GET/POST/PUT/DELETE на /*", "NOT_GRANTED_CALL")
+        try:  # account details are nice to have, not required
+            me = await self._get("/me")
+        except HosterError as exc:
+            if exc.code != "NOT_GRANTED_CALL":
+                raise
+            me = {}
         name = " ".join(x for x in (me.get("firstname"), me.get("name")) if x) or me.get("organisation", "")
-        return {"login": me.get("nichandle", ""), "name": name, "status": me.get("state", ""), "balance": None,
-                "limits": f"{me.get('email', '')}" + (f" · {me['country']}" if me.get("country") else "")}
+        expires = (cred.get("expiration") or "")[:10]
+        rights = "права ключа: " + ", ".join(f"{r.get('method')} {r.get('path')}" for r in rules)
+        return {"login": me.get("nichandle", ""), "name": name if me else "без доступа к данным аккаунта (/me)",
+                "status": me.get("state", ""), "balance": None,
+                "limits": " · ".join(x for x in (me.get("email", ""), me.get("country", ""),
+                                                 "" if me else rights, f"ключ до {expires}" if expires else "") if x)}
 
     async def servers(self) -> list[dict]:
         vps, cloud = await asyncio.gather(self._vps(), self._cloud(), return_exceptions=True)

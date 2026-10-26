@@ -124,7 +124,7 @@ nginx на домене показывает обычный сайт, по ко�
 | Хостинг | Что нужно | Где взять |
 |---|---|---|
 | DigitalOcean | Personal Access Token | [Control Panel → API → Tokens](https://cloud.digitalocean.com/account/api/tokens). Для просмотра хватит Read, для создания серверов нужен Full Access |
-| OVHcloud | регион API, Application Key, Application Secret, Consumer Key. Регион — по стране регистрации аккаунта: Европа — eu.api.ovh.com, США — api.us.ovhcloud.com, Канада и остальной мир — ca.api.ovh.com. Если ключ создан на другом API, админка подскажет, какой регион выбрать | все три ключа сразу выдаёт [createToken](https://eu.api.ovh.com/createToken/?GET=/*&POST=/*&PUT=/*&DELETE=/*) (для CA и US ссылка своя, она есть в форме). Срок действия — Unlimited |
+| OVHcloud | регион API, Application Key, Application Secret, Consumer Key. Регион — по стране регистрации аккаунта: Европа — eu.api.ovh.com, США — api.us.ovhcloud.com, Канада и остальной мир — ca.api.ovh.com. Если ключ создан на другом API, админка подскажет, какой регион выбрать. Consumer Key должен иметь права хотя бы GET/POST/DELETE на `/cloud/*` (ссылка в форме запрашивает GET/POST/PUT/DELETE на `/*`); при проверке админка читает права ключа и называет недостающие | все три ключа сразу выдаёт [createToken](https://eu.api.ovh.com/createToken/?GET=/*&POST=/*&PUT=/*&DELETE=/*) (для CA и US ссылка своя, она есть в форме). Срок действия — Unlimited |
 
 При сохранении ключ сразу проверяется: неработающий ключ админка не сохранит. Ключи хранятся в базе зашифрованными и наружу не отдаются; при изменении аккаунта секретные поля можно оставить пустыми, тогда останутся прежние.
 
