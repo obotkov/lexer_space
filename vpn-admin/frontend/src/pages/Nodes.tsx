@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type NodesData, type NodesPanel, type PanelInfo, type XNode } from "../api";
 import { NodeDialog, Switch } from "../components/NodeDialog";
 import { Empty, StatCard } from "../components/ui";
-import { formatBytes, formatDateTime, formatUptime } from "../format";
+import { formatDateTime, formatSpeed, formatUptime } from "../format";
 
 const REFRESH_MS = 30_000;
 
@@ -191,7 +191,7 @@ function PanelNodes({
                 <th className="num">Аптайм</th>
                 <th className="num">Задержка</th>
                 <th className="num">Онлайн</th>
-                <th className="num">Трафик</th>
+                <th className="num">Скорость</th>
                 <th></th>
               </tr>
             </thead>
@@ -230,7 +230,16 @@ function PanelNodes({
                     <td className="num">
                       {n.online} / {n.clients}
                     </td>
-                    <td className="num small">{formatBytes(n.net_up + n.net_down)}</td>
+                    <td className="num small">
+                      {online ? (
+                        <>
+                          ↓ {formatSpeed(n.net_down)}
+                          <div className="muted">↑ {formatSpeed(n.net_up)}</div>
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                     <td>
                       <div className="row-actions">
                         <button className="icon-btn" title="Проверить связь" disabled={busy} onClick={() => onProbe(n)}>

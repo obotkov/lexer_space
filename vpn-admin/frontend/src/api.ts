@@ -29,9 +29,20 @@ export interface PanelInfo extends Panel {
   api_version: "v3" | "legacy" | null;
   status: PanelStatus | null;
   nodes: number;
+  /** traffic of all inbounds of the panel, its nodes' included */
+  up: number;
+  down: number;
   clients: number;
   online: number;
   sub_base: string;
+  /** child servers (nodes) of a 3x-ui v3 main panel */
+  children: ChildNode[];
+}
+
+/** A node as shown on the overview: heartbeat stats plus traffic summed over the inbounds it hosts. */
+export interface ChildNode extends XNode {
+  up: number;
+  down: number;
 }
 
 export interface Node {
@@ -289,6 +300,7 @@ export interface XNode {
   xray_error: string;
   panel_version: string;
   update_available: boolean;
+  /** current throughput, bytes/sec */
   net_up: number;
   net_down: number;
   inbounds: number;

@@ -15,6 +15,7 @@ page, in which case we log in again and retry once.
 """
 
 import json
+import re
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -284,6 +285,49 @@ def v3_record_to_client(record: dict) -> dict:
     if isinstance(record.get("reverse"), dict):
         client["reverse"] = record["reverse"]
     return client
+
+
+def node_view(node: dict[str, Any], latest: str | None) -> dict[str, Any]:
+    """NodeView of /panel/api/nodes/list in snake_case. net_up/net_down are throughput in bytes/sec."""
+    version = node.get("panelVersion") or ""
+    return {
+        "id": node.get("id"),
+        "name": node.get("name", ""),
+        "remark": node.get("remark", ""),
+        "scheme": node.get("scheme", "https"),
+        "address": node.get("address", ""),
+        "port": node.get("port"),
+        "base_path": node.get("basePath", "/"),
+        "enable": bool(node.get("enable", True)),
+        "status": node.get("status") or "unknown",
+        "last_error": node.get("lastError") or "",
+        "last_heartbeat": node.get("lastHeartbeat") or 0,
+        "latency_ms": node.get("latencyMs"),
+        "cpu": node.get("cpuPct"),
+        "mem": node.get("memPct"),
+        "uptime": node.get("uptimeSecs"),
+        "xray_version": node.get("xrayVersion") or "",
+        "xray_state": node.get("xrayState") or "",
+        "xray_error": node.get("xrayError") or "",
+        "panel_version": version,
+        "update_available": bool(latest and version and version_tuple(version) < version_tuple(latest)),
+        "net_up": node.get("netUp") or 0,
+        "net_down": node.get("netDown") or 0,
+        "inbounds": node.get("inboundCount") or 0,
+        "clients": node.get("clientCount") or 0,
+        "online": node.get("onlineCount") or 0,
+        "allow_private_address": bool(node.get("allowPrivateAddress")),
+        "tls_verify_mode": node.get("tlsVerifyMode") or "verify",
+        "pinned_cert_sha256": node.get("pinnedCertSha256") or "",
+        "has_api_token": bool(node.get("hasApiToken")),
+        "inbound_sync_mode": node.get("inboundSyncMode") or "all",
+        "inbound_tags": node.get("inboundTags") or [],
+        "transitive": bool(node.get("transitive")),
+    }
+
+
+def version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"\d+", version)[:3])
 
 
 def parse_json_field(value: Any) -> dict:

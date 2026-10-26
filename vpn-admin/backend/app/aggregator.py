@@ -11,7 +11,7 @@ from typing import Any
 
 from . import db
 from .config import settings
-from .xui import XUIClient, XUIError, parse_json_field, subscription_base
+from .xui import XUIClient, XUIError, node_view, parse_json_field, subscription_base
 
 
 class ClientPool:
@@ -65,7 +65,7 @@ async def _fetch_panel(panel: db.Panel) -> dict[str, Any]:
     client = await pool.get(panel)
     result: dict[str, Any] = {"panel": panel, "ok": False, "error": None, "inbounds": [], "v3_clients": None,
                               "onlines": [], "status": None, "sub_base": panel.sub_base_url.strip(),
-                              "api_version": None}
+                              "api_version": None, "children": []}
     try:
         result["inbounds"] = await client.inbounds()
         if client.is_v3:
@@ -82,10 +82,15 @@ async def _fetch_panel(panel: db.Panel) -> dict[str, Any]:
         except XUIError:
             return None
 
-    onlines, status, sub_settings = await asyncio.gather(
-        optional(client.onlines()), optional(client.server_status()), optional(client.settings())
+    async def no_nodes():
+        return []
+
+    onlines, status, sub_settings, children = await asyncio.gather(
+        optional(client.onlines()), optional(client.server_status()), optional(client.settings()),
+        optional(client.v3_nodes() if client.is_v3 else no_nodes()),
     )
     result["onlines"] = onlines or []
+    result["children"] = children or []
     result["status"] = status
     if not result["sub_base"] and sub_settings:
         result["sub_base"] = subscription_base(client.host, sub_settings)
@@ -107,6 +112,23 @@ def _short_status(status: dict | None) -> dict | None:
         "xray_state": xray.get("state"),
         "xray_version": xray.get("version"),
     }
+
+
+def _children(item: dict[str, Any]) -> list[dict[str, Any]]:
+    """Nodes (child servers) of a v3 main panel; their traffic is the sum of the inbounds they host."""
+    traffic: dict[int, list[int]] = {}
+    for inbound in item["inbounds"]:
+        node_id = inbound.get("nodeId")
+        if node_id:
+            sums = traffic.setdefault(node_id, [0, 0])
+            sums[0] += int(inbound.get("up") or 0)
+            sums[1] += int(inbound.get("down") or 0)
+    children = []
+    for raw in item["children"]:
+        node = node_view(raw, None)
+        node["up"], node["down"] = traffic.get(node["id"], [0, 0])
+        children.append(node)
+    return children
 
 
 def _row(panel: db.Panel, api: str, inbounds: list[dict], *, email: str, protocol: str, secret: str, sub_id: str,
@@ -247,11 +269,14 @@ def build_overview(fetched: list[dict[str, Any]]) -> dict[str, Any]:
 
         panels_out.append({
             **panel.public(),
+            "children": _children(item),
             "ok": item["ok"],
             "error": item["error"],
             "api_version": item["api_version"],
             "status": _short_status(item["status"]),
             "nodes": len(item["inbounds"]),
+            "up": sum(int(i.get("up") or 0) for i in item["inbounds"]),
+            "down": sum(int(i.get("down") or 0) for i in item["inbounds"]),
             "clients": len(rows),
             "online": len(set(item["onlines"])),
             "sub_base": item["sub_base"],

@@ -10,7 +10,6 @@ server's address and API token.
 """
 
 import asyncio
-import re
 import time
 from typing import Any, Literal
 
@@ -19,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from . import db
 from .aggregator import overview_cache, pool
-from .xui import XUIError
+from .xui import XUIError, node_view
 
 LATEST_TTL = 6 * 3600
 _latest: dict[str, Any] = {"version": None, "at": 0.0}
@@ -69,48 +68,6 @@ def _to_request(body: NodeIn, node_id: int = 0) -> dict[str, Any]:
     return request
 
 
-def _view(node: dict[str, Any], latest: str | None) -> dict[str, Any]:
-    version = node.get("panelVersion") or ""
-    return {
-        "id": node.get("id"),
-        "name": node.get("name", ""),
-        "remark": node.get("remark", ""),
-        "scheme": node.get("scheme", "https"),
-        "address": node.get("address", ""),
-        "port": node.get("port"),
-        "base_path": node.get("basePath", "/"),
-        "enable": bool(node.get("enable", True)),
-        "status": node.get("status") or "unknown",
-        "last_error": node.get("lastError") or "",
-        "last_heartbeat": node.get("lastHeartbeat") or 0,
-        "latency_ms": node.get("latencyMs"),
-        "cpu": node.get("cpuPct"),
-        "mem": node.get("memPct"),
-        "uptime": node.get("uptimeSecs"),
-        "xray_version": node.get("xrayVersion") or "",
-        "xray_state": node.get("xrayState") or "",
-        "xray_error": node.get("xrayError") or "",
-        "panel_version": version,
-        "update_available": bool(latest and version and _version_tuple(version) < _version_tuple(latest)),
-        "net_up": node.get("netUp") or 0,
-        "net_down": node.get("netDown") or 0,
-        "inbounds": node.get("inboundCount") or 0,
-        "clients": node.get("clientCount") or 0,
-        "online": node.get("onlineCount") or 0,
-        "allow_private_address": bool(node.get("allowPrivateAddress")),
-        "tls_verify_mode": node.get("tlsVerifyMode") or "verify",
-        "pinned_cert_sha256": node.get("pinnedCertSha256") or "",
-        "has_api_token": bool(node.get("hasApiToken")),
-        "inbound_sync_mode": node.get("inboundSyncMode") or "all",
-        "inbound_tags": node.get("inboundTags") or [],
-        "transitive": bool(node.get("transitive")),
-    }
-
-
-def _version_tuple(version: str) -> tuple[int, ...]:
-    return tuple(int(x) for x in re.findall(r"\d+", version)[:3])
-
-
 async def latest_panel_version() -> str | None:
     """Latest 3x-ui release, to flag nodes that can be updated (cached, GitHub limits anonymous calls)."""
     if time.time() - _latest["at"] < LATEST_TTL:
@@ -153,7 +110,7 @@ async def list_all() -> dict[str, Any]:
             if not xui.is_v3:
                 out["supported"] = False
                 return out
-            out["nodes"] = [_view(n, latest) for n in await xui.v3_nodes()]
+            out["nodes"] = [node_view(n, latest) for n in await xui.v3_nodes()]
             out["ok"] = True
         except XUIError as exc:
             out["error"] = str(exc)

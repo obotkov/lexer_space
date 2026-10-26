@@ -8,6 +8,10 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 100 || i === 0 ? 0 : value >= 10 ? 1 : 2)} ${units[i]}`;
 }
 
+export function formatSpeed(bytesPerSec: number): string {
+  return `${formatBytes(bytesPerSec)}/s`;
+}
+
 export function formatLimit(total: number): string {
   return total > 0 ? formatBytes(total) : "∞";
 }

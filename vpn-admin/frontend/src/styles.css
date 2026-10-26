@@ -248,3 +248,35 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .nodes-table th, .nodes-table td { padding: 10px 8px; }
 .node-addr { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-error { max-width: 200px; word-break: break-word; }
+
+/* overview: main server and its nodes */
+.server-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.badge-main { background: rgba(79, 140, 255, 0.15); color: var(--accent); }
+.badge-node { background: rgba(138, 147, 166, 0.12); color: var(--muted); font-size: 11px; padding: 1px 6px; }
+.servers-table .server-main td { background: rgba(79, 140, 255, 0.04); }
+.servers-table .server-main td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.servers-table .server-child td { border-bottom-color: rgba(38, 44, 58, 0.6); }
+.child-name { flex-wrap: nowrap; align-items: stretch; padding-left: 6px; }
+.tree-line { position: relative; width: 16px; flex: none; margin: -10px 0; }
+.tree-line::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; border-left: 1px solid var(--border); }
+.tree-line::after { content: ""; position: absolute; left: 0; top: 19px; width: 12px; border-top: 1px solid var(--border); }
+.tree-last::before { bottom: auto; height: 20px; }
+
+/* overview: node traffic chart */
+.traffic-chart { gap: 14px; }
+.traffic-chart-note { margin: 0; }
+.traffic-bars { position: relative; display: flex; flex-direction: column; }
+.traffic-row { display: grid; grid-template-columns: minmax(90px, 200px) 1fr 80px; gap: 12px; align-items: center; padding: 5px 0; cursor: default; transition: opacity 0.15s; }
+.traffic-row.dimmed { opacity: 0.55; }
+.traffic-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.traffic-track { height: 12px; }
+.traffic-bar { height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+.traffic-value { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text); }
+.chart-tooltip {
+  position: absolute; z-index: 5; pointer-events: none; transform: translate(12px, -50%);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  font-size: 12px; line-height: 1.5; white-space: nowrap; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+@media (max-width: 600px) {
+  .traffic-row { grid-template-columns: minmax(70px, 110px) 1fr 64px; gap: 8px; }
+}
