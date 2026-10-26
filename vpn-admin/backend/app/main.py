@@ -1,12 +1,13 @@
 import logging
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import clients, db
+from . import clients, db, system
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -17,9 +18,10 @@ log = logging.getLogger("vpn_admin")
 
 
 def seed_panel_from_env() -> None:
-    if settings.xui_url and settings.xui_username and db.count_panels() == 0:
+    has_auth = settings.xui_api_token or settings.xui_username
+    if settings.xui_url and has_auth and db.count_panels() == 0:
         db.create_panel("Основной сервер", normalize_url(settings.xui_url), settings.xui_username,
-                        settings.xui_password, settings.xui_verify_tls, "")
+                        settings.xui_password, settings.xui_verify_tls, "", settings.xui_api_token)
         log.info("Added 3x-ui panel from env: %s", settings.xui_url)
 
 
@@ -74,24 +76,47 @@ async def me(request: Request):
 class PanelIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     url: str = Field(min_length=1)
-    username: str = Field(min_length=1)
+    auth_mode: Literal["password", "token"] = "password"
+    username: str = ""
     password: str = ""
+    api_token: str = ""
     verify_tls: bool = True
     sub_base_url: str = ""
 
 
 class PanelTestIn(BaseModel):
     url: str
-    username: str
+    auth_mode: Literal["password", "token"] = "password"
+    username: str = ""
     password: str = ""
+    api_token: str = ""
     verify_tls: bool = True
-    panel_id: int | None = None  # when editing: use the stored password if none given
+    panel_id: int | None = None  # when editing: use the stored secret if none given
 
 
-async def _test_connection(url: str, username: str, password: str, verify_tls: bool) -> dict:
-    client = XUIClient(url, username, password, verify_tls)
+def _resolve_secrets(body: PanelIn | PanelTestIn, stored: db.Panel | None) -> tuple[str, str]:
+    """(password, api_token) for a connection: empty fields fall back to what is stored."""
+    if body.auth_mode == "token":
+        token = body.api_token.strip() or (stored.api_token if stored else "")
+        if not token:
+            raise HTTPException(422, "Укажите API-токен 3x-ui")
+        return "", token
+    if not body.username.strip():
+        raise HTTPException(422, "Укажите логин 3x-ui")
+    password = body.password or (stored.password if stored else "")
+    if not password:
+        raise HTTPException(422, "Укажите пароль от 3x-ui")
+    return password, ""
+
+
+async def _test_connection(url: str, username: str, password: str, verify_tls: bool, api_token: str) -> dict:
+    client = XUIClient(url, username, password, verify_tls, api_token)
     try:
         inbounds = await client.inbounds()
+        if client.is_v3:
+            client_count = len(await client.v3_clients())
+        else:
+            client_count = sum(len(parse_json_field(i.get("settings")).get("clients") or []) for i in inbounds)
         try:
             status = await client.server_status()
         except XUIError:
@@ -100,8 +125,7 @@ async def _test_connection(url: str, username: str, password: str, verify_tls: b
         return {"ok": False, "error": str(exc)}
     finally:
         await client.close()
-    client_count = sum(len(parse_json_field(i.get("settings")).get("clients") or []) for i in inbounds)
-    return {"ok": True, "nodes": len(inbounds), "clients": client_count,
+    return {"ok": True, "nodes": len(inbounds), "clients": client_count, "api_version": client.api_version,
             "xray_version": (status.get("xray") or {}).get("version")}
 
 
@@ -112,20 +136,22 @@ async def panels_list():
 
 @app.post("/api/panels", dependencies=[Depends(require_admin)])
 async def panels_create(body: PanelIn):
-    if not body.password:
-        raise HTTPException(422, "Укажите пароль от 3x-ui")
-    panel = db.create_panel(body.name.strip(), normalize_url(body.url), body.username.strip(), body.password,
-                            body.verify_tls, body.sub_base_url.strip())
+    password, token = _resolve_secrets(body, None)
+    panel = db.create_panel(body.name.strip(), normalize_url(body.url), body.username.strip(), password,
+                            body.verify_tls, body.sub_base_url.strip(), token)
     overview_cache.invalidate()
     return panel.public()
 
 
 @app.put("/api/panels/{panel_id}", dependencies=[Depends(require_admin)])
 async def panels_update(panel_id: int, body: PanelIn):
-    panel = db.update_panel(panel_id, body.name.strip(), normalize_url(body.url), body.username.strip(),
-                            body.password or None, body.verify_tls, body.sub_base_url.strip())
-    if not panel:
+    stored = db.get_panel(panel_id)
+    if not stored:
         raise HTTPException(404, "Сервер не найден")
+    password, token = _resolve_secrets(body, stored)
+    # switching to password auth drops the token; the stored password stays as a fallback
+    panel = db.update_panel(panel_id, body.name.strip(), normalize_url(body.url), body.username.strip(),
+                            body.password or None, body.verify_tls, body.sub_base_url.strip(), token)
     await pool.drop(panel_id)
     overview_cache.invalidate()
     return panel.public()
@@ -142,11 +168,9 @@ async def panels_delete(panel_id: int):
 
 @app.post("/api/panels/test", dependencies=[Depends(require_admin)])
 async def panels_test(body: PanelTestIn):
-    password = body.password
-    if not password and body.panel_id:
-        stored = db.get_panel(body.panel_id)
-        password = stored.password if stored else ""
-    return await _test_connection(body.url, body.username, password, body.verify_tls)
+    stored = db.get_panel(body.panel_id) if body.panel_id else None
+    password, token = _resolve_secrets(body, stored)
+    return await _test_connection(body.url, body.username.strip(), password, body.verify_tls, token)
 
 
 # ---------- clients ----------
@@ -186,6 +210,31 @@ async def clients_reset(body: RefsIn):
 @app.post("/api/clients/delete", dependencies=[Depends(require_admin)])
 async def clients_delete(body: RefsIn):
     return {"results": await clients.delete_clients(body.refs)}
+
+
+# ---------- version & self-update ----------
+
+@app.get("/api/system/version", dependencies=[Depends(require_admin)])
+async def system_version():
+    return system.current_version()
+
+
+@app.get("/api/system/check-update", dependencies=[Depends(require_admin)])
+async def system_check_update(force: bool = False):
+    return await system.checker.check(force=force)
+
+
+@app.get("/api/system/update", dependencies=[Depends(require_admin)])
+async def system_update_status():
+    return system.read_status()
+
+
+@app.post("/api/system/update")
+async def system_update(user: str = Depends(require_admin)):
+    try:
+        return system.request_update(user)
+    except system.UpdateError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 # ---------- aggregated data ----------

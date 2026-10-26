@@ -93,7 +93,10 @@ export function CreateClientDialog({
         <label className="field">
           <span>Email / имя</span>
           <input className="input" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ivan" />
-          <small className="muted">Если выбрано несколько узлов одного сервера, к имени добавится -2, -3 и т. д.: 3x-ui требует уникальный email на весь сервер.</small>
+          <small className="muted">
+            В 3x-ui v3 создаётся один клиент на все выбранные узлы сервера. В 3x-ui 2.x email должен быть уникальным на весь сервер, поэтому на втором и следующих узлах к
+            имени добавится -2, -3 и т. д.
+          </small>
         </label>
 
         <div className="field">

@@ -162,6 +162,12 @@ export function ClientDialog({ clients, title, onClose, onChanged }: { clients: 
           </div>
         )}
 
+        {clients.some((c) => c.api === "v3") && (
+          <div className="notice notice-info small">
+            В 3x-ui v3 клиент один на все свои узлы: изменения, продление и удаление применяются сразу ко всем узлам, к которым он привязан.
+          </div>
+        )}
+
         <section className="modal-section">
           <h3>Действия</h3>
           <div className="action-row">

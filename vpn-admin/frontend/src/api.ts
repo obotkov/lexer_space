@@ -9,6 +9,8 @@ export interface PanelStatus {
   xray_version: string | null;
 }
 
+export type AuthMode = "password" | "token";
+
 export interface Panel {
   id: number;
   name: string;
@@ -17,11 +19,14 @@ export interface Panel {
   verify_tls: boolean;
   sub_base_url: string;
   created_at: number;
+  auth_mode: AuthMode;
 }
 
 export interface PanelInfo extends Panel {
   ok: boolean;
   error: string | null;
+  /** "v3" — 3x-ui 3.x (clients shared between inbounds), "legacy" — 2.x; null when unreachable */
+  api_version: "v3" | "legacy" | null;
   status: PanelStatus | null;
   nodes: number;
   clients: number;
@@ -51,7 +56,10 @@ export interface Node {
 export interface Client {
   panel_id: number;
   panel_name: string;
+  api: "v3" | "legacy";
   inbound_id: number;
+  inbound_ids: number[];
+  inbound_remarks: string[];
   inbound_remark: string;
   protocol: string;
   email: string;
@@ -114,8 +122,10 @@ export interface Overview {
 export interface PanelForm {
   name: string;
   url: string;
+  auth_mode: AuthMode;
   username: string;
   password: string;
+  api_token: string;
   verify_tls: boolean;
   sub_base_url: string;
 }
@@ -126,6 +136,41 @@ export interface TestResult {
   nodes?: number;
   clients?: number;
   xray_version?: string | null;
+  api_version?: "v3" | "legacy";
+}
+
+export interface VersionInfo {
+  version: string;
+  tree: string;
+  commit: string;
+  commit_date: string;
+  built_at: string;
+  repo: string;
+  branch: string;
+  path: string;
+  /** systemd watcher installed on the host: updates can be started from the admin */
+  updater: boolean;
+}
+
+export interface UpdateCheck {
+  checked_at: number;
+  current: VersionInfo;
+  error: string | null;
+  latest_version: string | null;
+  latest_tree: string | null;
+  update_available: boolean;
+  commits: { sha: string; date: string; url: string; message: string }[];
+}
+
+export type UpdateState = "idle" | "queued" | "running" | "done" | "failed" | "stale" | "unknown";
+
+export interface UpdateStatus {
+  state: UpdateState;
+  message?: string;
+  started_at?: number;
+  finished_at?: number | null;
+  requested_at?: number;
+  log: string;
 }
 
 export interface ClientRef {
@@ -214,4 +259,9 @@ export const api = {
     request<{ results: OpResult[] }>("POST", "/api/clients/extend", { refs, days }),
   resetTraffic: (refs: ClientRef[]) => request<{ results: OpResult[] }>("POST", "/api/clients/reset-traffic", { refs }),
   deleteClients: (refs: ClientRef[]) => request<{ results: OpResult[] }>("POST", "/api/clients/delete", { refs }),
+  version: () => request<VersionInfo>("GET", "/api/system/version"),
+  checkUpdate: (force = false) => request<UpdateCheck>("GET", `/api/system/check-update${force ? "?force=true" : ""}`),
+  updateStatus: () => request<UpdateStatus>("GET", "/api/system/update"),
+  startUpdate: () => request<UpdateStatus>("POST", "/api/system/update"),
+  health: () => request<{ ok: boolean }>("GET", "/api/health"),
 };

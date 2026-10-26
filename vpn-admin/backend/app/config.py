@@ -24,7 +24,12 @@ class Settings:
     xui_url: str
     xui_username: str
     xui_password: str
+    xui_api_token: str
     xui_verify_tls: bool
+    # Where updates come from: GitHub repository, branch and the project folder inside it
+    update_repo: str
+    update_branch: str
+    update_path: str
 
 
 def load_settings() -> Settings:
@@ -47,7 +52,11 @@ def load_settings() -> Settings:
         xui_url=os.getenv("XUI_URL", ""),
         xui_username=os.getenv("XUI_USERNAME", ""),
         xui_password=os.getenv("XUI_PASSWORD", ""),
+        xui_api_token=os.getenv("XUI_API_TOKEN", ""),
         xui_verify_tls=_bool("XUI_VERIFY_TLS", True),
+        update_repo=os.getenv("UPDATE_REPO", "obotkov/lexer_space"),
+        update_branch=os.getenv("UPDATE_BRANCH", "main"),
+        update_path=os.getenv("UPDATE_PATH", "vpn-admin"),
     )
 
 

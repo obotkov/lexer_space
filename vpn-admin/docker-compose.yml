@@ -1,6 +1,12 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:  # filled by update.sh
+        APP_TREE: ${APP_TREE:-}
+        APP_COMMIT: ${APP_COMMIT:-}
+        APP_COMMIT_DATE: ${APP_COMMIT_DATE:-}
+        APP_BUILT_AT: ${APP_BUILT_AT:-}
     image: vpn-admin:latest
     container_name: vpn-admin
     restart: unless-stopped

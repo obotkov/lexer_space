@@ -17,9 +17,15 @@ CREATE TABLE IF NOT EXISTS panels (
     password_enc  TEXT    NOT NULL,
     verify_tls    INTEGER NOT NULL DEFAULT 1,
     sub_base_url  TEXT    NOT NULL DEFAULT '',
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL,
+    api_token_enc TEXT    NOT NULL DEFAULT ''
 );
 """
+
+# Columns added after the first release: (name, definition)
+MIGRATIONS = [
+    ("api_token_enc", "TEXT NOT NULL DEFAULT ''"),
+]
 
 
 @dataclass
@@ -32,6 +38,11 @@ class Panel:
     verify_tls: bool
     sub_base_url: str
     created_at: int
+    api_token: str = ""
+
+    @property
+    def auth_mode(self) -> str:
+        return "token" if self.api_token else "password"
 
     def public(self) -> dict:
         return {
@@ -42,6 +53,7 @@ class Panel:
             "verify_tls": self.verify_tls,
             "sub_base_url": self.sub_base_url,
             "created_at": self.created_at,
+            "auth_mode": self.auth_mode,
         }
 
 
@@ -60,6 +72,10 @@ def init_db() -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(panels)")}
+        for name, definition in MIGRATIONS:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE panels ADD COLUMN {name} {definition}")
 
 
 def _row_to_panel(row: sqlite3.Row) -> Panel:
@@ -72,6 +88,7 @@ def _row_to_panel(row: sqlite3.Row) -> Panel:
         verify_tls=bool(row["verify_tls"]),
         sub_base_url=row["sub_base_url"],
         created_at=row["created_at"],
+        api_token=decrypt(row["api_token_enc"]) if row["api_token_enc"] else "",
     )
 
 
@@ -87,30 +104,31 @@ def get_panel(panel_id: int) -> Panel | None:
     return _row_to_panel(row) if row else None
 
 
-def create_panel(name: str, url: str, username: str, password: str, verify_tls: bool, sub_base_url: str) -> Panel:
+def create_panel(name: str, url: str, username: str, password: str, verify_tls: bool, sub_base_url: str,
+                 api_token: str = "") -> Panel:
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO panels (name, url, username, password_enc, verify_tls, sub_base_url, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (name, url, username, encrypt(password), int(verify_tls), sub_base_url, int(time.time())),
+            "INSERT INTO panels (name, url, username, password_enc, verify_tls, sub_base_url, created_at, "
+            "api_token_enc) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, url, username, encrypt(password), int(verify_tls), sub_base_url, int(time.time()),
+             encrypt(api_token) if api_token else ""),
         )
         panel_id = cur.lastrowid
     return get_panel(panel_id)
 
 
 def update_panel(panel_id: int, name: str, url: str, username: str, password: str | None, verify_tls: bool,
-                 sub_base_url: str) -> Panel | None:
+                 sub_base_url: str, api_token: str | None) -> Panel | None:
+    """password / api_token: None keeps the stored value, "" clears the token."""
+    fields = {"name": name, "url": url, "username": username, "verify_tls": int(verify_tls),
+              "sub_base_url": sub_base_url}
+    if password:
+        fields["password_enc"] = encrypt(password)
+    if api_token is not None:
+        fields["api_token_enc"] = encrypt(api_token) if api_token else ""
+    assignments = ", ".join(f"{k}=?" for k in fields)
     with connect() as conn:
-        if password:
-            conn.execute(
-                "UPDATE panels SET name=?, url=?, username=?, password_enc=?, verify_tls=?, sub_base_url=? WHERE id=?",
-                (name, url, username, encrypt(password), int(verify_tls), sub_base_url, panel_id),
-            )
-        else:
-            conn.execute(
-                "UPDATE panels SET name=?, url=?, username=?, verify_tls=?, sub_base_url=? WHERE id=?",
-                (name, url, username, int(verify_tls), sub_base_url, panel_id),
-            )
+        conn.execute(f"UPDATE panels SET {assignments} WHERE id=?", (*fields.values(), panel_id))
     return get_panel(panel_id)
 
 

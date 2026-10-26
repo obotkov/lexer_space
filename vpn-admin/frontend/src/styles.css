@@ -184,3 +184,18 @@ tbody tr:hover { background: var(--bg-hover); }
   border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg);
 }
 .node-option { color: var(--text); padding: 3px 0; }
+
+/* segmented control */
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; align-self: flex-start; }
+.segmented button { background: transparent; color: var(--muted); border: none; padding: 7px 14px; font: inherit; cursor: pointer; }
+.segmented button + button { border-left: 1px solid var(--border); }
+.segmented button.active { background: rgba(79, 140, 255, 0.18); color: var(--text); }
+.notice-info { background: rgba(79, 140, 255, 0.1); color: var(--text); }
+.nav-new { background: rgba(240, 180, 41, 0.2); color: var(--warn); }
+.log {
+  background: #0a0c10; border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5;
+  max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 12px 0 0;
+}
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+[hidden] { display: none !important; }

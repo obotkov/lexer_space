@@ -2,7 +2,9 @@ import { useState, type FormEvent } from "react";
 import { api, type PanelForm, type PanelInfo, type TestResult } from "../api";
 import { Empty } from "../components/ui";
 
-const EMPTY_FORM: PanelForm = { name: "", url: "", username: "", password: "", verify_tls: true, sub_base_url: "" };
+const EMPTY_FORM: PanelForm = { name: "", url: "", auth_mode: "token", username: "", password: "", api_token: "", verify_tls: true, sub_base_url: "" };
+
+const API_LABELS = { v3: "3x-ui v3", legacy: "3x-ui 2.x" } as const;
 
 export function Servers({ panels, onChanged }: { panels: PanelInfo[]; onChanged: () => void }) {
   const [editing, setEditing] = useState<PanelInfo | "new" | null>(null);
@@ -36,8 +38,10 @@ export function Servers({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
               </div>
               {!p.ok && <div className="error-text small">{p.error}</div>}
               <dl className="kv">
-                <dt>Логин</dt>
-                <dd>{p.username}</dd>
+                <dt>Вход</dt>
+                <dd>{p.auth_mode === "token" ? "API-токен" : `логин ${p.username}`}</dd>
+                <dt>Версия API</dt>
+                <dd>{p.api_version ? API_LABELS[p.api_version] : "—"}</dd>
                 <dt>Узлов / клиентов</dt>
                 <dd>
                   {p.nodes} / {p.clients}
@@ -79,7 +83,7 @@ export function Servers({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
 function ServerDialog({ panel, onClose, onSaved }: { panel: PanelInfo | null; onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState<PanelForm>(
     panel
-      ? { name: panel.name, url: panel.url, username: panel.username, password: "", verify_tls: panel.verify_tls, sub_base_url: panel.sub_base_url }
+      ? { name: panel.name, url: panel.url, auth_mode: panel.auth_mode, username: panel.username, password: "", api_token: "", verify_tls: panel.verify_tls, sub_base_url: panel.sub_base_url }
       : EMPTY_FORM,
   );
   const [test, setTest] = useState<TestResult | null>(null);
@@ -131,24 +135,54 @@ function ServerDialog({ panel, onClose, onSaved }: { panel: PanelInfo | null; on
           <input className="input" required value={form.url} onChange={(e) => set("url", e.target.value)} placeholder="https://1.2.3.4:2053/секретный-путь" />
           <small className="muted">Как в адресной строке браузера, вместе с webBasePath.</small>
         </label>
-        <div className="field-row">
-          <label className="field">
-            <span>Логин</span>
-            <input className="input" required value={form.username} onChange={(e) => set("username", e.target.value)} autoComplete="off" />
-          </label>
-          <label className="field">
-            <span>Пароль</span>
-            <input
-              className="input"
-              type="password"
-              required={!panel}
-              value={form.password}
-              onChange={(e) => set("password", e.target.value)}
-              placeholder={panel ? "не менять" : ""}
-              autoComplete="new-password"
-            />
-          </label>
+        <div className="field">
+          <span>Способ входа</span>
+          <div className="segmented">
+            <button type="button" className={form.auth_mode === "token" ? "active" : ""} onClick={() => set("auth_mode", "token")}>
+              API-токен
+            </button>
+            <button type="button" className={form.auth_mode === "password" ? "active" : ""} onClick={() => set("auth_mode", "password")}>
+              Логин и пароль
+            </button>
+          </div>
         </div>
+        {form.auth_mode === "token" ? (
+          <label className="field">
+            <span>API-токен</span>
+            <input
+              className="input mono"
+              type="password"
+              required={!(panel && panel.auth_mode === "token")}
+              value={form.api_token}
+              onChange={(e) => set("api_token", e.target.value)}
+              placeholder={panel && panel.auth_mode === "token" ? "не менять" : ""}
+              autoComplete="off"
+            />
+            <small className="muted">
+              3x-ui v3.0.2 и новее: Настройки → Безопасность → API Token. Нужна область <b>Admin</b>: остальные не дают управлять клиентами. С токеном не нужны CSRF и
+              двухфакторная авторизация.
+            </small>
+          </label>
+        ) : (
+          <div className="field-row">
+            <label className="field">
+              <span>Логин</span>
+              <input className="input" required value={form.username} onChange={(e) => set("username", e.target.value)} autoComplete="off" />
+            </label>
+            <label className="field">
+              <span>Пароль</span>
+              <input
+                className="input"
+                type="password"
+                required={!panel}
+                value={form.password}
+                onChange={(e) => set("password", e.target.value)}
+                placeholder={panel ? "не менять" : ""}
+                autoComplete="new-password"
+              />
+            </label>
+          </div>
+        )}
         <label className="field">
           <span>URL подписок (необязательно)</span>
           <input className="input" value={form.sub_base_url} onChange={(e) => set("sub_base_url", e.target.value)} placeholder="https://sub.example.com/sub/" />
@@ -161,13 +195,15 @@ function ServerDialog({ panel, onClose, onSaved }: { panel: PanelInfo | null; on
 
         {test && (
           <div className={`notice ${test.ok ? "notice-ok" : "notice-bad"}`}>
-            {test.ok ? `Подключено: узлов ${test.nodes}, клиентов ${test.clients}${test.xray_version ? `, Xray ${test.xray_version}` : ""}` : test.error}
+            {test.ok
+              ? `Подключено (${test.api_version ? API_LABELS[test.api_version] : "3x-ui"}): узлов ${test.nodes}, клиентов ${test.clients}${test.xray_version ? `, Xray ${test.xray_version}` : ""}`
+              : test.error}
           </div>
         )}
         {error && <div className="notice notice-bad">{error}</div>}
 
         <div className="modal-actions">
-          <button type="button" className="btn" onClick={runTest} disabled={busy || !form.url || !form.username}>
+          <button type="button" className="btn" onClick={runTest} disabled={busy || !form.url}>
             Проверить подключение
           </button>
           <span className="spacer" />

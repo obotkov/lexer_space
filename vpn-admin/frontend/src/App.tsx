@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type Overview as OverviewData } from "./api";
+import { api, type Overview as OverviewData, type UpdateCheck } from "./api";
 import { Login, Shield } from "./pages/Login";
 import { Nodes } from "./pages/Nodes";
 import { Overview } from "./pages/Overview";
 import { Servers } from "./pages/Servers";
 import { Subscriptions } from "./pages/Subscriptions";
+import { System } from "./pages/System";
 import { Users } from "./pages/Users";
 
 const TABS = [
@@ -13,6 +14,7 @@ const TABS = [
   { id: "subscriptions", title: "Подписки" },
   { id: "users", title: "Пользователи" },
   { id: "servers", title: "Серверы 3x-ui" },
+  { id: "system", title: "Система" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 
@@ -29,6 +31,7 @@ export function App() {
   const [data, setData] = useState<OverviewData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheck | null>(null);
 
   useEffect(() => {
     api.me().then((m) => setUser(m.username), () => setUser(null));
@@ -61,6 +64,11 @@ export function App() {
     return () => clearInterval(timer);
   }, [user, load]);
 
+  // background check (cached on the server for 30 minutes) to show the "new version" badge
+  useEffect(() => {
+    if (user) api.checkUpdate().then(setUpdateCheck, () => undefined);
+  }, [user]);
+
   const go = (id: TabId) => {
     window.location.hash = `#/${id}`;
   };
@@ -89,6 +97,7 @@ export function App() {
             <a key={t.id} href={`#/${t.id}`} className={`nav-item ${tab === t.id ? "active" : ""}`}>
               {t.title}
               {counts[t.id] !== undefined && <span className="nav-count">{counts[t.id]}</span>}
+              {t.id === "system" && updateCheck?.update_available && <span className="nav-count nav-new">новое</span>}
             </a>
           ))}
         </nav>
@@ -103,7 +112,7 @@ export function App() {
       <main className="content">
         <header className="topbar">
           <h1>{TABS.find((t) => t.id === tab)?.title}</h1>
-          <div className="topbar-right">
+          <div className="topbar-right" hidden={tab === "system"}>
             {data && <span className="muted small">обновлено {new Date(data.generated_at * 1000).toLocaleTimeString("ru-RU")}</span>}
             <button className="btn" onClick={() => load(true)} disabled={loading}>
               {loading ? "Обновление…" : "Обновить"}
@@ -111,11 +120,15 @@ export function App() {
           </div>
         </header>
 
-        {error && <div className="notice notice-bad">{error}</div>}
-        {!data ? (
+        {tab === "system" ? (
+          <System check={updateCheck} onCheck={setUpdateCheck} />
+        ) : error && !data ? (
+          <div className="notice notice-bad">{error}</div>
+        ) : !data ? (
           <div className="center muted">Загрузка данных с серверов…</div>
         ) : (
           <>
+            {error && <div className="notice notice-bad">{error}</div>}
             {tab === "overview" && <Overview data={data} onGoServers={() => go("servers")} />}
             {tab === "nodes" && <Nodes data={data} onChanged={() => load(true)} />}
             {tab === "subscriptions" && <Subscriptions data={data} onChanged={() => load(true)} />}

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# VPN Admin — установка/обновление одной командой.
+# VPN Admin — установка одной командой.
 #
 #   С GitHub:          curl -fsSL https://raw.githubusercontent.com/obotkov/lexer_space/main/vpn-admin/install.sh | sudo bash
 #   Из папки проекта:  sudo ./install.sh
 #
 # Всё можно передать переменными окружения, тогда вопросов не будет:
-#   ADMIN_USERNAME ADMIN_PASSWORD PORT DOMAIN XUI_URL XUI_USERNAME XUI_PASSWORD XUI_VERIFY_TLS
-set -euo pipefail
+#   ADMIN_USERNAME ADMIN_PASSWORD PORT DOMAIN
+#   XUI_URL XUI_API_TOKEN (или XUI_USERNAME + XUI_PASSWORD) XUI_VERIFY_TLS
+#
+# Повторный запуск обновляет код, пересобирает контейнеры и переустанавливает
+# автообновление; настройки из .env сохраняются.
 
 # The project lives in a subfolder of a larger repository; only that folder is checked out
 REPO_URL="${REPO_URL:-https://github.com/obotkov/lexer_space.git}"
@@ -21,7 +24,7 @@ die()  { echo "${c_red}xx${c_reset} $*" >&2; exit 1; }
 
 # Read from the terminal even when the script itself comes from `curl | bash`
 TTY=/dev/tty
-[ -r "$TTY" ] || TTY=/dev/null
+{ : < /dev/tty; } 2>/dev/null || TTY=/dev/null
 ask() {  # ask VAR "Question" "default"
   local var="$1" question="$2" default="${3:-}" answer
   if [ -n "${!var:-}" ]; then return; fi
@@ -38,44 +41,44 @@ ask_secret() {
 }
 rand() { tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$1" || true; }
 
-[ "$(id -u)" -eq 0 ] || die "Запустите от root: sudo $0"
+fetch_project() {
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
+  if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
+    PROJECT_DIR="$SCRIPT_DIR"
+  elif [ -f "$CLONE_DIR/$REPO_SUBDIR/docker-compose.yml" ]; then
+    PROJECT_DIR="$CLONE_DIR/$REPO_SUBDIR"
+  else
+    command -v git >/dev/null || { info "Ставлю git"; apt-get update -qq && apt-get install -y -qq git; }
+    info "Скачиваю $REPO_SUBDIR из $REPO_URL в $CLONE_DIR"
+    git clone --depth 1 --branch "$REPO_BRANCH" --filter=blob:none --sparse "$REPO_URL" "$CLONE_DIR"
+    git -C "$CLONE_DIR" sparse-checkout set "$REPO_SUBDIR"
+    PROJECT_DIR="$CLONE_DIR/$REPO_SUBDIR"
+    [ -f "$PROJECT_DIR/docker-compose.yml" ] || die "В репозитории нет папки $REPO_SUBDIR с проектом"
+    return
+  fi
+  if git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    info "Обновляю код"
+    git -C "$PROJECT_DIR" pull --ff-only || warn "Не удалось обновить код из git, продолжаю с текущей версией"
+  fi
+}
 
-# ---------- 1. project files ----------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
-  PROJECT_DIR="$SCRIPT_DIR"
-elif [ -f "$CLONE_DIR/$REPO_SUBDIR/docker-compose.yml" ]; then
-  PROJECT_DIR="$CLONE_DIR/$REPO_SUBDIR"
-else
-  command -v git >/dev/null || { info "Ставлю git"; apt-get update -qq && apt-get install -y -qq git; }
-  info "Скачиваю $REPO_SUBDIR из $REPO_URL в $CLONE_DIR"
-  git clone --depth 1 --branch "$REPO_BRANCH" --filter=blob:none --sparse "$REPO_URL" "$CLONE_DIR"
-  git -C "$CLONE_DIR" sparse-checkout set "$REPO_SUBDIR"
-  PROJECT_DIR="$CLONE_DIR/$REPO_SUBDIR"
-  [ -f "$PROJECT_DIR/docker-compose.yml" ] || die "В репозитории нет папки $REPO_SUBDIR с проектом"
-  JUST_CLONED=1
-fi
-if [ -z "${JUST_CLONED:-}" ] && git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  info "Обновляю код"
-  git -C "$PROJECT_DIR" pull --ff-only || warn "Не удалось обновить код из git, продолжаю с текущей версией"
-fi
-cd "$PROJECT_DIR"
+ensure_docker() {
+  if ! command -v docker >/dev/null; then
+    info "Устанавливаю Docker"
+    curl -fsSL https://get.docker.com | sh
+  fi
+  docker compose version >/dev/null 2>&1 || die "Не найден плагин docker compose. Установите docker-compose-plugin"
+  systemctl enable --now docker >/dev/null 2>&1 || true
+}
 
-# ---------- 2. docker ----------
-if ! command -v docker >/dev/null; then
-  info "Устанавливаю Docker"
-  curl -fsSL https://get.docker.com | sh
-fi
-docker compose version >/dev/null 2>&1 || die "Не найден плагин docker compose. Установите docker-compose-plugin"
-systemctl enable --now docker >/dev/null 2>&1 || true
-
-# ---------- 3. config ----------
-if [ -f .env ]; then
-  info "Найден .env — оставляю текущие настройки"
-  env_get() { grep -E "^$1=" .env | tail -1 | cut -d= -f2-; }
-  ADMIN_USERNAME="$(env_get ADMIN_USERNAME)"; PORT="$(env_get PORT)"; DOMAIN="$(env_get DOMAIN)"
-  FIRST_RUN=0
-else
+configure() {
+  if [ -f .env ]; then
+    info "Найден .env — оставляю текущие настройки"
+    env_get() { grep -E "^$1=" .env | tail -1 | cut -d= -f2-; }
+    ADMIN_USERNAME="$(env_get ADMIN_USERNAME)"; PORT="$(env_get PORT)"; DOMAIN="$(env_get DOMAIN)"
+    FIRST_RUN=0
+    return
+  fi
   FIRST_RUN=1
   echo
   echo "${c_bold}Настройка VPN Admin${c_reset} (Enter — значение по умолчанию)"
@@ -97,8 +100,12 @@ else
   echo "Подключение к 3x-ui (можно пропустить и добавить сервер позже в интерфейсе)"
   ask XUI_URL "Адрес панели 3x-ui, например https://1.2.3.4:2053/путь" ""
   if [ -n "$XUI_URL" ]; then
-    ask XUI_USERNAME "Логин 3x-ui" "admin"
-    ask_secret XUI_PASSWORD "Пароль 3x-ui"
+    echo "Для 3x-ui v3.0.2+ лучше API-токен: Настройки → Безопасность → API Token, область Admin"
+    ask_secret XUI_API_TOKEN "API-токен 3x-ui (пусто — входить по логину и паролю)"
+    if [ -z "${XUI_API_TOKEN:-}" ]; then
+      ask XUI_USERNAME "Логин 3x-ui" "admin"
+      ask_secret XUI_PASSWORD "Пароль 3x-ui"
+    fi
     XUI_VERIFY_TLS="${XUI_VERIFY_TLS:-true}"
     # 3x-ui on this same host: the container reaches it through host.docker.internal
     if [[ "$XUI_URL" =~ ://(localhost|127\.0\.0\.1)([:/]|$) ]]; then
@@ -120,6 +127,7 @@ DOMAIN=${DOMAIN}
 COOKIE_SECURE=${COOKIE_SECURE}
 FORWARDED_ALLOW_IPS=${FORWARDED_ALLOW_IPS}
 XUI_URL=${XUI_URL:-}
+XUI_API_TOKEN=${XUI_API_TOKEN:-}
 XUI_USERNAME=${XUI_USERNAME:-}
 XUI_PASSWORD=${XUI_PASSWORD:-}
 XUI_VERIFY_TLS=${XUI_VERIFY_TLS:-true}
@@ -128,40 +136,92 @@ SESSION_HOURS=24
 EOF
   umask 022
   info "Настройки сохранены в $PROJECT_DIR/.env"
-fi
+}
 
-mkdir -p data
+# The admin cannot rebuild its own container: it drops data/update.request, and this
+# path unit runs update.sh on the host when the file appears.
+install_updater() {
+  if ! command -v systemctl >/dev/null || [ ! -d /run/systemd/system ]; then
+    warn "systemd не найден: обновление из админки недоступно, используйте ./update.sh"
+    rm -f data/updater.enabled
+    return
+  fi
+  cat > /etc/systemd/system/vpn-admin-update.service <<EOF
+[Unit]
+Description=VPN Admin self-update (git pull + rebuild)
+After=docker.service network-online.target
+Wants=network-online.target
 
-# ---------- 4. start ----------
-PROFILE_ARGS=()
-[ -n "${DOMAIN:-}" ] && PROFILE_ARGS=(--profile https)
-info "Собираю и запускаю контейнеры (первый раз занимает пару минут)"
-docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d --build --remove-orphans
+[Service]
+Type=oneshot
+ExecStart=$PROJECT_DIR/update.sh
+TimeoutStartSec=1800
+EOF
+  cat > /etc/systemd/system/vpn-admin-update.path <<EOF
+[Unit]
+Description=Watch for VPN Admin update requests
 
-info "Жду запуска"
-for _ in $(seq 1 30); do
-  if curl -fs "http://127.0.0.1:${PORT:-8080}/api/health" >/dev/null 2>&1; then OK=1; break; fi
-  sleep 2
-done
-[ "${OK:-0}" = 1 ] || { docker compose logs --tail 50 app; die "Админка не ответила. Логи выше"; }
+[Path]
+PathExists=$PROJECT_DIR/data/update.request
+Unit=vpn-admin-update.service
 
-# ---------- 5. summary ----------
-if [ -n "${DOMAIN:-}" ]; then
-  URL="https://${DOMAIN}"
-else
-  IP="$(curl -fs4 --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
-  URL="http://${IP}:${PORT:-8080}"
-fi
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now vpn-admin-update.path >/dev/null
+  touch data/updater.enabled
+  info "Обновление из админки включено (systemd: vpn-admin-update.path)"
+}
 
-echo
-echo "${c_bold}${c_green}VPN Admin запущен${c_reset}"
-echo "  Адрес:  ${c_bold}${URL}${c_reset}"
-echo "  Логин:  ${ADMIN_USERNAME}"
-if [ "$FIRST_RUN" = 1 ] && [ -n "${GENERATED_PASSWORD:-}" ]; then
-  echo "  Пароль: ${c_bold}${ADMIN_PASSWORD}${c_reset}  (сохраните, он также лежит в $PROJECT_DIR/.env)"
-else
-  echo "  Пароль: указан при установке (см. $PROJECT_DIR/.env)"
-fi
-[ -z "${DOMAIN:-}" ] && warn "Без домена админка работает по HTTP. Для HTTPS перезапустите установку с DOMAIN=ваш.домен (после удаления .env)"
-echo
-echo "Обновление: cd $PROJECT_DIR && sudo ./install.sh   ·   Логи: docker compose logs -f app"
+wait_healthy() {
+  info "Жду запуска"
+  local ok=0
+  for _ in $(seq 1 30); do
+    if curl -fs "http://127.0.0.1:${PORT:-8080}/api/health" >/dev/null 2>&1; then ok=1; break; fi
+    sleep 2
+  done
+  [ "$ok" = 1 ] || { docker compose logs --tail 50 app; die "Админка не ответила. Логи выше"; }
+}
+
+summary() {
+  local url ip
+  if [ -n "${DOMAIN:-}" ]; then
+    url="https://${DOMAIN}"
+  else
+    ip="$(curl -fs4 --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
+    url="http://${ip}:${PORT:-8080}"
+  fi
+  echo
+  echo "${c_bold}${c_green}VPN Admin запущен${c_reset}"
+  echo "  Адрес:  ${c_bold}${url}${c_reset}"
+  echo "  Логин:  ${ADMIN_USERNAME}"
+  if [ "$FIRST_RUN" = 1 ] && [ -n "${GENERATED_PASSWORD:-}" ]; then
+    echo "  Пароль: ${c_bold}${ADMIN_PASSWORD}${c_reset}  (сохраните, он также лежит в $PROJECT_DIR/.env)"
+  else
+    echo "  Пароль: указан при установке (см. $PROJECT_DIR/.env)"
+  fi
+  [ -z "${DOMAIN:-}" ] && warn "Без домена админка работает по HTTP. Для HTTPS перезапустите установку с DOMAIN=ваш.домен (после удаления .env)"
+  echo
+  echo "Обновление: в админке (раздел «Система») или sudo $PROJECT_DIR/update.sh   ·   Логи: docker compose logs -f app"
+}
+
+# Everything runs from main(): bash reads scripts lazily, and `git pull` may
+# replace this file while it is running. A function is parsed in full first.
+main() {
+  set -euo pipefail
+  [ "$(id -u)" -eq 0 ] || die "Запустите от root: sudo $0"
+  fetch_project
+  cd "$PROJECT_DIR"
+  ensure_docker
+  configure
+  mkdir -p data
+  install_updater
+  info "Собираю и запускаю контейнеры (первый раз занимает пару минут)"
+  ./update.sh --no-pull
+  wait_healthy
+  summary
+}
+
+main "$@"
+exit

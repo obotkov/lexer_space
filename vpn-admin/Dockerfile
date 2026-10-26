@@ -14,7 +14,11 @@ WORKDIR /app
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/app ./app
+COPY VERSION ./VERSION
 COPY --from=frontend /build/dist ./static
+# Which git tree the image was built from: lets the admin tell whether an update is available
+ARG APP_TREE="" APP_COMMIT="" APP_COMMIT_DATE="" APP_BUILT_AT=""
+ENV APP_TREE=$APP_TREE APP_COMMIT=$APP_COMMIT APP_COMMIT_DATE=$APP_COMMIT_DATE APP_BUILT_AT=$APP_BUILT_AT
 VOLUME /data
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
