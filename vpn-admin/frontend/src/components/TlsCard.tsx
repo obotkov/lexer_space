@@ -20,7 +20,7 @@ export function TlsCard() {
   const load = () =>
     api.tls().then((s) => {
       setStatus(s);
-      setDomain((d) => d || s.domain || (window.location.hostname.match(/[a-z]/i) ? window.location.hostname : ""));
+      setDomain((d) => d || s.domain || s.site_domain || (window.location.hostname.match(/[a-z]/i) ? window.location.hostname : ""));
       setEmail((e) => e || s.email);
     }, (e) => setError(e.message));
 
@@ -146,7 +146,10 @@ export function TlsCard() {
         <form className="tls-form" onSubmit={issue}>
           <div className="muted small">
             Админка получит сертификат Let's Encrypt и будет открываться по <b>https://домен:{status.port}</b>. Порт 443 не нужен. Нужны A-запись домена на этот сервер и
-            открытый порт 80: Let's Encrypt проверяет домен через него, а админка занимает порт только на несколько секунд проверки.
+            открытый порт 80:{" "}
+            {status.challenge === "nginx"
+              ? "Let's Encrypt проверяет домен через nginx сайта-заглушки. Тот же сертификат получит и заглушка."
+              : "Let's Encrypt проверяет домен через него, а админка занимает порт только на несколько секунд проверки."}
           </div>
           <div className="field-row">
             <label className="field">

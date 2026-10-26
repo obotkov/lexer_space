@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Copper Kettle — Coffee &amp; Bakery</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #3b2a1f; background: #fffaf3; }
+  .hero { min-height: 70vh; display: grid; place-items: center; text-align: center; padding: 48px 24px;
+    background: linear-gradient(rgba(59,42,31,.55), rgba(59,42,31,.55)), radial-gradient(circle at 30% 30%, #c08552, #5c3d2e); color: #fff7ed; }
+  .hero h1 { font-family: Georgia, serif; font-size: clamp(42px, 8vw, 80px); font-weight: 400; }
+  .hero p { margin-top: 12px; font-size: 20px; opacity: .9; }
+  .badge { display: inline-block; margin-top: 28px; padding: 10px 20px; border: 1px solid rgba(255,247,237,.6); border-radius: 999px; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 64px 24px; }
+  h2 { font-family: Georgia, serif; font-weight: 400; font-size: 34px; margin-bottom: 28px; text-align: center; }
+  .menu { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px 40px; }
+  .item { display: flex; justify-content: space-between; border-bottom: 1px dashed #e0c9a6; padding: 10px 0; }
+  .item b { font-weight: 500; }
+  .info { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 24px; margin-top: 56px; }
+  .info div { background: #fff; border-radius: 14px; padding: 24px; box-shadow: 0 6px 20px rgba(92,61,46,.08); }
+  .info h3 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: #a0623a; margin-bottom: 10px; }
+  .info p { line-height: 1.7; }
+  footer { text-align: center; padding: 32px 24px 48px; color: #8c6d58; font-size: 14px; }
+</style>
+</head>
+<body>
+<section class="hero">
+  <div>
+    <h1>Copper Kettle</h1>
+    <p>Slow coffee, fresh bread and a quiet corner to read.</p>
+    <span class="badge">Open daily from 7:30</span>
+  </div>
+</section>
+<div class="wrap">
+  <h2>From the counter</h2>
+  <div class="menu">
+    <div class="item"><b>Flat white</b><span>3.80</span></div>
+    <div class="item"><b>Sourdough loaf</b><span>5.50</span></div>
+    <div class="item"><b>Filter of the week</b><span>3.40</span></div>
+    <div class="item"><b>Cardamom bun</b><span>3.20</span></div>
+    <div class="item"><b>Chai latte</b><span>4.10</span></div>
+    <div class="item"><b>Almond croissant</b><span>3.90</span></div>
+  </div>
+  <div class="info">
+    <div><h3>Hours</h3><p>Mon–Fri 7:30 – 19:00<br>Sat–Sun 9:00 – 18:00</p></div>
+    <div><h3>Find us</h3><p>Corner of Mill Lane &amp; Station Road<br>Two minutes from the station</p></div>
+    <div><h3>Orders</h3><p>Cakes and catering:<br>orders@{{domain}}</p></div>
+  </div>
+</div>
+<footer>&copy; {{year}} Copper Kettle Coffee &amp; Bakery</footer>
+</body>
+</html>

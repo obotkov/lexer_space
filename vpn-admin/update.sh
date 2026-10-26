@@ -18,13 +18,17 @@ main() {
 
   mkdir -p data
   rm -f data/update.request
-  local started_at; started_at=$(date +%s)
+  UPDATE_STARTED_AT=$(date +%s)
+  UPDATE_STATE=running
   status() {  # status STATE MESSAGE
+    UPDATE_STATE="$1"
     printf '{"state":"%s","message":"%s","started_at":%s,"finished_at":%s}\n' \
-      "$1" "$2" "$started_at" "$([ "$1" = running ] && echo null || date +%s)" > data/update.status.tmp
+      "$1" "$2" "$UPDATE_STARTED_AT" "$([ "$1" = running ] && echo null || date +%s)" > data/update.status.tmp
     mv data/update.status.tmp data/update.status
   }
-  trap 'status failed "Обновление прервано с ошибкой, подробности в журнале"; echo "!! Ошибка в команде: $BASH_COMMAND"' ERR
+  trap 'echo "!! Ошибка в команде: $BASH_COMMAND"' ERR
+  # any exit before "done" (failed command, unset variable, kill) is reported as a failure
+  trap '[ "$UPDATE_STATE" = done ] || status failed "Обновление прервано с ошибкой, подробности в журнале"' EXIT
 
   exec > >(tee data/update.log) 2>&1
   status running "Обновление запущено"
@@ -44,7 +48,9 @@ main() {
     echo "!! Папка не является git-репозиторием: обновить код нельзя, только пересобрать"
   fi
   export APP_BUILT_AT; APP_BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  echo "==> версия $(cat VERSION 2>/dev/null || echo '?') (${APP_COMMIT:0:7})"
+  local commit="не из git"
+  [ -n "${APP_COMMIT:-}" ] && commit="${APP_COMMIT:0:7}"
+  echo "==> версия $(cat VERSION 2>/dev/null || echo '?') (${commit})"
 
   local profile=()
   if grep -qE '^DOMAIN=.+' .env 2>/dev/null; then profile=(--profile https); fi

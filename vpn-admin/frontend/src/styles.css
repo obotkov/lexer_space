@@ -202,3 +202,17 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .card-wide { grid-column: 1 / -1; }
 .tls-form { display: flex; flex-direction: column; gap: 12px; }
 .log-error { color: var(--bad); border-color: rgba(242, 85, 90, 0.35); }
+
+/* decoy site */
+.site-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.site-tile { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.site-tile.current { border-color: var(--good); }
+.site-thumb {
+  width: 100%; aspect-ratio: 16 / 10; overflow: hidden; position: relative; padding: 0; cursor: zoom-in;
+  border: 1px solid var(--border); border-radius: 8px; background: #fff; display: grid; place-items: center;
+}
+.site-thumb iframe { position: absolute; top: 0; left: 0; width: 400%; height: 400%; border: 0; transform: scale(0.25); transform-origin: 0 0; pointer-events: none; }
+.site-meta { min-height: 52px; }
+.site-editor { min-height: 180px; resize: vertical; font-size: 12px; line-height: 1.5; }
+.modal-preview { max-width: 1100px; height: calc(100vh - 48px); }
+.site-preview { flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #fff; }

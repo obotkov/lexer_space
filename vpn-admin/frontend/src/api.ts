@@ -233,6 +233,28 @@ export interface TlsStatus {
   port: number;
   /** HTTPS is provided by Caddy on 443 (install-time DOMAIN): in-app certificates are off */
   caddy_domain: string;
+  /** how Let's Encrypt reaches port 80: host nginx (webroot) or certbot itself */
+  challenge: "nginx" | "standalone";
+  site_domain: string;
+}
+
+export interface SiteTemplate {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface SiteStatus {
+  /** nginx for the decoy site is installed on the host */
+  nginx: boolean;
+  domain: string;
+  https: boolean;
+  url: string;
+  /** template id, "custom" or "" */
+  current: string;
+  updated_at: number | null;
+  templates: SiteTemplate[];
+  custom_html: string;
 }
 
 export interface DomainCheck {
@@ -295,6 +317,10 @@ export const api = {
   updateStatus: () => request<UpdateStatus>("GET", "/api/system/update"),
   startUpdate: () => request<UpdateStatus>("POST", "/api/system/update"),
   health: () => request<{ ok: boolean }>("GET", "/api/health"),
+  site: () => request<SiteStatus>("GET", "/api/site"),
+  siteTemplate: (id: string) => request<{ id: string; html: string }>("GET", `/api/site/templates/${id}`),
+  siteApply: (template: string) => request<SiteStatus>("POST", "/api/site/apply", { template }),
+  siteCustom: (html: string) => request<SiteStatus>("POST", "/api/site/custom", { html }),
   tls: () => request<TlsStatus>("GET", "/api/tls"),
   tlsCheckDomain: (domain: string) => request<DomainCheck>("GET", `/api/tls/check-domain?domain=${encodeURIComponent(domain)}`),
   tlsIssue: (domain: string, email: string, staging: boolean) =>

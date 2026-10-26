@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import clients, db, system, tls
+from . import clients, db, site, system, tls
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -292,6 +292,47 @@ async def tls_disable():
     if restarting:
         tls.restart_soon()
     return {"restarting": restarting}
+
+
+# ---------- decoy website (nginx on the host) ----------
+
+class SiteApplyIn(BaseModel):
+    template: str
+
+
+class SiteCustomIn(BaseModel):
+    html: str
+
+
+@app.get("/api/site", dependencies=[Depends(require_admin)])
+async def site_status():
+    return site.status()
+
+
+@app.get("/api/site/templates/{template_id}", dependencies=[Depends(require_admin)])
+async def site_template(template_id: str):
+    try:
+        return {"id": template_id, "html": site.render(site.template_html(template_id))}
+    except site.SiteError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/site/apply", dependencies=[Depends(require_admin)])
+async def site_apply(body: SiteApplyIn):
+    try:
+        site.apply_template(body.template)
+    except site.SiteError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return site.status()
+
+
+@app.post("/api/site/custom", dependencies=[Depends(require_admin)])
+async def site_custom(body: SiteCustomIn):
+    try:
+        site.save_custom(body.html)
+    except site.SiteError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return site.status()
 
 
 # ---------- aggregated data ----------

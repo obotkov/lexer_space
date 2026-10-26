@@ -1,10 +1,12 @@
 """HTTPS for the admin itself: Let's Encrypt certificate via certbot.
 
-certbot runs in standalone mode and answers the HTTP-01 challenge on port 80
-only for the few seconds of issuance/renewal, so port 80 stays free for others
-(e.g. 3x-ui renewing its own certificates). The container uses host networking
-for that, and the admin keeps serving on its own port (HTTPS once a certificate
-exists), so port 443 is not needed either.
+The HTTP-01 challenge on port 80 is answered in one of two ways:
+* nginx mode (install.sh set up nginx for the decoy site): nginx serves
+  /.well-known/acme-challenge/ from data/acme, certbot uses --webroot. The same
+  certificate is then used by nginx for the site on 443 (see nginx.sh).
+* standalone: certbot binds port 80 itself for the few seconds of the check,
+  so the port stays free the rest of the time. Needs host networking.
+Either way the admin keeps serving on its own port, so port 443 is not needed.
 
 uvicorn cannot swap certificates on the fly: after issuing, renewing or
 disabling, the process exits and Docker's restart policy starts it again with
@@ -33,6 +35,9 @@ LE_DIR = settings.data_dir / "letsencrypt"
 CERT_NAME = "vpn-admin"
 CERT_FILE = LE_DIR / "live" / CERT_NAME / "fullchain.pem"
 KEY_FILE = LE_DIR / "live" / CERT_NAME / "privkey.pem"
+ACME_WEBROOT = settings.data_dir / "acme"
+NGINX_MARKER = settings.data_dir / "nginx.enabled"  # written by install.sh when nginx serves port 80
+NGINX_RELOAD = settings.data_dir / "nginx.reload"  # picked up by the vpn-admin-nginx.path unit on the host
 
 RENEW_BEFORE_DAYS = 30
 RENEW_CHECK_INTERVAL = 12 * 3600
@@ -97,6 +102,16 @@ def is_active() -> bool:
     return os.getenv("TLS_ACTIVE") == "1"
 
 
+def nginx_mode() -> bool:
+    return NGINX_MARKER.exists()
+
+
+def request_nginx_reload() -> None:
+    """Asks the host to regenerate the nginx config (e.g. enable 443 with a new certificate) and reload it."""
+    if nginx_mode():
+        NGINX_RELOAD.write_text(str(int(time.time())))
+
+
 def caddy_domain() -> str:
     """Set when install.sh put Caddy in front: then Caddy terminates TLS and this module stays off."""
     return os.getenv("DOMAIN", "").strip()
@@ -115,6 +130,8 @@ def status() -> dict[str, Any]:
         "certificate": cert_info(),
         "port": int(os.getenv("PORT", "8080")),
         "caddy_domain": caddy_domain(),
+        "challenge": "nginx" if nginx_mode() else "standalone",
+        "site_domain": os.getenv("SITE_DOMAIN", ""),
     }
 
 
@@ -163,6 +180,8 @@ ERROR_HINTS = [
     ("Timeout during connect", "Let's Encrypt не достучался до сервера по порту 80: откройте порт 80 в файрволе "
                                "и проверьте, что A-запись домена указывает на этот сервер"),
     ("Connection refused", "Let's Encrypt не смог подключиться к порту 80: проверьте файрвол и A-запись домена"),
+    ("Invalid response from", "Let's Encrypt получил с порта 80 не тот ответ: проверьте, что A-запись указывает "
+                              "на этот сервер и порт 80 обслуживает nginx админки"),
     ("unauthorized", "Let's Encrypt не подтвердил домен: проверьте, что A-запись указывает на этот сервер "
                      "и порт 80 открыт"),
 ]
@@ -197,8 +216,13 @@ async def issue(domain: str, email: str, staging: bool) -> dict[str, Any]:
         current = cert_info()
         if current and domain not in current["domains"]:
             current = None  # another domain: certbot replaces the names in the same lineage, the old cert stays until then
-        args = [*_certbot_base(), "certonly", "--standalone", "--preferred-challenges", "http",
-                "--http-01-port", str(CHALLENGE_PORT), "--cert-name", CERT_NAME, "-d", domain, "--agree-tos"]
+        if nginx_mode():
+            ACME_WEBROOT.mkdir(parents=True, exist_ok=True)
+            method = ["--webroot", "-w", str(ACME_WEBROOT)]
+        else:
+            method = ["--standalone", "--http-01-port", str(CHALLENGE_PORT)]
+        args = [*_certbot_base(), "certonly", *method, "--preferred-challenges", "http",
+                "--cert-name", CERT_NAME, "-d", domain, "--agree-tos"]
         # same domain, but switching between test and real certificates: certbot would keep the old one
         args.append("--force-renewal" if current and current["staging"] != staging else "--keep-until-expiring")
         args += ["-m", email] if email else ["--register-unsafely-without-email"]
@@ -213,6 +237,7 @@ async def issue(domain: str, email: str, staging: bool) -> dict[str, Any]:
             raise
         save_config(enabled=True, domain=domain, email=email, staging=staging, last_error=None,
                     issued_at=int(time.time()))
+        request_nginx_reload()
         return {"output": output, "certificate": cert_info()}
 
 
@@ -236,7 +261,10 @@ async def renew(force: bool = False) -> bool:
             raise
         after = cert_info()
         save_config(last_error=None, last_renew_check=int(time.time()))
-        return bool(after and after["not_after"] != before["not_after"])
+        renewed = bool(after and after["not_after"] != before["not_after"])
+        if renewed:
+            request_nginx_reload()
+        return renewed
 
 
 def disable() -> None:

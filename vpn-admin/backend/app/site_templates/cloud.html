@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stratus Systems — Cloud infrastructure consulting</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; background: #fff; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; }
+  .mark { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #0ea5e9, #6366f1); }
+  .btn { display: inline-block; padding: 11px 18px; border-radius: 10px; background: #0f172a; color: #fff; text-decoration: none; font-size: 15px; font-weight: 500; }
+  .hero { padding: 72px 0 56px; display: grid; grid-template-columns: 1.2fr 1fr; gap: 48px; align-items: center; }
+  .hero h1 { font-size: clamp(36px, 5vw, 56px); line-height: 1.08; letter-spacing: -0.03em; }
+  .hero p { margin: 20px 0 28px; font-size: 19px; line-height: 1.6; color: #475569; }
+  .panel { border-radius: 18px; padding: 24px; background: #0b1220; color: #cbd5e1; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px; line-height: 1.8;
+    box-shadow: 0 30px 60px rgba(15, 23, 42, .25); }
+  .ok { color: #4ade80; } .dim { color: #64748b; }
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; padding: 32px 0 80px; }
+  .feature { border: 1px solid #e2e8f0; border-radius: 16px; padding: 24px; }
+  .feature h3 { font-size: 18px; margin-bottom: 8px; }
+  .feature p { color: #64748b; line-height: 1.6; }
+  footer { border-top: 1px solid #e2e8f0; padding: 28px 0 40px; color: #64748b; font-size: 14px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  @media (max-width: 800px) { .hero { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand"><span class="mark"></span> Stratus Systems</div>
+    <a class="btn" href="mailto:sales@{{domain}}">Talk to an engineer</a>
+  </header>
+  <section class="hero">
+    <div>
+      <h1>Infrastructure that stays up while you sleep.</h1>
+      <p>We design, migrate and operate cloud platforms for growing product teams: Kubernetes, observability, cost control and 24/7 on-call.</p>
+      <a class="btn" href="mailto:sales@{{domain}}">Book a free architecture review</a>
+    </div>
+    <div class="panel">
+      <div><span class="dim">$</span> stratus status --all</div>
+      <div><span class="ok">●</span> eu-central &nbsp; 42 nodes &nbsp; healthy</div>
+      <div><span class="ok">●</span> us-east &nbsp;&nbsp;&nbsp; 37 nodes &nbsp; healthy</div>
+      <div><span class="ok">●</span> backups &nbsp;&nbsp;&nbsp; last run 04:00 UTC</div>
+      <div class="dim">uptime (90d): 99.992%</div>
+    </div>
+  </section>
+  <section class="features">
+    <div class="feature"><h3>Migrations</h3><p>Move from bare metal or another provider with zero-downtime cutovers and tested rollback plans.</p></div>
+    <div class="feature"><h3>Managed Kubernetes</h3><p>Hardened clusters, GitOps delivery and upgrades handled by people who have done it hundreds of times.</p></div>
+    <div class="feature"><h3>Cost optimisation</h3><p>Rightsizing, reservations and clear monthly reports. Most clients save 30% in the first quarter.</p></div>
+  </section>
+  <footer>
+    <span>&copy; {{year}} Stratus Systems</span>
+    <span>sales@{{domain}}</span>
+  </footer>
+</div>
+</body>
+</html>

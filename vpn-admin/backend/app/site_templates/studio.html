@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northlight Studio — Design &amp; Photography</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: Georgia, "Times New Roman", serif; color: #1c1917; background: #faf7f2; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  header { display: flex; justify-content: space-between; align-items: center; padding: 28px 0; }
+  .brand { font-size: 20px; letter-spacing: .08em; text-transform: uppercase; }
+  nav a { margin-left: 24px; color: #57534e; text-decoration: none; font-family: -apple-system, "Segoe UI", sans-serif; font-size: 15px; }
+  .hero { padding: 80px 0 64px; }
+  .hero h1 { font-size: clamp(40px, 7vw, 76px); line-height: 1.02; font-weight: 400; max-width: 820px; }
+  .hero p { margin-top: 24px; max-width: 560px; color: #57534e; font-size: 19px; line-height: 1.6; font-family: -apple-system, "Segoe UI", sans-serif; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; padding-bottom: 72px; }
+  .work { border-radius: 6px; overflow: hidden; background: #fff; }
+  .shot { aspect-ratio: 4 / 3; }
+  .s1 { background: linear-gradient(160deg, #d6c4a8, #8a6f4d); }
+  .s2 { background: linear-gradient(200deg, #9fb7c9, #3d5a73); }
+  .s3 { background: linear-gradient(140deg, #e7b8a2, #a4573e); }
+  .work h3 { padding: 16px 18px 4px; font-weight: 400; font-size: 20px; }
+  .work span { display: block; padding: 0 18px 18px; color: #78716c; font-size: 14px; font-family: -apple-system, "Segoe UI", sans-serif; }
+  footer { border-top: 1px solid #e7e5e4; padding: 32px 0 48px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+    color: #78716c; font-size: 14px; font-family: -apple-system, "Segoe UI", sans-serif; }
+  footer a { color: #1c1917; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">Northlight</div>
+    <nav><a href="#work">Work</a><a href="#about">About</a><a href="#contact">Contact</a></nav>
+  </header>
+  <section class="hero">
+    <h1>Quiet, considered images for brands that like natural light.</h1>
+    <p>Northlight is a small studio for editorial photography, art direction and brand identity. We work with independent makers, hotels and publishers.</p>
+  </section>
+  <section class="grid" id="work">
+    <article class="work"><div class="shot s1"></div><h3>Linen &amp; Clay</h3><span>Product photography, 2025</span></article>
+    <article class="work"><div class="shot s2"></div><h3>Harbour Hotel</h3><span>Art direction, 2024</span></article>
+    <article class="work"><div class="shot s3"></div><h3>Terracotta Press</h3><span>Identity &amp; editorial, 2024</span></article>
+  </section>
+  <footer id="contact">
+    <span>&copy; {{year}} Northlight Studio</span>
+    <span>New projects: <a href="mailto:hello@{{domain}}">hello@{{domain}}</a></span>
+  </footer>
+</div>
+</body>
+</html>

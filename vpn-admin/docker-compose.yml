@@ -11,6 +11,10 @@ services:
     container_name: vpn-admin
     restart: unless-stopped
     env_file: .env
+    environment:
+      # tests only: a local ACME server (Pebble) instead of Let's Encrypt; empty = Let's Encrypt
+      ACME_SERVER: ${ACME_SERVER:-}
+      ACME_INSECURE: ${ACME_INSECURE:-}
     volumes:
       - ./data:/data
     # Host network: the admin listens on BIND_ADDR:PORT from .env, reaches a 3x-ui panel on the
