@@ -1,0 +1,30 @@
+services:
+  app:
+    build: .
+    image: vpn-admin:latest
+    container_name: vpn-admin
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:${PORT:-8080}:8000"
+    extra_hosts:
+      # lets the container reach a 3x-ui panel running on the same server
+      - "host.docker.internal:host-gateway"
+
+  # HTTPS with automatic Let's Encrypt certificate (enabled when DOMAIN is set)
+  caddy:
+    image: caddy:2.8
+    container_name: vpn-admin-caddy
+    restart: unless-stopped
+    profiles: ["https"]
+    depends_on: [app]
+    environment:
+      DOMAIN: ${DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
