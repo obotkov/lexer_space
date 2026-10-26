@@ -199,3 +199,6 @@ tbody tr:hover { background: var(--bg-hover); }
 }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
 [hidden] { display: none !important; }
+.card-wide { grid-column: 1 / -1; }
+.tls-form { display: flex; flex-direction: column; gap: 12px; }
+.log-error { color: var(--bad); border-color: rgba(242, 85, 90, 0.35); }

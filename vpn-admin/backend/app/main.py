@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -7,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import clients, db, system
+from . import clients, db, system, tls
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -29,7 +30,9 @@ def seed_panel_from_env() -> None:
 async def lifespan(_: FastAPI):
     db.init_db()
     seed_panel_from_env()
+    renewal = asyncio.create_task(tls.renewal_loop())
     yield
+    renewal.cancel()
     await pool.close_all()
 
 
@@ -53,7 +56,7 @@ async def login(body: LoginIn, request: Request, response: Response):
         raise HTTPException(401, "Неверный логин или пароль")
     login_throttle.reset(ip)
     response.set_cookie(SESSION_COOKIE, make_session(body.username), max_age=settings.session_hours * 3600,
-                        httponly=True, samesite="strict", secure=settings.cookie_secure)
+                        httponly=True, samesite="strict", secure=settings.cookie_secure or tls.is_active())
     return {"username": body.username}
 
 
@@ -235,6 +238,60 @@ async def system_update(user: str = Depends(require_admin)):
         return system.request_update(user)
     except system.UpdateError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+# ---------- HTTPS for the admin (Let's Encrypt) ----------
+
+class TLSIssueIn(BaseModel):
+    domain: str
+    email: str = ""
+    staging: bool = False
+    accept_tos: bool = False
+
+
+@app.get("/api/tls", dependencies=[Depends(require_admin)])
+async def tls_status():
+    return tls.status()
+
+
+@app.get("/api/tls/check-domain", dependencies=[Depends(require_admin)])
+async def tls_check_domain(domain: str):
+    try:
+        return await tls.check_domain(domain)
+    except tls.TLSError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/tls/issue", dependencies=[Depends(require_admin)])
+async def tls_issue(body: TLSIssueIn):
+    if not body.accept_tos:
+        raise HTTPException(422, "Нужно принять условия использования Let's Encrypt")
+    try:
+        result = await tls.issue(body.domain, body.email, body.staging)
+    except tls.TLSError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    tls.restart_soon()
+    return {**result, "restarting": True, "url": f"https://{tls.load_config()['domain']}:{tls.status()['port']}"}
+
+
+@app.post("/api/tls/renew", dependencies=[Depends(require_admin)])
+async def tls_renew():
+    try:
+        renewed = await tls.renew(force=True)
+    except tls.TLSError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if renewed and tls.is_active():
+        tls.restart_soon()
+    return {"renewed": renewed, "restarting": renewed and tls.is_active(), "certificate": tls.cert_info()}
+
+
+@app.post("/api/tls/disable", dependencies=[Depends(require_admin)])
+async def tls_disable():
+    tls.disable()
+    restarting = tls.is_active()
+    if restarting:
+        tls.restart_soon()
+    return {"restarting": restarting}
 
 
 # ---------- aggregated data ----------

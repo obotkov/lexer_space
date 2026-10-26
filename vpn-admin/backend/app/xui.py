@@ -43,10 +43,16 @@ TOKEN_SCOPE = ("У API-токена недостаточно прав: созд�
                "(Monitor и Node sync не дают читать клиентов и управлять ими)")
 
 
+def _local_url(url: str) -> str:
+    """Older installs reached a 3x-ui on the same server via host.docker.internal; the
+    container now shares the host network, where that is simply 127.0.0.1."""
+    return url.replace("://host.docker.internal", "://127.0.0.1", 1)
+
+
 class XUIClient:
     def __init__(self, url: str, username: str = "", password: str = "", verify_tls: bool = True,
                  api_token: str = "", timeout: float = 15.0):
-        self.base_url = normalize_url(url)
+        self.base_url = _local_url(normalize_url(url))
         self.username = username
         self.password = password
         self.api_token = api_token.strip()

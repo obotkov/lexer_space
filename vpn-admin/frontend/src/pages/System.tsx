@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type UpdateCheck, type UpdateStatus, type VersionInfo } from "../api";
 import { formatDateTime } from "../format";
+import { TlsCard } from "../components/TlsCard";
 
 const POLL_MS = 2000;
 const ACTIVE_STATES = ["queued", "running"];
@@ -147,6 +148,8 @@ export function System({ check, onCheck }: { check: UpdateCheck | null; onCheck:
             </div>
           )}
         </div>
+
+        <TlsCard />
       </div>
 
       {check?.update_available && check.commits.length > 0 && (

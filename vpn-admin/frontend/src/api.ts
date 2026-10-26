@@ -211,6 +211,37 @@ export const SUPPORTED_PROTOCOLS = ["vless", "vmess", "trojan", "shadowsocks"];
 
 export const refOf = (c: Client): ClientRef => ({ panel_id: c.panel_id, inbound_id: c.inbound_id, email: c.email });
 
+export interface CertInfo {
+  domains: string[];
+  not_after: number;
+  days_left: number;
+  issuer: string;
+  staging: boolean;
+}
+
+export interface TlsStatus {
+  /** HTTPS switched on in settings */
+  enabled: boolean;
+  /** the running process actually serves HTTPS */
+  active: boolean;
+  domain: string;
+  email: string;
+  staging: boolean;
+  last_error: string | null;
+  last_renew_check: number | null;
+  certificate: CertInfo | null;
+  port: number;
+  /** HTTPS is provided by Caddy on 443 (install-time DOMAIN): in-app certificates are off */
+  caddy_domain: string;
+}
+
+export interface DomainCheck {
+  domain: string;
+  resolved: string[];
+  server_ip: string | null;
+  matches: boolean;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -264,4 +295,10 @@ export const api = {
   updateStatus: () => request<UpdateStatus>("GET", "/api/system/update"),
   startUpdate: () => request<UpdateStatus>("POST", "/api/system/update"),
   health: () => request<{ ok: boolean }>("GET", "/api/health"),
+  tls: () => request<TlsStatus>("GET", "/api/tls"),
+  tlsCheckDomain: (domain: string) => request<DomainCheck>("GET", `/api/tls/check-domain?domain=${encodeURIComponent(domain)}`),
+  tlsIssue: (domain: string, email: string, staging: boolean) =>
+    request<{ restarting: boolean; url: string; certificate: CertInfo }>("POST", "/api/tls/issue", { domain, email, staging, accept_tos: true }),
+  tlsRenew: () => request<{ renewed: boolean; restarting: boolean; certificate: CertInfo }>("POST", "/api/tls/renew"),
+  tlsDisable: () => request<{ restarting: boolean }>("POST", "/api/tls/disable"),
 };

@@ -88,12 +88,14 @@ configure() {
     ask_secret ADMIN_PASSWORD "Пароль администратора (пусто — сгенерировать)"
     if [ -z "${ADMIN_PASSWORD:-}" ]; then ADMIN_PASSWORD="$(rand 20)"; GENERATED_PASSWORD=1; fi
   fi
-  ask DOMAIN "Домен для HTTPS (пусто — без домена, по IP)" ""
+  echo "HTTPS на порту 443 через Caddy требует свободных портов 80 и 443. Если 443 занят (VLESS Reality),"
+  echo "оставьте пустым и выпустите сертификат позже в админке: Система → HTTPS (нужен только порт 80)."
+  ask DOMAIN "Домен для HTTPS через Caddy (пусто — пропустить)" ""
   if [ -n "$DOMAIN" ]; then
-    PORT="${PORT:-8080}"; BIND_ADDR=127.0.0.1; COOKIE_SECURE=true; FORWARDED_ALLOW_IPS="*"
+    PORT="${PORT:-8080}"; BIND_ADDR=127.0.0.1; COOKIE_SECURE=true
   else
     ask PORT "Порт админки" "8080"
-    BIND_ADDR=0.0.0.0; COOKIE_SECURE=false; FORWARDED_ALLOW_IPS=127.0.0.1
+    BIND_ADDR=0.0.0.0; COOKIE_SECURE=false
   fi
 
   echo
@@ -107,12 +109,10 @@ configure() {
       ask_secret XUI_PASSWORD "Пароль 3x-ui"
     fi
     XUI_VERIFY_TLS="${XUI_VERIFY_TLS:-true}"
-    # 3x-ui on this same host: the container reaches it through host.docker.internal
+    # 3x-ui on this same host (the container shares the host network): its certificate is not for 127.0.0.1
     if [[ "$XUI_URL" =~ ://(localhost|127\.0\.0\.1)([:/]|$) ]]; then
-      XUI_URL="${XUI_URL/localhost/host.docker.internal}"
-      XUI_URL="${XUI_URL/127.0.0.1/host.docker.internal}"
       XUI_VERIFY_TLS=false
-      warn "Панель на этом же сервере: использую $XUI_URL (без проверки TLS)"
+      warn "Панель на этом же сервере: подключаюсь к $XUI_URL без проверки TLS"
     fi
   fi
 
@@ -125,7 +125,7 @@ PORT=${PORT}
 BIND_ADDR=${BIND_ADDR}
 DOMAIN=${DOMAIN}
 COOKIE_SECURE=${COOKIE_SECURE}
-FORWARDED_ALLOW_IPS=${FORWARDED_ALLOW_IPS}
+FORWARDED_ALLOW_IPS=127.0.0.1
 XUI_URL=${XUI_URL:-}
 XUI_API_TOKEN=${XUI_API_TOKEN:-}
 XUI_USERNAME=${XUI_USERNAME:-}
@@ -178,16 +178,20 @@ wait_healthy() {
   info "Жду запуска"
   local ok=0
   for _ in $(seq 1 30); do
-    if curl -fs "http://127.0.0.1:${PORT:-8080}/api/health" >/dev/null 2>&1; then ok=1; break; fi
+    if curl -fsk "https://127.0.0.1:${PORT:-8080}/api/health" >/dev/null 2>&1 \
+      || curl -fs "http://127.0.0.1:${PORT:-8080}/api/health" >/dev/null 2>&1; then ok=1; break; fi
     sleep 2
   done
   [ "$ok" = 1 ] || { docker compose logs --tail 50 app; die "Админка не ответила. Логи выше"; }
 }
 
 summary() {
-  local url ip
+  local url ip tls_domain
+  tls_domain=$(grep -o '"domain": *"[^"]*"' data/tls.json 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/' || true)
   if [ -n "${DOMAIN:-}" ]; then
     url="https://${DOMAIN}"
+  elif [ -n "$tls_domain" ] && grep -q '"enabled": *true' data/tls.json 2>/dev/null; then
+    url="https://${tls_domain}:${PORT:-8080}"
   else
     ip="$(curl -fs4 --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
     url="http://${ip}:${PORT:-8080}"
@@ -201,7 +205,9 @@ summary() {
   else
     echo "  Пароль: указан при установке (см. $PROJECT_DIR/.env)"
   fi
-  [ -z "${DOMAIN:-}" ] && warn "Без домена админка работает по HTTP. Для HTTPS перезапустите установку с DOMAIN=ваш.домен (после удаления .env)"
+  if [[ "$url" == http://* ]]; then
+    warn "Админка работает по HTTP. Включите HTTPS: Система → HTTPS (Let's Encrypt, нужен домен и открытый порт 80)"
+  fi
   echo
   echo "Обновление: в админке (раздел «Система») или sudo $PROJECT_DIR/update.sh   ·   Логи: docker compose logs -f app"
 }

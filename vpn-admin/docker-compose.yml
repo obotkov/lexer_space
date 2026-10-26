@@ -13,24 +13,23 @@ services:
     env_file: .env
     volumes:
       - ./data:/data
-    ports:
-      - "${BIND_ADDR:-0.0.0.0}:${PORT:-8080}:8000"
-    extra_hosts:
-      # lets the container reach a 3x-ui panel running on the same server
-      - "host.docker.internal:host-gateway"
+    # Host network: the admin listens on BIND_ADDR:PORT from .env, reaches a 3x-ui panel on the
+    # same server at 127.0.0.1, and certbot can take port 80 for the few seconds of a
+    # Let's Encrypt check without holding it the rest of the time.
+    network_mode: host
 
-  # HTTPS with automatic Let's Encrypt certificate (enabled when DOMAIN is set)
+  # Alternative HTTPS on port 443 via Caddy (install.sh enables it when DOMAIN is set).
+  # Needs ports 80 and 443 free; otherwise issue a certificate in the admin (Система → HTTPS).
   caddy:
     image: caddy:2.8
     container_name: vpn-admin-caddy
     restart: unless-stopped
     profiles: ["https"]
     depends_on: [app]
+    network_mode: host
     environment:
       DOMAIN: ${DOMAIN:-}
-    ports:
-      - "80:80"
-      - "443:443"
+      APP_PORT: ${PORT:-8080}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./data/caddy:/data
