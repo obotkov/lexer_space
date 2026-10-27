@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS hosters (
 # Columns added after a table first shipped: table -> [(name, definition)]
 MIGRATIONS = {
     "panels": [("api_token_enc", "TEXT NOT NULL DEFAULT ''")],
-    "provisions": [("labels", "TEXT NOT NULL DEFAULT '{}'")],
+    "provisions": [("labels", "TEXT NOT NULL DEFAULT '{}'"), ("domain", "TEXT NOT NULL DEFAULT ''"),
+                   ("cert_mode", "TEXT NOT NULL DEFAULT ''"), ("replaces", "INTEGER NOT NULL DEFAULT 0")],
 }
 
 
@@ -257,6 +258,9 @@ class Provision:
     created_at: int
     updated_at: int
     labels: dict = field(default_factory=dict)  # readable region and plan, e.g. a country instead of an ID
+    domain: str = ""  # wanted address of the node panel; empty = its IP
+    cert_mode: str = ""  # certificate the panel ended up with: "domain" / "ip" (Let's Encrypt) or "self"
+    replaces: int = 0  # reinstall: the job whose server this one takes over
 
 
 _JSON_FIELDS = {"ssh_keys", "log", "labels"}

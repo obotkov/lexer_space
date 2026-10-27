@@ -3,10 +3,15 @@ attach it as a node of a main 3x-ui v3 panel.
 
 The admin generates everything the node needs up front (panel port, path, login,
 password and a self-signed TLS certificate) and passes it to the server as
-cloud-init user data. The script installs Docker and the official 3x-ui image and
-configures the panel with `x-ui setting`. The admin then waits for the panel to
-answer with exactly that certificate, logs in, mints an API token for the main
-panel and adds the node there with the certificate pinned.
+cloud-init user data. The script installs Docker and the official 3x-ui image,
+asks Let's Encrypt for a certificate for the chosen domain or the server's IP and
+configures the panel with `x-ui setting`. The admin then waits for the panel,
+checks which certificate it serves, logs in, mints an API token for the main
+panel and adds the node there: verified by the CA for a Let's Encrypt
+certificate, pinned for the self-signed fallback.
+
+A reinstall is a new job that takes over an existing one: a fresh server, the
+same node of the main panel switched over to it, then the old server removed.
 
 Steps run in a background task and are saved after each one, so an admin restart
 resumes the job where it stopped.
@@ -42,9 +47,10 @@ log = logging.getLogger("vpn-admin.provision")
 
 XUI_IMAGE = "ghcr.io/mhsanaei/3x-ui:latest"
 SSH_KEY_COMMENT = "vpn-admin-setup"
-STEPS = ["create", "boot", "install", "connect", "done"]
+STEPS = ["create", "boot", "install", "connect", "retire", "done"]
 BOOT_TIMEOUT = 10 * 60
 INSTALL_TIMEOUT = 25 * 60
+DNS_WAIT = 20 * 60  # how long the script waits for the domain's A record before taking a certificate for the IP
 POLL_EVERY = 10
 
 _tasks: dict[int, asyncio.Task] = {}
@@ -65,6 +71,15 @@ class ProvisionIn(BaseModel):
     # what the form showed: some hostings use bare IDs for regions and plans
     region_label: str = ""
     plan_label: str = ""
+    domain: str = ""  # panel address with a Let's Encrypt certificate; empty = the server's IP
+
+    @field_validator("domain")
+    @classmethod
+    def domain_name(cls, value: str) -> str:
+        value = value.strip().lower().rstrip(".")
+        if value and not re.fullmatch(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", value):
+            raise ValueError("Домен: например vpn1.example.com, без http:// и пути")
+        return value
 
     @field_validator("name")
     @classmethod
@@ -129,6 +144,48 @@ def _authorized_keys_script(user_keys: list[str]) -> str:
     return "\n".join(lines) + "\n" + _drop_setup_key_script()
 
 
+def _certificate_script(p: db.Provision) -> str:
+    """Let's Encrypt for the domain once its A record points here, otherwise for the IP (short-lived,
+    renewed by acme.sh's cron); without either the panel keeps the self-signed certificate."""
+    return f"""
+# TLS for the panel: Let's Encrypt, the self-signed certificate from the admin as the fallback
+CERT=/root/cert/panel.crt KEY=/root/cert/panel.key
+DOMAIN={shlex.quote(p.domain) if p.domain else "''"}
+IP=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \\([0-9.]*\\).*/\\1/p')
+ACME=/root/.acme.sh/acme.sh
+le_issue() {{  # $1: domain or IP, the rest: extra acme.sh options
+  local name="$1"; shift
+  if ! "$ACME" --issue -d "$name" --standalone --httpport 80 --server letsencrypt --force "$@"; then
+    rm -rf "/root/.acme.sh/$name" "/root/.acme.sh/${{name}}_ecc"; return 1
+  fi
+  # the reload fails while the panel is not running yet: the installed files are what counts
+  "$ACME" --install-cert -d "$name" --key-file /opt/3x-ui/cert/le.key --fullchain-file /opt/3x-ui/cert/le.crt \\
+    --reloadcmd "docker restart 3x-ui" || true
+  chmod 600 /opt/3x-ui/cert/le.key 2>/dev/null
+  [ -s /opt/3x-ui/cert/le.crt ] && [ -s /opt/3x-ui/cert/le.key ] && CERT=/root/cert/le.crt KEY=/root/cert/le.key
+}}
+dns_points_here() {{
+  curl -fsS -H 'accept: application/dns-json' "https://cloudflare-dns.com/dns-query?name=$DOMAIN&type=A" \\
+    | grep -q "\\"data\\":\\"$IP\\""
+}}
+case "$IP" in
+  ""|10.*|127.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) PUBLIC=0; echo "no public IPv4 ($IP): Let's Encrypt skipped" ;;
+  *) PUBLIC=1 ;;
+esac
+if [ "$PUBLIC" = 1 ] && retry sh -c 'apt-get -o DPkg::Lock::Timeout=300 update -q && apt-get -o DPkg::Lock::Timeout=300 install -y -q socat cron' \\
+   && {{ [ -x "$ACME" ] || retry sh -c 'curl -fsSL https://get.acme.sh | sh'; }}; then
+  if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then ufw allow 80/tcp; fi
+  if [ -n "$DOMAIN" ]; then
+    echo "waiting for the A record $DOMAIN -> $IP"
+    for i in $(seq {DNS_WAIT // 20}); do dns_points_here && break; sleep 20; done
+    dns_points_here && le_issue "$DOMAIN"
+  fi
+  [ "$CERT" = /root/cert/panel.crt ] && le_issue "$IP" --certificate-profile shortlived --days 3
+fi
+echo "vpn-admin: certificate $CERT"
+"""
+
+
 def user_data(p: db.Provision, extra: str = "") -> str:
     """cloud-init script: Docker + 3x-ui with the generated port, path, login and certificate.
     Hostings without cloud-init get the same script over SSH, with `extra` steps at the end."""
@@ -136,7 +193,7 @@ def user_data(p: db.Provision, extra: str = "") -> str:
 # vpn-admin: 3x-ui node "{p.name}"
 set -u
 exec > /var/log/vpn-admin-node.log 2>&1
-export DEBIAN_FRONTEND=noninteractive
+export DEBIAN_FRONTEND=noninteractive HOME=/root
 
 retry() {{ for i in 1 2 3 4 5 6; do "$@" && return 0; echo "retry $i: $*"; sleep 20; done; return 1; }}
 
@@ -161,9 +218,10 @@ systemctl enable --now docker
 retry docker pull {XUI_IMAGE} || exit 1
 
 docker rm -f 3x-ui >/dev/null 2>&1 || true
+{_certificate_script(p)}
 docker run --rm --entrypoint /app/x-ui -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/cert:/root/cert {XUI_IMAGE} \\
   setting -port {p.port} -username {p.username} -password {p.secrets["password"]} -webBasePath {p.base_path} \\
-  -webCert /root/cert/panel.crt -webCertKey /root/cert/panel.key
+  -webCert "$CERT" -webCertKey "$KEY"
 docker run -d --name 3x-ui --restart unless-stopped --network host --cap-add NET_ADMIN --cap-add NET_RAW \\
   -e XRAY_VMESS_AEAD_FORCED=false -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/cert:/root/cert {XUI_IMAGE}
 
@@ -172,8 +230,12 @@ if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then ufw 
 """
 
 
-def _node_url(p: db.Provision) -> str:
-    return f"https://{p.ip}:{p.port}{p.base_path}"
+def _node_host(p: db.Provision) -> str:
+    return p.domain if p.cert_mode == "domain" else p.ip
+
+
+def _node_url(p: db.Provision, host: str = "") -> str:
+    return f"https://{host or _node_host(p)}:{p.port}{p.base_path}"
 
 
 def _pinned_context(cert_pem: str) -> ssl.SSLContext:
@@ -242,6 +304,9 @@ async def _step_boot(p: db.Provision) -> None:
         if server["status"] == "running" and server["ipv4"]:
             _set(p, ip=server["ipv4"][0])
             _log(p, f"Сервер запущен, IP {p.ip}")
+            if p.domain:
+                _log(p, f"Создайте у регистратора домена A-запись {p.domain} → {p.ip}: установка ждёт её до "
+                        f"{DNS_WAIT // 60} минут, иначе возьмёт сертификат Let's Encrypt на IP")
             return
         if time.time() > deadline:
             raise ProvisionError(f"Сервер не запустился за {BOOT_TIMEOUT // 60} минут (статус: {server['status_label']})")
@@ -255,12 +320,12 @@ async def _install_over_ssh(p: db.Provision) -> None:
     user_keys = await _with_client(p, lambda c: c.public_keys(p.ssh_keys)) if p.ssh_keys else []
     script = user_data(p, _authorized_keys_script(user_keys))
     key = asyncssh.import_private_key(p.secrets["ssh_key"])
-    deadline = time.time() + INSTALL_TIMEOUT
+    deadline = time.time() + _install_timeout(p)
     while True:
         try:
             async with asyncssh.connect(p.ip, username="root", client_keys=[key], known_hosts=None,
                                         connect_timeout=15) as conn:
-                result = await conn.run("bash -s", input=script, check=False, timeout=INSTALL_TIMEOUT)
+                result = await conn.run("bash -s", input=script, check=False, timeout=_install_timeout(p))
                 if result.exit_status != 0:
                     tail = (await conn.run("tail -n 15 /var/log/vpn-admin-node.log", check=False)).stdout
                     raise ProvisionError(f"Установка на сервере завершилась с ошибкой (код {result.exit_status}). "
@@ -268,7 +333,7 @@ async def _install_over_ssh(p: db.Provision) -> None:
             break
         except (OSError, asyncssh.Error) as exc:  # the OS is still being installed or sshd is not up yet
             if time.time() > deadline:
-                raise ProvisionError(f"Не удалось выполнить установку по SSH за {INSTALL_TIMEOUT // 60} минут: "
+                raise ProvisionError(f"Не удалось выполнить установку по SSH за {_install_timeout(p) // 60} минут: "
                                      f"{exc}") from exc
             await asyncio.sleep(POLL_EVERY)
     _set(p, secrets={"password": p.secrets["password"]})
@@ -279,45 +344,110 @@ async def _install_over_ssh(p: db.Provision) -> None:
         log.warning("provision %s: setup key not removed from the account: %s", p.id, exc)
 
 
+def _install_timeout(p: db.Provision) -> int:
+    return INSTALL_TIMEOUT + (DNS_WAIT if p.domain else 0)
+
+
+async def _served_certificate(host: str, port: int) -> bytes:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE  # only to see which certificate it is; trust is decided after
+    _, writer = await asyncio.wait_for(asyncio.open_connection(host, port, ssl=ctx), 15)
+    try:
+        return writer.get_extra_info("ssl_object").getpeercert(binary_form=True)
+    finally:
+        writer.close()
+
+
+async def _ca_verifies(host: str, port: int, name: str) -> bool:
+    """A certificate for `name` from a public CA, as browsers and the main panel will check it."""
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port, ssl=ssl.create_default_context(), server_hostname=name), 15)
+    except (OSError, ssl.SSLError, asyncio.TimeoutError):
+        return False
+    writer.close()
+    return True
+
+
+async def _trust_node(p: db.Provision) -> ssl.SSLContext:
+    """Decide by the certificate the panel serves how the node is trusted: the self-signed one generated
+    here is pinned, a Let's Encrypt one for the domain or the IP is checked by the CA. The admin itself
+    then talks to the node by IP, trusting exactly the certificate it checked."""
+    der = await _served_certificate(p.ip, p.port)
+    if base64.b64encode(hashlib.sha256(der).digest()).decode() == p.cert_pin:
+        mode = "self"
+    elif p.domain and await _ca_verifies(p.ip, p.port, p.domain):
+        mode = "domain"
+    elif await _ca_verifies(p.ip, p.port, p.ip):
+        mode = "ip"
+    else:
+        raise ProvisionError("Панель узла отвечает чужим TLS-сертификатом: это не сертификат админки и не "
+                             f"действующий сертификат на {p.domain or p.ip}")
+    if mode != p.cert_mode:
+        _set(p, cert_mode=mode)
+    return _pinned_context(ssl.DER_cert_to_PEM_cert(der))
+
+
 async def _step_install(p: db.Provision) -> None:
     if "ssh_key" in p.secrets:
         await _install_over_ssh(p)
         _log(p, "Жду ответа панели 3x-ui")
     else:
-        _log(p, "Жду установку Docker и 3x-ui (обычно 3–7 минут)")
-    deadline = time.time() + INSTALL_TIMEOUT
-    async with httpx.AsyncClient(verify=_pinned_context(p.cert_pem), timeout=10) as http:
+        _log(p, f"Жду установку Docker, 3x-ui и сертификата (обычно 3–7 минут{', плюс ожидание DNS' if p.domain else ''})")
+    deadline = time.time() + _install_timeout(p)
+    async with httpx.AsyncClient(verify=False, timeout=10) as http:  # noqa: S501 - the certificate is checked next
         while True:
             try:
-                resp = await http.get(_node_url(p))
+                resp = await http.get(_node_url(p, p.ip))
                 if resp.status_code < 500:
-                    _log(p, "Панель 3x-ui на сервере отвечает")
-                    return
-            except httpx.HTTPError as exc:  # refused / timeout while it installs: keep waiting
-                if "CERTIFICATE_VERIFY_FAILED" in str(exc):
-                    raise ProvisionError(f"Сервер ответил с чужим TLS-сертификатом: {exc}") from exc
+                    break
+            except httpx.HTTPError:  # refused / timeout while it installs: keep waiting
+                pass
             if time.time() > deadline:
                 raise ProvisionError(
-                    f"Панель не ответила за {INSTALL_TIMEOUT // 60} минут. Журнал установки на сервере: "
+                    f"Панель не ответила за {_install_timeout(p) // 60} минут. Журнал установки на сервере: "
                     "/var/log/vpn-admin-node.log")
             await asyncio.sleep(POLL_EVERY)
+    await _trust_node(p)
+    if p.cert_mode == "domain":
+        _log(p, f"Панель 3x-ui отвечает, сертификат Let's Encrypt на {p.domain}")
+    elif p.cert_mode == "ip":
+        if p.domain:
+            _log(p, f"A-запись {p.domain} → {p.ip} не появилась за {DNS_WAIT // 60} минут: взят сертификат на IP")
+        _log(p, f"Панель 3x-ui отвечает, сертификат Let's Encrypt на IP {p.ip} (короткий, продлевается сам)")
+    else:
+        _log(p, "Панель 3x-ui отвечает, но Let's Encrypt сертификат не выдал: панель работает на самоподписанном, "
+                "основная панель закрепит его (pin). Причина — в /var/log/vpn-admin-node.log на сервере")
 
 
 async def _step_connect(p: db.Provision) -> None:
-    node = XUIClient(_node_url(p), p.username, p.secrets["password"], _pinned_context(p.cert_pem))
+    trusted = await _trust_node(p)
+    node = XUIClient(_node_url(p, p.ip), p.username, p.secrets["password"], trusted)
     try:
         token = await node.v3_create_api_token(f"vpn-admin-{int(time.time())}", "node-admin")
     except XUIError as exc:
         raise ProvisionError(f"Не удалось создать API-токен на узле: {exc}") from exc
     finally:
         await node.close()
-    _log(p, "API-токен узла создан, добавляю узел в основную панель")
     body = nodes.NodeIn(
-        name=p.name, remark="создан через VPN API Hoster", scheme="https", address=p.ip, port=p.port,
-        base_path=p.base_path, api_token=token, tls_verify_mode="pin", pinned_cert_sha256=p.cert_pin,
+        name=p.name, remark="создан через VPN API Hoster", scheme="https", address=_node_host(p), port=p.port,
+        base_path=p.base_path, api_token=token, tls_verify_mode="pin" if p.cert_mode == "self" else "verify",
+        pinned_cert_sha256=p.cert_pin if p.cert_mode == "self" else "",
         allow_private_address=ipaddress.ip_address(p.ip).is_private,
     )
     try:
+        current = await nodes.get(p.panel_id, p.node_id) if p.node_id else None
+        if current:
+            # reinstall: the old server's node switches over; its inbounds and clients stay in the main panel,
+            # which pushes them to the fresh panel
+            body.name, body.remark, body.enable = current["name"], current["remark"], current["enable"]
+            body.inbound_sync_mode, body.inbound_tags = current["inbound_sync_mode"], current["inbound_tags"]
+            _log(p, f"API-токен узла создан, переключаю узел «{current['name']}» основной панели на новый сервер")
+            await nodes.update(p.panel_id, p.node_id, body)
+            _log(p, "Узел основной панели переключён на новый сервер")
+            return
+        _log(p, "API-токен узла создан, добавляю узел в основную панель")
         created = await nodes.add(p.panel_id, body)
     except nodes.NodeError as exc:
         raise ProvisionError(f"Основная панель не приняла узел: {exc}") from exc
@@ -326,7 +456,24 @@ async def _step_connect(p: db.Provision) -> None:
     _log(p, "Узел добавлен в основную панель")
 
 
-STEP_RUNNERS = {"create": _step_create, "boot": _step_boot, "install": _step_install, "connect": _step_connect}
+async def _step_retire(p: db.Provision) -> None:
+    """Reinstall: the node already runs on the new server, so the old one goes (it keeps costing money)."""
+    old = db.get_provision(p.replaces) if p.replaces else None
+    if not old:
+        return
+    if old.server_id and old.state != "deleted":
+        _log(p, f"Удаляю старый сервер {old.ip or old.server_id} у хостинга")
+        try:
+            await _with_client(old, lambda c: c.delete_server(old.server_id, old.project or None))
+        except hosters.HosterError as exc:
+            if exc.code != "NOT_FOUND":  # already deleted in the hosting's own panel
+                raise
+    db.delete_provision(old.id)
+    _log(p, "Старый сервер удалён, его задание убрано из списка")
+
+
+STEP_RUNNERS = {"create": _step_create, "boot": _step_boot, "install": _step_install, "connect": _step_connect,
+                "retire": _step_retire}
 
 
 async def run(provision_id: int) -> None:
@@ -373,16 +520,46 @@ async def start(body: ProvisionIn) -> dict:
         await nodes.main_panel(body.panel_id)  # must be a reachable 3x-ui v3 panel
     except nodes.NodeError as exc:
         raise ProvisionError(f"Основная панель: {exc}") from exc
-    cert_pem, key_pem, pin = make_certificate()
-    p = db.create_provision(
-        hoster_id=hoster.id, panel_id=body.panel_id, name=body.name, region=body.region, plan=body.plan,
-        project=body.project or "", ssh_keys=body.ssh_keys, port=secrets.randbelow(40000) + 20000,
-        base_path=f"/{_random(14, string.ascii_lowercase + string.digits)}/", username=f"adm_{_random(6, string.ascii_lowercase + string.digits)}",
-        secrets={"password": _random(20), "key_pem": key_pem}, cert_pem=cert_pem, cert_pin=pin,
-        step="create", state="running",
-        labels={"region": body.region_label.strip()[:100], "plan": body.plan_label.strip()[:100]},
-    )
+    p = _new_job(hoster_id=hoster.id, panel_id=body.panel_id, name=body.name, region=body.region, plan=body.plan,
+                 project=body.project or "", ssh_keys=body.ssh_keys, domain=body.domain,
+                 labels={"region": body.region_label.strip()[:100], "plan": body.plan_label.strip()[:100]})
     _log(p, "Задание создано")
+    _spawn(p.id)
+    return public(p)
+
+
+def _new_job(**fields) -> db.Provision:
+    """A job with fresh panel credentials and certificate for a server that is yet to be ordered."""
+    lower = string.ascii_lowercase + string.digits
+    cert_pem, key_pem, pin = make_certificate()
+    return db.create_provision(
+        **fields, port=secrets.randbelow(40000) + 20000, base_path=f"/{_random(14, lower)}/",
+        username=f"adm_{_random(6, lower)}", secrets={"password": _random(20), "key_pem": key_pem},
+        cert_pem=cert_pem, cert_pin=pin, step="create", state="running",
+    )
+
+
+async def reinstall(provision_id: int) -> dict:
+    """Start from zero: a new server with the same hosting, region and plan and a freshly installed 3x-ui;
+    the node of the main panel switches to it and the old server is deleted. The IP changes."""
+    old = db.get_provision(provision_id)
+    if not old:
+        raise ProvisionError("Задание не найдено")
+    if old.state not in ("done", "failed") or not old.server_id:
+        raise ProvisionError("Переустановить можно сервер, который уже создан у хостинга")
+    if any(p.replaces == old.id for p in db.list_provisions()):
+        raise ProvisionError("Для этого сервера уже есть задание переустановки")
+    if not db.get_hoster(old.hoster_id):
+        raise ProvisionError("Аккаунт хостинга удалён из админки")
+    try:
+        await nodes.main_panel(old.panel_id)
+    except nodes.NodeError as exc:
+        raise ProvisionError(f"Основная панель: {exc}") from exc
+    p = _new_job(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=old.plan,
+                 project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=old.labels,
+                 node_id=old.node_id, replaces=old.id)
+    _log(p, f"Переустановка: новый сервер заменит {old.ip or old.server_id}, узел основной панели переключится на "
+            "него, старый сервер будет удалён")
     _spawn(p.id)
     return public(p)
 
@@ -430,6 +607,7 @@ def public(p: db.Provision) -> dict[str, Any]:
         "server_id": p.server_id, "ip": p.ip, "node_id": p.node_id, "step": p.step,
         "state": p.state, "error": p.error, "log": p.log[-15:], "created_at": p.created_at,
         "updated_at": p.updated_at, "panel_url": _node_url(p) if p.ip else "", "username": p.username,
+        "domain": p.domain, "cert_mode": p.cert_mode, "replaces": p.replaces,
     }
 
 

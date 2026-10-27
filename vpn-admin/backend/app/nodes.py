@@ -150,6 +150,16 @@ async def add(panel_id: int, body: NodeIn) -> dict[str, Any]:
     return await _call(panel_id, lambda xui: xui.v3_node_add(_to_request(body)))
 
 
+async def get(panel_id: int, node_id: int) -> dict[str, Any] | None:
+    """The node as the main panel has it; None when the panel no longer knows this id."""
+    _, xui = await main_panel(panel_id)
+    try:
+        node = await xui.v3_node(node_id)
+    except XUIError:
+        return None
+    return node_view(node, None) if node else None
+
+
 async def update(panel_id: int, node_id: int, body: NodeIn) -> None:
     await _call(panel_id, lambda xui: xui.v3_node_update(node_id, _to_request(body, node_id)))
 

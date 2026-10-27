@@ -28,6 +28,8 @@ export function CreateServerDialog({
   const [plan, setPlan] = useState("");
   const [sshKeys, setSshKeys] = useState<string[]>([]);
   const [panelId, setPanelId] = useState(mainPanels[0]?.id ?? 0);
+  const [useDomain, setUseDomain] = useState(false);
+  const [domain, setDomain] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -79,6 +81,7 @@ export function CreateServerDialog({
         ssh_keys: sshKeys,
         region_label: regions.find((r) => r.id === region)?.name ?? region,
         plan_label: chosen?.label ?? planId,
+        domain: useDomain ? domain.trim() : "",
       });
       onStarted();
     } catch (err) {
@@ -186,6 +189,34 @@ export function CreateServerDialog({
               )}
             </div>
 
+            <div className="field">
+              <span>Адрес панели узла и сертификат</span>
+              <div className="segmented">
+                <button type="button" className={useDomain ? "" : "active"} aria-pressed={!useDomain} onClick={() => setUseDomain(false)}>
+                  IP-адрес сервера
+                </button>
+                <button type="button" className={useDomain ? "active" : ""} aria-pressed={useDomain} onClick={() => setUseDomain(true)}>
+                  Свой домен
+                </button>
+              </div>
+              {useDomain && (
+                <input
+                  className="input mono"
+                  required
+                  placeholder="vpn1.example.com"
+                  pattern="([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}"
+                  value={domain}
+                  onChange={(e) => setDomain(e.target.value)}
+                />
+              )}
+              <small className="muted">
+                {useDomain
+                  ? "IP сервера станет известен после заказа: он появится в журнале задания, тогда создайте A-запись домена на него. Установка ждёт её до 20 минут и выпускает сертификат Let's Encrypt на домен; если запись не появится — на IP."
+                  : "Сертификат Let's Encrypt на IP: короткий (около 6 дней), сервер продлевает его сам."}{" "}
+                Если Let's Encrypt откажет, панель останется на самоподписанном сертификате, закреплённом в основной панели.
+              </small>
+            </div>
+
             <label className="field">
               <span>Подключить узлом к основной панели</span>
               <select className="input" value={panelId} onChange={(e) => setPanelId(Number(e.target.value))} disabled={mainPanels.length === 0}>
@@ -198,8 +229,8 @@ export function CreateServerDialog({
             </label>
 
             <div className="notice notice-info small">
-              На сервер встанут Ubuntu 24.04, Docker и 3x-ui последней версии. Порт, путь, логин и пароль панели админка задаст сама и выпустит для неё
-              TLS-сертификат, который основная панель закрепит (pin). Обычно всё занимает 5–10 минут. Хостинг начнёт брать плату за сервер сразу после
+              На сервер встанут Ubuntu 24.04, Docker и 3x-ui последней версии. Порт, путь, логин и пароль панели админка задаст сама, сертификат
+              выпустит Let's Encrypt (для этого откроется порт 80). Обычно всё занимает 5–10 минут. Хостинг начнёт брать плату за сервер сразу после
               создания.
               {hoster.provider === "vdsina" &&
                 " У VDSina нет cloud-init: админка зайдёт на сервер по SSH одноразовым ключом, установит всё сама, добавит root выбранный SSH-ключ, а свой ключ удалит."}

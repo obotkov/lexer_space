@@ -467,9 +467,11 @@ export interface ProvisionForm {
   /** what the form showed, kept on the job: some hostings use bare IDs for regions and plans */
   region_label: string;
   plan_label: string;
+  /** panel address with a Let's Encrypt certificate; empty = the server's IP */
+  domain: string;
 }
 
-export type ProvisionStep = "create" | "boot" | "install" | "connect" | "done";
+export type ProvisionStep = "create" | "boot" | "install" | "connect" | "retire" | "done";
 
 export interface Provision {
   id: number;
@@ -490,6 +492,11 @@ export interface Provision {
   updated_at: number;
   panel_url: string;
   username: string;
+  domain: string;
+  /** certificate the node panel ended up with; "" until the panel answered */
+  cert_mode: "" | "domain" | "ip" | "self";
+  /** reinstall: id of the job whose server this one replaces */
+  replaces: number;
 }
 
 export interface ProvisionCredentials {
@@ -563,6 +570,7 @@ export const api = {
   provisions: () => request<Provision[]>("GET", "/api/provisions"),
   startProvision: (form: ProvisionForm) => request<Provision>("POST", "/api/provisions", form),
   retryProvision: (id: number) => request<Provision>("POST", `/api/provisions/${id}/retry`),
+  reinstallProvision: (id: number) => request<Provision>("POST", `/api/provisions/${id}/reinstall`),
   deleteProvisionServer: (id: number) => request<Provision>("POST", `/api/provisions/${id}/delete-server`),
   provisionCredentials: (id: number) => request<ProvisionCredentials>("GET", `/api/provisions/${id}/credentials`),
   forgetProvision: (id: number) => request("DELETE", `/api/provisions/${id}`),

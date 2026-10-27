@@ -6,7 +6,15 @@ const STEPS: { id: ProvisionStep; title: string }[] = [
   { id: "boot", title: "Запуск" },
   { id: "install", title: "Установка 3x-ui" },
   { id: "connect", title: "Подключение узлом" },
+  { id: "retire", title: "Удаление старого сервера" }, // only a reinstall has it
 ];
+
+const CERT_NOTES: Record<Provision["cert_mode"], (p: Provision) => string> = {
+  domain: (p) => `Сертификат Let's Encrypt на ${p.domain}, продлевается на сервере автоматически.`,
+  ip: (p) => `Сертификат Let's Encrypt на IP ${p.ip}: короткий, сервер продлевает его сам.`,
+  self: () => "Сертификат панели узла самоподписанный: браузер предупредит о нём при входе, это ожидаемо.",
+  "": () => "Сертификат панели узла самоподписанный: браузер предупредит о нём при входе, это ожидаемо.",
+};
 
 const STATE_BADGE: Record<Provision["state"], [string, string]> = {
   running: ["badge-depleted", "Выполняется"],
@@ -71,14 +79,21 @@ export function Provisions({
       <div className="provisions">
         {items.map((p) => {
           const account = accounts.find((a) => a.id === p.hoster_id);
-          const current = STEPS.findIndex((s) => s.id === p.step);
+          const steps = p.replaces ? STEPS : STEPS.filter((s) => s.id !== "retire");
+          const found = steps.findIndex((s) => s.id === p.step);
+          const current = found < 0 ? steps.length : found; // a step without a chip runs after all of them
+          const replacedBy = items.find((x) => x.replaces === p.id && x.state !== "deleted");
+          const canReinstall = !replacedBy && !!p.server_id && (p.state === "done" || (p.state === "failed" && !p.replaces));
           const [badgeClass, badgeText] = STATE_BADGE[p.state];
           const c = creds[p.id];
           return (
             <section key={p.id} className="card provision">
               <div className="card-head">
                 <div>
-                  <div className="strong">{p.name}</div>
+                  <div className="strong">
+                    {p.name}
+                    {p.replaces > 0 && <span className="muted small"> · переустановка</span>}
+                  </div>
                   <div className="provision-source small">
                     {account ? (
                       <>
@@ -97,7 +112,7 @@ export function Provisions({
               </div>
 
               <ol className="steps">
-                {STEPS.map((s, i) => {
+                {steps.map((s, i) => {
                   const state =
                     p.step === "done" || i < current ? "done" : i === current ? (p.state === "failed" ? "failed" : p.state === "running" ? "active" : "") : "";
                   return (
@@ -110,6 +125,11 @@ export function Provisions({
               </ol>
 
               {p.error && <div className="error-text small provision-error">{p.error}</div>}
+              {replacedBy && (
+                <div className="notice notice-info small">
+                  Сервер переустанавливается: новый заказан в задании «{replacedBy.name}», после переключения узла этот будет удалён.
+                </div>
+              )}
               {p.state === "running" && p.log.length > 0 && <div className="muted small">{p.log[p.log.length - 1].msg}…</div>}
 
               {p.state === "done" && p.panel_url && (
@@ -131,9 +151,7 @@ export function Provisions({
                   </dd>
                 </dl>
               )}
-              {p.state === "done" && (
-                <div className="muted small">Сертификат панели узла самоподписанный: браузер предупредит о нём при входе, это ожидаемо.</div>
-              )}
+              {p.state === "done" && <div className="muted small">{CERT_NOTES[p.cert_mode ?? ""](p)}</div>}
 
               {openLog === p.id && (
                 <ul className="log provision-log">
@@ -154,7 +172,22 @@ export function Provisions({
                     Повторить
                   </button>
                 )}
-                {p.state === "failed" && p.server_id && (
+                {canReinstall && (
+                  <button
+                    className="btn btn-small"
+                    disabled={busy === p.id}
+                    onClick={() =>
+                      confirm(
+                        `Переустановить «${p.name}» с нуля?\n\nАдминка закажет новый сервер с теми же хостингом, регионом и тарифом, ` +
+                          "поставит 3x-ui заново и переключит на него узел основной панели: инбаунды и клиенты сохранятся. " +
+                          `Потом старый сервер будет удалён. IP изменится${p.domain ? ` — A-запись ${p.domain} нужно будет направить на новый IP` : ""}.`,
+                      ) && act(p.id, () => api.reinstallProvision(p.id))
+                    }
+                  >
+                    Переустановить с нуля
+                  </button>
+                )}
+                {p.state === "failed" && p.server_id && !replacedBy && (
                   <button
                     className="btn btn-small btn-danger"
                     disabled={busy === p.id}
