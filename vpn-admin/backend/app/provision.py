@@ -330,6 +330,7 @@ def install_script(p: db.Provision, extra: str = "") -> str:
     return f"""#!/bin/bash
 # vpn-admin: 3x-ui node "{p.name}"
 set -u
+umask 022  # nginx reads the decoy page and the Let's Encrypt challenges as its own user
 exec > {NODE_LOG} 2>&1
 echo $$ > {INSTALL_PID}
 trap 'echo "vpn-admin-exit: $?"; rm -f {INSTALL_FILE} {INSTALL_PID}' EXIT
@@ -397,7 +398,17 @@ fi
 
 
 def _node_host(p: db.Provision) -> str:
-    return p.domain if p.cert_mode == "domain" else p.ip
+    """Where the panel is opened: the chosen domain, also when it got no Let's Encrypt certificate."""
+    return p.domain or p.ip
+
+
+async def _node_address(p: db.Provision) -> str:
+    """What the main panel connects to: the domain once it points at the server, otherwise the IP."""
+    if p.domain and p.ip in await _addresses(p.domain):
+        return p.domain
+    if p.domain:
+        _log(p, f"{p.domain} пока не указывает на {p.ip}: основная панель подключит узел по IP")
+    return p.ip
 
 
 def _node_url(p: db.Provision, host: str = "") -> str:
@@ -622,8 +633,7 @@ if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
   for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$PID" 2>/dev/null || break; sleep 1; done
   kill -KILL -- "-$PID" 2>/dev/null || true
 fi
-umask 077
-cat > {INSTALL_FILE}
+(umask 077 && cat > {INSTALL_FILE})  # it holds the panel password; the install itself must not inherit this
 rm -f {NODE_LOG} {INSTALL_PID}
 setsid -f bash {INSTALL_FILE} </dev/null >/dev/null 2>&1
 """
@@ -735,7 +745,7 @@ async def _step_connect(p: db.Provision) -> None:
     finally:
         await node.close()
     body = nodes.NodeIn(
-        name=p.name, remark="создан через VPN API Hoster", scheme="https", address=_node_host(p), port=p.port,
+        name=p.name, remark="создан через VPN API Hoster", scheme="https", address=await _node_address(p), port=p.port,
         base_path=p.base_path, api_token=token, tls_verify_mode="pin" if p.cert_mode == "self" else "verify",
         pinned_cert_sha256=p.cert_pin if p.cert_mode == "self" else "",
         allow_private_address=ipaddress.ip_address(p.ip).is_private,
