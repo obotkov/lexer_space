@@ -114,14 +114,19 @@ def make_ssh_key() -> tuple[str, str]:
     return private, f"{public} {SSH_KEY_COMMENT}"
 
 
+def _drop_setup_key_script() -> str:
+    """Remove the admin's one-time key from root and every user it may have been given to."""
+    return (f"for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do "
+            f"[ -f \"$f\" ] && sed -i '/ {SSH_KEY_COMMENT}$/d' \"$f\"; done\n")
+
+
 def _authorized_keys_script(user_keys: list[str]) -> str:
     """Give root the user's keys chosen in the form, then drop the admin's one-time key."""
     lines = ["mkdir -p /root/.ssh && chmod 700 /root/.ssh && touch /root/.ssh/authorized_keys"]
     for key in user_keys:
         quoted = shlex.quote(key)
         lines.append(f"grep -qxF {quoted} /root/.ssh/authorized_keys || echo {quoted} >> /root/.ssh/authorized_keys")
-    lines.append(f"sed -i '/ {SSH_KEY_COMMENT}$/d' /root/.ssh/authorized_keys")
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n" + _drop_setup_key_script()
 
 
 def user_data(p: db.Provision, extra: str = "") -> str:
@@ -209,12 +214,16 @@ async def _step_create(p: db.Provision) -> None:
     _log(p, f"Заказываю сервер {p.labels.get('plan') or p.plan}: {p.labels.get('region') or p.region}")
 
     def order(client):
-        admin_key = None
+        admin_key, script = None, user_data(p)
         if getattr(client, "setup", "") == "ssh":  # no cloud-init: the admin will log in and install itself
             private, admin_key = make_ssh_key()
             _set(p, secrets={**p.secrets, "ssh_key": private})
+        elif getattr(client, "login_key_required", False):
+            # the hosting refuses servers without a login key: give a throwaway one, the script deletes it
+            _, admin_key = make_ssh_key()
+            script = user_data(p, _drop_setup_key_script())
         return client.create_server(name=p.name, region=p.region, plan=p.plan, ssh_keys=p.ssh_keys,
-                                    user_data=user_data(p), project=p.project or None, admin_key=admin_key)
+                                    user_data=script, project=p.project or None, admin_key=admin_key)
 
     server_id = await _with_client(p, order)
     if "ssh_key" in p.secrets:  # the TLS key goes to the server over SSH later

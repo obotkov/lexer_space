@@ -7,6 +7,7 @@ normalized shape. Secrets are stored encrypted in the hosters table.
 """
 
 import asyncio
+import datetime
 import hashlib
 import json
 import os
@@ -31,6 +32,7 @@ OVH_ENDPOINTS = {
     "ovh-ca": os.getenv("OVH_CA_API_URL", "https://ca.api.ovh.com/1.0"),
     "ovh-us": os.getenv("OVH_US_API_URL", "https://api.us.ovhcloud.com/1.0"),
 }
+UPCLOUD_API_URL = os.getenv("UPCLOUD_API_URL", "https://api.upcloud.com/1.3")
 SCW_API_URL = os.getenv("SCW_API_URL", "https://api.scaleway.com")
 SCW_ZONES = ["fr-par-1", "fr-par-2", "fr-par-3", "nl-ams-1", "nl-ams-2", "nl-ams-3",
              "pl-waw-1", "pl-waw-2", "pl-waw-3", "it-mil-1"]
@@ -106,6 +108,20 @@ PROVIDERS: dict[str, dict[str, Any]] = {
                 "Project ID — в Console → Project settings.",
         "help_url": "https://console.scaleway.com/iam/api-keys",
     },
+    "upcloud": {
+        "title": "UpCloud",
+        "site": "https://upcloud.com",
+        "fields": [
+            {"key": "token", "label": "API-токен", "secret": True, "placeholder": "ucat_…"},
+            {"key": "ssh_public_key", "label": "SSH-ключ для входа на новые серверы (необязательно)", "secret": False,
+             "optional": True,
+             "placeholder": "ssh-ed25519 AAAA… — открытый ключ, как в ~/.ssh/id_ed25519.pub"},
+        ],
+        "help": "Control Panel → Account → API Tokens → Create token (показывается один раз, срок — до года). "
+                "У пользователя токена должен быть доступ к API и правам на серверы. Свой открытый SSH-ключ можно "
+                "указать здесь: UpCloud ставит серверы с cloud-init только с входом по ключу.",
+        "help_url": "https://hub.upcloud.com/account/api-tokens",
+    },
     "vdsina": {
         "title": "VDSina",
         "site": "https://www.vdsina.com",
@@ -174,7 +190,8 @@ COUNTRIES = {"FR": "Франция", "DE": "Германия", "GB": "Велик
              "NL": "Нидерланды", "CA": "Канада", "US": "США", "SG": "Сингапур", "AU": "Австралия", "IN": "Индия",
              "RU": "Россия", "KZ": "Казахстан", "TR": "Турция", "FI": "Финляндия", "SE": "Швеция", "CH": "Швейцария",
              "ES": "Испания", "LV": "Латвия", "LT": "Литва", "EE": "Эстония", "BG": "Болгария", "MD": "Молдова",
-             "RS": "Сербия", "GE": "Грузия", "AM": "Армения", "AE": "ОАЭ", "HK": "Гонконг", "JP": "Япония"}
+             "RS": "Сербия", "GE": "Грузия", "AM": "Армения", "AE": "ОАЭ", "HK": "Гонконг", "JP": "Япония",
+             "DK": "Дания", "NO": "Норвегия"}
 
 # OVHcloud Public Cloud: new names (EU-WEST-PAR, AP-SOUTH-MUM-1) first, then the classic ones (GRA11, DE1)
 OVH_PLACES = [
@@ -188,6 +205,15 @@ OVH_PLACES = [
     ("SYD", "AU", "Сидней"), ("MUM", "IN", "Мумбаи"), ("TOR", "CA", "Торонто"), ("LIM", "DE", "Лимбург"),
     ("ERI", "GB", "Лондон"), ("PAR", "FR", "Париж"), ("MIL", "IT", "Милан"), ("VIN", "US", "Вирджиния"),
     ("HIL", "US", "Орегон"),
+]
+
+# UpCloud zones: de-fra1, fi-hel2, us-nyc1…
+UPCLOUD_PLACES = [
+    ("de-fra", "DE", "Франкфурт"), ("fi-hel", "FI", "Хельсинки"), ("nl-ams", "NL", "Амстердам"),
+    ("uk-lon", "GB", "Лондон"), ("pl-waw", "PL", "Варшава"), ("es-mad", "ES", "Мадрид"),
+    ("se-sto", "SE", "Стокгольм"), ("dk-cph", "DK", "Копенгаген"), ("no-svg", "NO", "Ставангер"),
+    ("us-chi", "US", "Чикаго"), ("us-nyc", "US", "Нью-Йорк"), ("us-sjo", "US", "Сан-Хосе"),
+    ("sg-sin", "SG", "Сингапур"), ("au-syd", "AU", "Сидней"),
 ]
 
 # Scaleway zones: fr-par-1, nl-ams-2…
@@ -784,6 +810,171 @@ class VDSina:
                 await self._request("DELETE", f"/ssh-key/{key['id']}")
 
 
+class UpCloud:
+    """UpCloud API 1.3 with an API token (Bearer ucat_…). Cloud-init templates only allow SSH-key logins, so a
+    server always gets a login key: the admin's throwaway one (removed by the setup script) plus the account's
+    own key when set. Prices come in cents per hour; a month is capped at 28 days (672 hours)."""
+    title = "UpCloud"
+    login_key_required = True
+    images = ("Ubuntu Server 24.04", "Ubuntu Server 22.04")
+    hours_cap = 672
+    state_map = {"started": "running", "maintenance": "pending", "stopped": "stopped", "error": "error"}
+    state_labels = {"started": "Работает", "maintenance": "Обслуживание", "stopped": "Выключен", "error": "Ошибка"}
+
+    def __init__(self, credentials: dict[str, str]):
+        token = credentials.get("token", "").strip()
+        if not token:
+            raise HosterError("Укажите API-токен UpCloud")
+        self.user_key = credentials.get("ssh_public_key", "").strip()
+        self.http = httpx.AsyncClient(base_url=UPCLOUD_API_URL, timeout=TIMEOUT, headers={
+            "Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": "vpn-admin"})
+
+    async def close(self) -> None:
+        await self.http.aclose()
+
+    async def _request(self, method: str, path: str, params: dict | None = None, json: dict | None = None) -> Any:
+        try:
+            resp = await self.http.request(method, path, params=params, json=json)
+        except httpx.HTTPError as exc:
+            raise HosterError(f"UpCloud недоступен: {exc}") from exc
+        if resp.status_code < 400:
+            return resp.json() if resp.content else None
+        try:  # {"error": {"error_code": "SERVER_NOT_FOUND", "error_message": "..."}}
+            error = resp.json().get("error") or {}
+        except ValueError:
+            error = {}
+        code = error.get("error_code") or f"HTTP_{resp.status_code}"
+        message = error.get("error_message") or resp.text[:200]
+        if resp.status_code == 401:
+            raise HosterError(f"UpCloud: токен не принят ({message})", "HTTP_401")
+        if resp.status_code == 403:
+            raise HosterError(f"UpCloud: у токена нет прав на это действие ({message})", "HTTP_403")
+        raise HosterError(f"UpCloud: {message} ({code})", "NOT_FOUND" if resp.status_code == 404 else code)
+
+    async def account(self) -> dict:
+        account, details = await asyncio.gather(self._request("GET", "/account"),
+                                                self._request("GET", "/account/details"), return_exceptions=True)
+        if isinstance(account, Exception):
+            raise account
+        acc = (account or {}).get("account") or {}
+        currency = ((details or {}).get("account") or {}).get("currency", "EUR") if isinstance(details, dict) else "EUR"
+        credits = acc.get("credits")  # in cents
+        return {"login": acc.get("username", ""), "name": "", "status": "",
+                "balance": (f"{credits / 100:,.2f}".replace(",", " ").replace(".", ",") + f" {currency}"
+                            if isinstance(credits, (int, float)) else None),
+                "limits": "SSH-ключ для новых серверов задан" if self.user_key else "SSH-ключ для новых серверов не задан"}
+
+    @staticmethod
+    def _ips(addresses: list[dict]) -> tuple[list[str], list[str]]:
+        public = [a for a in addresses if a.get("access") == "public" and a.get("address")]
+        return ([a["address"] for a in public if a.get("family") == "IPv4"],
+                [a["address"] for a in public if a.get("family") == "IPv6"])
+
+    def _view(self, s: dict, addresses: list[dict]) -> dict:
+        state = s.get("state", "")
+        ipv4, ipv6 = self._ips(addresses)
+        return _server(
+            id=s.get("uuid"), name=s.get("title") or s.get("hostname", ""), kind="Cloud Server",
+            status=self.state_map.get(state, "unknown"), status_label=self.state_labels.get(state, state),
+            region=region_label(s.get("zone", ""), UPCLOUD_PLACES, with_code=False), plan=s.get("plan", ""),
+            specs=f"{s.get('core_number', '?')} vCPU · {round(int(s.get('memory_amount') or 0) / 1024, 1):g} GB",
+            ipv4=ipv4, ipv6=ipv6, created_at=(datetime.datetime.fromtimestamp(int(s["created"]), datetime.timezone.utc)
+                                              .isoformat() if str(s.get("created", "")).isdigit() else ""),
+        )
+
+    async def servers(self) -> list[dict]:
+        servers, addresses = await asyncio.gather(self._request("GET", "/server"), self._request("GET", "/ip_address"))
+        by_server: dict[str, list[dict]] = {}
+        for a in ((addresses or {}).get("ip_addresses") or {}).get("ip_address") or []:
+            by_server.setdefault(a.get("server", ""), []).append(a)
+        return [self._view(s, by_server.get(s.get("uuid"), []))
+                for s in ((servers or {}).get("servers") or {}).get("server") or []]
+
+    async def create_options(self, project: str | None = None) -> dict:
+        zones, plans, prices, details = await asyncio.gather(
+            self._request("GET", "/zone"), self._request("GET", "/plan"), self._request("GET", "/price"),
+            self._request("GET", "/account/details"), return_exceptions=True)
+        for result in (zones, plans, prices):
+            if isinstance(result, Exception):
+                raise result
+        # prices come in the account's currency
+        currency = ((details or {}).get("account") or {}).get("currency", "EUR") if isinstance(details, dict) else "EUR"
+        public = [z for z in ((zones or {}).get("zones") or {}).get("zone") or [] if z.get("public") == "yes"]
+        price_by_zone = {p["name"]: p for p in ((prices or {}).get("prices") or {}).get("zone") or []}
+        out = []
+        for plan in ((plans or {}).get("plans") or {}).get("plan") or []:
+            name = plan.get("name", "")
+            if "GPU" in name.upper():
+                continue
+            key = f"server_plan_{name}"
+            regions = [z["id"] for z in public if key in price_by_zone.get(z["id"], {})]
+            if not regions:
+                continue
+            cents = price_by_zone[regions[0]][key].get("price")
+            hour = round(cents / 100, 5) if isinstance(cents, (int, float)) else None
+            out.append({"id": name, "label": name, "regions": regions, "currency": currency,
+                        "specs": f"{plan.get('core_number')} vCPU · {round((plan.get('memory_amount') or 0) / 1024, 1):g} GB"
+                                 f" · {plan.get('storage_size')} GB {(plan.get('storage_tier') or '').upper()}",
+                        "price_hour": hour, "price_month": round(hour * self.hours_cap, 2) if hour else None,
+                        "price_month_plan": None})
+        out.sort(key=lambda p: (p["price_hour"] is None, p["price_hour"] or 0, p["id"]))
+        return {"projects": None, "project": None, "ssh_multiple": False, "ssh_keys": [],
+                "ssh_note": "Войти на сервер можно будет ключом из настроек аккаунта UpCloud в админке."
+                            if self.user_key else
+                            "В настройках аккаунта UpCloud в админке не задан SSH-ключ: сервер будет работать, но "
+                            "войти на него по SSH не получится.",
+                "regions": sorted(({"id": z["id"], "name": region_label(z["id"], UPCLOUD_PLACES)} for z in public),
+                                  key=lambda r: r["name"]),
+                "plans": out}
+
+    async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
+                            project: str | None = None, admin_key: str | None = None) -> str:
+        templates, plans = await asyncio.gather(self._request("GET", "/storage/template"), self._request("GET", "/plan"))
+        candidates = [t for t in ((templates or {}).get("storages") or {}).get("storage") or []
+                      if t.get("template_type", "cloud-init") == "cloud-init"]
+        template = next((t for want in self.images for t in candidates if (t.get("title") or "").startswith(want)), None)
+        if not template:
+            raise HosterError("UpCloud: нет шаблона Ubuntu 24.04 / 22.04 с cloud-init")
+        spec = next((p for p in ((plans or {}).get("plans") or {}).get("plan") or [] if p.get("name") == plan), {})
+        keys = [k for k in (admin_key, self.user_key) if k]
+        body = {"server": {
+            "zone": region, "title": name, "hostname": name, "plan": plan, "metadata": "yes", "user_data": user_data,
+            "labels": {"label": [{"key": "managed-by", "value": "vpn-admin"}]},
+            "login_user": {"username": "root", "ssh_keys": {"ssh_key": keys}},
+            "storage_devices": {"storage_device": [{
+                "action": "clone", "storage": template["uuid"], "title": f"{name}-disk",
+                "size": spec.get("storage_size") or 25, "tier": spec.get("storage_tier") or "maxiops"}]},
+            "networking": {"interfaces": {"interface": [
+                {"index": 1, "type": "public", "ip_addresses": {"ip_address": [{"family": "IPv4"}]}},
+                {"index": 2, "type": "public", "ip_addresses": {"ip_address": [{"family": "IPv6"}]}},
+                {"index": 3, "type": "utility", "ip_addresses": {"ip_address": [{"family": "IPv4"}]}},
+            ]}},
+        }}
+        return str((await self._request("POST", "/server", json=body))["server"]["uuid"])
+
+    async def get_server(self, server_id: str, project: str | None = None) -> dict:
+        s = (await self._request("GET", f"/server/{server_id}"))["server"]
+        return self._view(s, ((s.get("ip_addresses") or {}).get("ip_address")) or [])
+
+    async def delete_server(self, server_id: str, project: str | None = None) -> None:
+        """A server must be stopped before it can be deleted; its disks go with it (storages=1)."""
+        try:
+            state = (await self._request("GET", f"/server/{server_id}"))["server"].get("state")
+        except HosterError as exc:
+            if exc.code == "NOT_FOUND":
+                return
+            raise
+        if state != "stopped":
+            if state == "started":
+                await self._request("POST", f"/server/{server_id}/stop",
+                                    json={"stop_server": {"stop_type": "hard", "timeout": "60"}})
+            for _ in range(60):
+                await asyncio.sleep(3)
+                if (await self._request("GET", f"/server/{server_id}"))["server"].get("state") == "stopped":
+                    break
+        await self._request("DELETE", f"/server/{server_id}", params={"storages": 1, "backups": "delete"})
+
+
 class Scaleway:
     """Scaleway Instance API v1 (zonal): secret key in X-Auth-Token, servers live in a project.
     A server is created stopped with a routed IPv4, gets the cloud-init script and is then powered on;
@@ -961,7 +1152,7 @@ class Scaleway:
                     raise
 
 
-CLIENTS = {"digitalocean": DigitalOcean, "ovh": OVHcloud, "vdsina": VDSina, "scaleway": Scaleway}
+CLIENTS = {"digitalocean": DigitalOcean, "ovh": OVHcloud, "vdsina": VDSina, "scaleway": Scaleway, "upcloud": UpCloud}
 
 
 # ---------- accounts ----------

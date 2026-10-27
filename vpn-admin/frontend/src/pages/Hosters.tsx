@@ -381,7 +381,7 @@ function HosterDialog({
                 <input
                   className="input mono"
                   type={f.secret && !shown[f.key] ? "password" : "text"}
-                  required={!(f.secret && hoster?.secrets_set.includes(f.key))}
+                  required={!f.optional && !(f.secret && hoster?.secrets_set.includes(f.key))}
                   value={form.credentials[f.key]}
                   onChange={(e) => setField(f.key, e.target.value)}
                   placeholder={f.secret && hoster?.secrets_set.includes(f.key) ? "сохранён, оставьте пустым чтобы не менять" : f.placeholder ?? ""}

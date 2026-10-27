@@ -362,6 +362,8 @@ export interface HosterField {
   key: string;
   label: string;
   secret?: boolean;
+  /** may be left empty */
+  optional?: boolean;
   placeholder?: string;
   options?: { value: string; label: string }[];
   default?: string;
