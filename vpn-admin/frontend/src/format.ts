@@ -12,6 +12,13 @@ export function formatSpeed(bytesPerSec: number): string {
   return `${formatBytes(bytesPerSec)}/s`;
 }
 
+/** 0.0123 → "0,0123 $", 8.98 → "8,98 $"; small hourly rates keep their significant digits. */
+export function formatPrice(value: number, currency: string): string {
+  const digits = value < 1 ? 4 : 2;
+  if (!currency) return value.toLocaleString("ru-RU", { maximumFractionDigits: digits });
+  return value.toLocaleString("ru-RU", { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: digits });
+}
+
 export function formatLimit(total: number): string {
   return total > 0 ? formatBytes(total) : "∞";
 }

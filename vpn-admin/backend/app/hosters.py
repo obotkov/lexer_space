@@ -20,6 +20,8 @@ from pydantic import BaseModel, Field
 from . import db
 
 CACHE_TTL = 60
+HOURS_PER_MONTH = 730  # how hosting companies turn an hourly rate into a month
+CATALOG_TTL = 6 * 3600
 TIMEOUT = 15
 
 # Overridable for tests against a local mock of the provider APIs
@@ -199,10 +201,12 @@ class DigitalOcean:
             "projects": None, "project": None, "ssh_multiple": True,
             "regions": [{"id": r["slug"], "name": f"{r.get('name', r['slug'])} ({r['slug']})"}
                         for r in regions if r.get("available")],
+            # hourly billing, capped at the monthly price
             "plans": [{"id": s["slug"], "label": s["slug"],
                        "specs": f"{s.get('vcpus')} vCPU · {round((s.get('memory') or 0) / 1024, 1):g} GB · {s.get('disk')} GB"
                                 + (f" · {s['transfer']:g} TB трафика" if s.get("transfer") else ""),
-                       "price": f"${s['price_monthly']:g}/мес" if s.get("price_monthly") else "",
+                       "price_hour": s.get("price_hourly"), "price_month": s.get("price_monthly"),
+                       "price_month_plan": None, "currency": "USD",
                        "regions": s.get("regions") or []} for s in plans],
             "ssh_keys": [{"id": str(k["id"]), "name": k.get("name") or k.get("fingerprint", "")} for k in keys],
         }
@@ -221,6 +225,11 @@ class DigitalOcean:
 
     async def delete_server(self, server_id: str, project: str | None = None) -> None:
         await self._request("DELETE", f"/droplets/{server_id}")
+
+
+# when the key may not read /me: the usual subsidiary of each API
+OVH_DEFAULT_SUBSIDIARY = {"ovh-eu": "FR", "ovh-ca": "WE", "ovh-us": "US"}
+_catalogs: dict[str, tuple[float, dict]] = {}
 
 
 class OVHcloud:
@@ -403,16 +412,24 @@ class OVHcloud:
         regions, flavors, keys = await asyncio.gather(
             self._get(f"/cloud/project/{project}/region"), self._get(f"/cloud/project/{project}/flavor"),
             self._get(f"/cloud/project/{project}/sshkey"))
+        catalog = await self._catalog(await self._subsidiary())
         plans: dict[str, dict] = {}
         for f in flavors:
             if f.get("osType") not in (None, "linux") or not f.get("available", True):
                 continue
+            codes = f.get("planCodes") or {}
+            hour = catalog["prices"].get(codes.get("hourly") or f"{f['name']}.consumption")
             plan = plans.setdefault(f["name"], {
-                "id": f["name"], "label": f["name"], "price": "почасовая оплата", "regions": [],
-                "specs": f"{f.get('vcpus')} vCPU · {round((f.get('ram') or 0) / 1024, 1):g} GB · {f.get('disk')} GB",
+                "id": f["name"], "label": f["name"], "regions": [],
+                "specs": f"{f.get('vcpus')} vCPU · {f.get('ram')} GB · {f.get('disk')} GB",  # OVH counts in GB
+                # servers are created with hourly billing: a month is HOURS_PER_MONTH of them
+                "price_hour": hour, "price_month": round(hour * HOURS_PER_MONTH, 2) if hour else None,
+                "price_month_plan": catalog["prices"].get(codes.get("monthly") or f"{f['name']}.monthly.postpaid"),
+                "currency": catalog["currency"],
                 "_size": (f.get("vcpus") or 0, f.get("ram") or 0)})
             plan["regions"].append(f.get("region"))
-        ordered = sorted(plans.values(), key=lambda p: (p["_size"], p["id"]))  # smallest first
+        # cheapest first; plans without a known price after them, smallest first
+        ordered = sorted(plans.values(), key=lambda p: (p["price_hour"] is None, p["price_hour"] or 0, p["_size"], p["id"]))
         for plan in ordered:
             del plan["_size"]
         return {
@@ -421,6 +438,37 @@ class OVHcloud:
             "plans": ordered,
             "ssh_keys": [{"id": k["id"], "name": k.get("name") or k["id"]} for k in keys],
         }
+
+    async def _subsidiary(self) -> str:
+        """Prices and currency depend on the OVHcloud subsidiary the account belongs to."""
+        try:
+            return (await self._get("/me")).get("ovhSubsidiary") or OVH_DEFAULT_SUBSIDIARY[self.endpoint]
+        except HosterError as exc:
+            if exc.code != "NOT_GRANTED_CALL":
+                raise
+            return OVH_DEFAULT_SUBSIDIARY[self.endpoint]
+
+    async def _catalog(self, subsidiary: str) -> dict:
+        """Public Cloud price list: planCode -> price. Public, no keys needed; a few MB, so cached."""
+        url = f"{self.base}/order/catalog/public/cloud?ovhSubsidiary={subsidiary}"
+        cached = _catalogs.get(url)
+        if cached and time.time() - cached[0] < CATALOG_TTL:
+            return cached[1]
+        try:
+            resp = await self.http.get(url, timeout=60)
+            data = resp.json() if resp.status_code == 200 else {}
+        except (httpx.HTTPError, ValueError):
+            data = {}
+        prices = {}
+        for addon in data.get("addons") or []:
+            for pricing in addon.get("pricings") or []:
+                if "consumption" in (pricing.get("capacities") or []) and pricing.get("intervalUnit") in ("hour", "month"):
+                    prices[addon["planCode"]] = pricing["price"] / 1e8  # the catalog counts in 10^-8 of the currency
+                    break
+        catalog = {"currency": (data.get("locale") or {}).get("currencyCode", ""), "prices": prices}
+        if prices:  # a failed download is retried next time instead of hiding prices for hours
+            _catalogs[url] = (time.time(), catalog)
+        return catalog
 
     async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
                             project: str | None = None) -> str:

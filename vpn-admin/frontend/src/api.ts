@@ -426,6 +426,20 @@ export interface HosterForm {
   credentials: Record<string, string>;
 }
 
+export interface HostingPlan {
+  id: string;
+  label: string;
+  specs: string;
+  /** null when the provider's price list did not have the plan */
+  price_hour: number | null;
+  /** what a month costs with the billing the server is created with (hourly) */
+  price_month: number | null;
+  /** OVHcloud: price of the same plan with monthly billing, for comparison */
+  price_month_plan: number | null;
+  currency: string;
+  regions: string[];
+}
+
 export interface CreateOptions {
   /** OVHcloud: Public Cloud projects; null when the provider has none */
   projects: { id: string; name: string }[] | null;
@@ -433,7 +447,7 @@ export interface CreateOptions {
   /** false: the provider takes a single SSH key per server */
   ssh_multiple: boolean;
   regions: { id: string; name: string }[];
-  plans: { id: string; label: string; specs: string; price: string; regions: string[] }[];
+  plans: HostingPlan[];
   ssh_keys: { id: string; name: string }[];
 }
 

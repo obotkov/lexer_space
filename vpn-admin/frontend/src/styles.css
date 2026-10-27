@@ -320,3 +320,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .provision-log { max-height: 220px; margin: 0; list-style: none; white-space: normal; word-break: break-word; }
 @media (max-width: 600px) { .provisions { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .step-active .step-mark { animation: none; } }
+
+/* plan price in the new server dialog */
+.price-box { display: grid; grid-template-columns: auto auto 1fr; gap: 6px 24px; align-items: end; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); }
+.price-item { display: flex; flex-direction: column; gap: 2px; }
+.price-value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.price-note { grid-column: 1 / -1; }
