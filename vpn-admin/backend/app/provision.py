@@ -25,6 +25,7 @@ resumes the job where it stopped.
 
 import asyncio
 import base64
+import contextlib
 import datetime
 import hashlib
 import ipaddress
@@ -60,8 +61,12 @@ BOOT_TIMEOUT = 10 * 60
 INSTALL_TIMEOUT = 25 * 60
 DNS_WAIT = 20 * 60  # how long the script waits for the domain's A record before taking a certificate for the IP
 POLL_EVERY = 10
+NODE_LOG = "/var/log/vpn-admin-node.log"
+INSTALL_FILE = "/root/vpn-admin-install.sh"
+INSTALL_PID = "/run/vpn-admin-install.pid"  # the install runs as its own process group, led by this pid
 
 _tasks: dict[int, asyncio.Task] = {}
+_fresh: dict[int, bool] = {}  # jobs whose install the admin asked to run again rather than follow
 
 
 class ProvisionError(Exception):
@@ -91,6 +96,14 @@ class ProvisionIn(BaseModel):
     dns_zone_id: str = ""
     site_template: str = ""  # decoy page on port 80: a template of the admin's site, "custom" or "" for none
     connections: bool = True  # create the enabled connection templates on the new node
+    os: str = hosters.DEFAULT_OS  # one of hosters.OS_LABELS
+
+    @field_validator("os")
+    @classmethod
+    def known_os(cls, value: str) -> str:
+        if value not in hosters.OS_LABELS:
+            raise ValueError(f"Система: одна из {', '.join(hosters.OS_LABELS.values())}")
+        return value
 
     @field_validator("site_template")
     @classmethod
@@ -231,6 +244,7 @@ server {{
 }}
 NGINX
 docker rm -f vpn-stub >/dev/null 2>&1 || true
+stage "Запускаю сайт-заглушку на порту 80"
 if retry docker pull {STUB_IMAGE}; then
   docker run -d --name vpn-stub --restart unless-stopped --network host \\
     -v /opt/vpn-stub/html:/usr/share/nginx/html:ro -v /opt/vpn-stub/acme:/var/www/acme:ro \\
@@ -240,7 +254,7 @@ fi
 if docker ps --format '{{{{.Names}}}}' | grep -qx vpn-stub; then
   ACME_MODE="--webroot /opt/vpn-stub/acme"
 else
-  echo "vpn-admin: decoy page not started"; ACME_MODE="--standalone --httpport 80"
+  stage "Сайт-заглушка не запустилась, продолжаю без неё"; ACME_MODE="--standalone --httpport 80"
 fi
 """
 
@@ -256,6 +270,7 @@ IP=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \\([0-9.]*\\).*/\\1/
 ACME=/root/.acme.sh/acme.sh
 le_issue() {{  # $1: domain or IP, the rest: extra acme.sh options
   local name="$1"; shift
+  stage "Получаю сертификат Let's Encrypt на $name"
   if ! "$ACME" --issue -d "$name" $ACME_MODE --server letsencrypt --force "$@"; then
     rm -rf "/root/.acme.sh/$name" "/root/.acme.sh/${{name}}_ecc"; return 1
   fi
@@ -270,20 +285,24 @@ dns_points_here() {{
     | grep -q "\\"data\\":\\"$IP\\""
 }}
 case "$IP" in
-  ""|10.*|127.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) PUBLIC=0; echo "no public IPv4 ($IP): Let's Encrypt skipped" ;;
+  ""|10.*|127.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) PUBLIC=0; stage "Нет публичного IPv4 ($IP): Let's Encrypt пропущен" ;;
   *) PUBLIC=1 ;;
 esac
+[ "$PUBLIC" = 1 ] && stage "Ставлю socat, cron и acme.sh для Let's Encrypt"
 if [ "$PUBLIC" = 1 ] && retry sh -c 'apt-get -o DPkg::Lock::Timeout=300 update -q && apt-get -o DPkg::Lock::Timeout=300 install -y -q socat cron' \\
    && {{ [ -x "$ACME" ] || retry sh -c 'curl -fsSL https://get.acme.sh | sh'; }}; then
   if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then ufw allow 80/tcp; fi
   if [ -n "$DOMAIN" ]; then
-    echo "waiting for the A record $DOMAIN -> $IP"
+    stage "Жду A-запись $DOMAIN → $IP (до {DNS_WAIT // 60} минут)"
     for i in $(seq {DNS_WAIT // 20}); do dns_points_here && break; sleep 20; done
     dns_points_here && le_issue "$DOMAIN"
   fi
   [ "$CERT" = /root/cert/panel.crt ] && le_issue "$IP" --certificate-profile shortlived --days 3
 fi
-echo "vpn-admin: certificate $CERT"
+case "$CERT" in
+  /root/cert/le.crt) stage "Сертификат Let's Encrypt получен" ;;
+  *) stage "Let's Encrypt сертификат не выдал: панель будет на самоподписанном" ;;
+esac
 """
 
 
@@ -303,15 +322,29 @@ PY
 
 
 def install_script(p: db.Provision, extra: str = "") -> str:
-    """The install the admin runs over SSH: Docker, the decoy page, a certificate and 3x-ui with the generated
-    port, path, login and password; `extra` steps (keys) at the end."""
+    """The install the admin starts over SSH: Docker, the decoy page, a certificate and 3x-ui with the generated
+    port, path, login and password; `extra` steps at the end. It runs detached on the server and reports its
+    stages and exit code into its log, so a dropped SSH connection does not stop it."""
     return f"""#!/bin/bash
 # vpn-admin: 3x-ui node "{p.name}"
 set -u
-exec > /var/log/vpn-admin-node.log 2>&1
+exec > {NODE_LOG} 2>&1
+echo $$ > {INSTALL_PID}
+trap 'echo "vpn-admin-exit: $?"; rm -f {INSTALL_FILE} {INSTALL_PID}' EXIT
 export DEBIAN_FRONTEND=noninteractive HOME=/root
 
-retry() {{ for i in 1 2 3 4 5 6; do "$@" && return 0; echo "retry $i: $*"; sleep 20; done; return 1; }}
+# "vpn-admin-stage:" lines are what the admin shows in the job's log
+stage() {{ echo "vpn-admin-stage: $*"; }}
+retry() {{ for i in 1 2 3 4 5 6; do "$@" && return 0; echo "retry $i: $*"; stage "Не получилось (попытка $i из 6), повторяю через 20 с"; sleep 20; done; return 1; }}
+
+if command -v cloud-init >/dev/null; then
+  stage "Жду, пока система закончит первую настройку (cloud-init)"
+  timeout {BOOT_TIMEOUT} cloud-init status --wait >/dev/null 2>&1
+fi
+# an install stopped halfway may have left dpkg in the middle of something
+dpkg --configure -a >/dev/null 2>&1 || true
+
+stage "Готовлю сертификат панели и настройки сети"
 
 mkdir -p /opt/3x-ui/db /opt/3x-ui/cert
 cat > /opt/3x-ui/cert/panel.crt <<'CERT'
@@ -329,12 +362,24 @@ net.ipv4.tcp_congestion_control=bbr
 SYSCTL
 sysctl --system >/dev/null || true
 
-command -v docker >/dev/null || retry sh -c 'curl -fsSL https://get.docker.com | sh' || exit 1
+# minimal Debian images may lack these
+if ! command -v curl >/dev/null || ! command -v python3 >/dev/null; then
+  stage "Ставлю curl и python3"
+  retry sh -c 'apt-get -o DPkg::Lock::Timeout=300 update -q && apt-get -o DPkg::Lock::Timeout=300 install -y -q curl ca-certificates python3'
+fi
+if command -v docker >/dev/null; then
+  stage "Docker уже установлен"
+else
+  stage "Устанавливаю Docker (get.docker.com), обычно 1–3 минуты"
+  retry sh -c 'curl -fsSL https://get.docker.com | sh' || exit 1
+fi
 systemctl enable --now docker
+stage "Скачиваю образ 3x-ui"
 retry docker pull {XUI_IMAGE} || exit 1
 
 docker rm -f 3x-ui >/dev/null 2>&1 || true
 {_stub_script(p)}{_certificate_script(p)}
+stage "Настраиваю и запускаю 3x-ui"
 docker run --rm --entrypoint /app/x-ui -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/cert:/root/cert {XUI_IMAGE} \\
   setting -port {p.port} -username {p.username} -password {p.secrets["password"]} -webBasePath {p.base_path} \\
   -webCert "$CERT" -webCertKey "$KEY"
@@ -342,9 +387,10 @@ docker run --rm --entrypoint /app/x-ui -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/
   -e XRAY_VMESS_AEAD_FORCED=false -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/cert:/root/cert {XUI_IMAGE}
 
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+  stage "Открываю порты в ufw"
   ufw allow {p.port}/tcp{f"; ufw allow {p.sub_port}/tcp" if p.sub_port else ""}{"".join(f"; ufw allow {r}" for r in connections.ufw_rules(p.connections))}
 fi
-{extra}echo "vpn-admin: done"
+{extra}stage "Установка на сервере закончена"
 """
 
 
@@ -369,7 +415,7 @@ def _pinned_context(cert_pem: str) -> ssl.SSLContext:
 
 def _log(p: db.Provision, message: str) -> None:
     p.log.append({"t": int(time.time()), "msg": message})
-    db.update_provision(p.id, log=p.log[-50:])
+    db.update_provision(p.id, log=p.log[-120:])
     log.info("provision %s: %s", p.id, message)
 
 
@@ -391,12 +437,13 @@ async def _with_client(p: db.Provision, action):
 
 
 async def _step_create(p: db.Provision) -> None:
-    _log(p, f"Заказываю сервер {p.labels.get('plan') or p.plan}: {p.labels.get('region') or p.region}")
+    _log(p, f"Заказываю сервер {p.labels.get('plan') or p.plan}: {p.labels.get('region') or p.region}, "
+            f"{hosters.OS_LABELS.get(p.os, p.os)}")
 
     # VDSina has no cloud-init and takes the key itself; UpCloud wants a login key for cloud-init servers
     server_id = await _with_client(p, lambda client: client.create_server(
         name=p.name, region=p.region, plan=p.plan, ssh_keys=p.ssh_keys, user_data=bootstrap_user_data(p),
-        project=p.project or None, admin_key=ssh_public_line(p.secrets["service_key"])))
+        project=p.project or None, admin_key=ssh_public_line(p.secrets["service_key"]), os=p.os))
     _set(p, server_id=server_id)
     _log(p, f"Сервер создан у хостинга (id {server_id})")
 
@@ -420,7 +467,7 @@ async def _step_rebuild(p: db.Provision) -> None:
     _log(p, f"Переустанавливаю систему на сервере {p.ip}: IP сохранится")
     admin_key = ssh_public_line(p.secrets["service_key"]) if "service_key" in p.secrets else None
     await _with_client(p, lambda client: client.rebuild_server(
-        p.server_id, plan=p.plan, name=p.name, project=p.project or None, admin_key=admin_key))
+        p.server_id, plan=p.plan, name=p.name, project=p.project or None, admin_key=admin_key, os=p.os))
     _log(p, "Хостинг принял переустановку, жду, пока старая система остановится")
     # the old panel must be gone before the install is awaited, or the admin would talk to the old one
     deadline, misses = time.time() + BOOT_TIMEOUT, 0
@@ -461,37 +508,80 @@ async def _step_boot(p: db.Provision) -> None:
         await asyncio.sleep(POLL_EVERY)
 
 
-async def _install_over_ssh(p: db.Provision) -> None:
-    """Run the install as root over SSH with the admin's key. The host key cannot be known in advance;
-    what matters is checked after: the panel must answer with the certificate generated here."""
-    _log(p, "Подключаюсь к серверу по SSH и устанавливаю Docker, 3x-ui"
-            + (", сайт-заглушку" if p.site_template else "") + " и сертификат")
+async def _install_over_ssh(p: db.Provision, fresh: bool) -> None:
+    """Start the install as root over SSH with the admin's key and follow its log until it ends. The host key
+    cannot be known in advance; what matters is checked after: the panel must answer with the certificate
+    generated here. The install runs detached on the server, so the SSH connection may drop and be made again.
+    `fresh`: the admin asked to run it again, so one still running is stopped; otherwise (an admin restart)
+    a running install is followed and a finished one is taken as it is."""
 
     async def user_keys(client) -> list[str]:  # cloud-init hostings put the chosen keys in place themselves
         if getattr(client, "setup", "") == "ssh" and p.ssh_keys:
             return await client.public_keys(p.ssh_keys)
         return []
 
-    script = install_script(p, _authorized_keys_script(await _with_client(p, user_keys)))
+    keys_script = _authorized_keys_script(await _with_client(p, user_keys))
     key = asyncssh.import_private_key(p.secrets.get("service_key") or p.secrets["ssh_key"])
     deadline = time.time() + _install_timeout(p)
+    started, finished, shown, lost = False, False, 0, False
+    _log(p, "Подключаюсь к серверу по SSH")
     while True:
         try:
             async with asyncssh.connect(p.ip, username="root", client_keys=[key], known_hosts=None,
-                                        connect_timeout=15) as conn:
-                # the hosting's cloud-init may still be running (apt locks, the key itself): let it finish
-                await conn.run("command -v cloud-init >/dev/null && cloud-init status --wait >/dev/null 2>&1; true",
-                               check=False, timeout=BOOT_TIMEOUT)
-                result = await conn.run("bash -s", input=script, check=False, timeout=_install_timeout(p))
-                if result.exit_status != 0:
-                    tail = (await conn.run("tail -n 15 /var/log/vpn-admin-node.log", check=False)).stdout
-                    raise ProvisionError(f"Установка на сервере завершилась с ошибкой (код {result.exit_status}). "
-                                         f"Конец журнала /var/log/vpn-admin-node.log: {str(tail).strip()[-1500:]}")
+                                        connect_timeout=15, keepalive_interval=15, keepalive_count_max=4) as conn:
+                if lost:
+                    _log(p, "SSH-подключение восстановлено, установка на сервере шла дальше")
+                    lost = False
+                if not finished:
+                    status = await _remote_install(conn)
+                    if not started:
+                        started = True
+                        if status["running"] and not fresh:
+                            _log(p, "Установка на сервере уже идёт, слежу за ней")
+                            shown = len(status["stages"])
+                        elif status["exit"] == 0 and not fresh:
+                            _log(p, "Установка на сервере уже закончена")
+                            shown = len(status["stages"])
+                        else:
+                            if status["running"]:
+                                _log(p, "Останавливаю незавершённую установку на сервере")
+                            await conn.run(_launch_script(), input=install_script(p), check=True, timeout=60)
+                            status = {"running": True, "stages": [], "exit": None}
+                            _log(p, "SSH-подключение есть, установка запущена на сервере: Docker, 3x-ui"
+                                    + (", сайт-заглушка" if p.site_template else "") + " и сертификат")
+                    while True:
+                        for stage in status["stages"][shown:]:
+                            _log(p, stage)
+                        shown = len(status["stages"])
+                        if status["exit"] is not None:
+                            break
+                        if not status["running"]:  # killed, or the server rebooted: no exit code was written
+                            raise ProvisionError("Установка на сервере прервалась (процесс остановлен или сервер "
+                                                 "перезагрузился). Нажмите «Повторить», чтобы запустить её заново")
+                        if time.time() > deadline:
+                            raise ProvisionError(f"Установка на сервере не закончилась за {_install_timeout(p) // 60} "
+                                                 f"минут. Журнал на сервере: {NODE_LOG}")
+                        await asyncio.sleep(POLL_EVERY)
+                        status = await _remote_install(conn)
+                    if status["exit"] != 0:
+                        tail = (await conn.run(f"tail -n 15 {NODE_LOG}", check=False)).stdout
+                        raise ProvisionError(f"Установка на сервере завершилась с ошибкой (код {status['exit']}). "
+                                             f"Конец журнала {NODE_LOG}: {str(tail).strip()[-1500:]}")
+                    finished = True
+                # the chosen keys in, the admin's out: from here on SSH does not let the admin in
+                await conn.run(f"rm -f {INSTALL_FILE}\n{keys_script}true\n", check=True, timeout=60)
             break
-        except (OSError, asyncssh.Error) as exc:  # the OS is still being installed or sshd is not up yet
+        except (OSError, asyncssh.Error) as exc:  # the OS is still being installed, sshd is not up, the link dropped
+            if finished and isinstance(exc, asyncssh.PermissionDenied):
+                break  # the keys were swapped before the link dropped
             if time.time() > deadline:
                 raise ProvisionError(f"Не удалось выполнить установку по SSH за {_install_timeout(p) // 60} минут: "
                                      f"{exc}") from exc
+            if started and not lost:
+                _log(p, f"SSH-подключение прервалось ({exc or type(exc).__name__}), переподключаюсь")
+            elif not started and not lost:
+                _log(p, f"SSH на сервере пока не отвечает ({exc or type(exc).__name__}), жду")
+            lost = True
             await asyncio.sleep(POLL_EVERY)
     # the TLS key is on the server now; the SSH key stays for a later reinstall, but no longer opens the server
     _set(p, secrets={k: v for k, v in p.secrets.items() if k in ("password", "service_key")})
@@ -505,6 +595,40 @@ async def _install_over_ssh(p: db.Provision) -> None:
         await _with_client(p, forget)
     except (hosters.HosterError, ProvisionError) as exc:
         log.warning("provision %s: setup key not removed from the account: %s", p.id, exc)
+
+
+def _launch_script() -> str:
+    """Stop an install still running, then start the one piped in, detached in its own session."""
+    return f"""set -e
+PID=$(cat {INSTALL_PID} 2>/dev/null || true)
+if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+  kill -TERM -- "-$PID" 2>/dev/null || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$PID" 2>/dev/null || break; sleep 1; done
+  kill -KILL -- "-$PID" 2>/dev/null || true
+fi
+umask 077
+cat > {INSTALL_FILE}
+rm -f {NODE_LOG} {INSTALL_PID}
+setsid -f bash {INSTALL_FILE} </dev/null >/dev/null 2>&1
+"""
+
+
+async def _remote_install(conn) -> dict:
+    """Whether the install runs on the server, the stages it has reported and its exit code once it ended."""
+    result = await conn.run(
+        f"PID=$(cat {INSTALL_PID} 2>/dev/null); [ -n \"$PID\" ] && kill -0 \"$PID\" 2>/dev/null && echo running; "
+        f"grep -a '^vpn-admin-' {NODE_LOG} 2>/dev/null; true", check=False, timeout=30)
+    status = {"running": False, "stages": [], "exit": None}
+    for line in str(result.stdout).splitlines():
+        if line == "running":
+            status["running"] = True
+        elif line.startswith("vpn-admin-stage: "):
+            status["stages"].append(line.removeprefix("vpn-admin-stage: ").strip())
+        elif line.startswith("vpn-admin-exit: "):
+            status["exit"] = int(line.removeprefix("vpn-admin-exit: ").strip() or 1)
+    if status["exit"] is not None:
+        status["running"] = False  # the pid file goes in the same trap, a moment later
+    return status
 
 
 def _install_timeout(p: db.Provision) -> int:
@@ -553,8 +677,9 @@ async def _trust_node(p: db.Provision) -> ssl.SSLContext:
 
 
 async def _step_install(p: db.Provision) -> None:
+    fresh = _fresh.pop(p.id, False)
     if "service_key" in p.secrets or "ssh_key" in p.secrets:  # ssh_key: VDSina jobs of older versions
-        await _install_over_ssh(p)
+        await _install_over_ssh(p, fresh)
         _log(p, "Жду ответа панели 3x-ui")
     else:  # a server made by an older version re-runs its cloud-init install after an OS reinstall
         _log(p, f"Жду установку Docker, 3x-ui и сертификата (обычно 3–7 минут{', плюс ожидание DNS' if p.domain else ''})")
@@ -756,7 +881,7 @@ async def start(body: ProvisionIn) -> dict:
         await _check_dns_name(body)
     p = _new_job(hoster_id=hoster.id, panel_id=body.panel_id, name=body.name, region=body.region, plan=body.plan,
                  project=body.project or "", ssh_keys=body.ssh_keys, domain=body.domain,
-                 site_template=body.site_template,
+                 site_template=body.site_template, os=body.os,
                  dns_account_id=body.dns_account_id if body.domain else 0, dns_zone_id=body.dns_zone_id,
                  labels={"region": body.region_label.strip()[:100], "plan": body.plan_label.strip()[:100]})
     if body.connections:
@@ -833,7 +958,7 @@ async def reinstall(provision_id: int, body: ReinstallIn) -> dict:
     labels = {**old.labels, "plan": body.plan_label.strip()[:100]} if plan != old.plan else old.labels
     p = _new_job(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=plan,
                  project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=labels,
-                 node_id=old.node_id, replaces=old.id, site_template=old.site_template,
+                 node_id=old.node_id, replaces=old.id, site_template=old.site_template, os=old.os,
                  connections=old.connections, **_dns_fields(old))
     _log(p, f"Переустановка: новый сервер заменит {old.ip or old.server_id}, узел основной панели переключится на "
             "него, старый сервер будет удалён")
@@ -850,7 +975,8 @@ def _in_place_job(old: db.Provision, ssh_install: bool) -> db.Provision:
     same = dict(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=old.plan,
                 project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=old.labels,
                 node_id=old.node_id, replaces=old.id, in_place=1, server_id=old.server_id, ip=old.ip,
-                site_template=old.site_template, step="rebuild", connections=old.connections, **_dns_fields(old))
+                site_template=old.site_template, step="rebuild", connections=old.connections, os=old.os,
+                **_dns_fields(old))
     if "service_key" in old.secrets:  # its cloud-init lets the same key in again: the usual install from zero
         return _new_job(service_key=old.secrets["service_key"], **same)
     if ssh_install:  # VDSina takes a key with the reinstall
@@ -869,8 +995,28 @@ def retry(provision_id: int) -> dict:
         raise ProvisionError("Повторить можно только задание с ошибкой")
     _set(p, state="running", error="")
     _log(p, "Повтор с шага, на котором была ошибка")
+    if p.step == "install":
+        _fresh[p.id] = True
     _spawn(p.id)
     return public(p)
+
+
+async def restart_install(provision_id: int) -> dict:
+    """Run the install again while the job still waits on it, e.g. after it got stuck on the network."""
+    p = db.get_provision(provision_id)
+    if not p:
+        raise ProvisionError("Задание не найдено")
+    if p.state != "running" or p.step != "install":
+        raise ProvisionError("Перезапустить можно только идущую установку")
+    task = _tasks.pop(p.id, None)
+    if task:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    _log(p, "Установка перезапущена вручную")
+    _fresh[p.id] = True
+    _spawn(p.id)
+    return public(db.get_provision(p.id))
 
 
 async def delete_server(provision_id: int) -> dict:
@@ -938,13 +1084,14 @@ def public(p: db.Provision) -> dict[str, Any]:
         "id": p.id, "hoster_id": p.hoster_id, "panel_id": p.panel_id, "name": p.name,
         "region": p.labels.get("region") or p.region, "plan": p.labels.get("plan") or p.plan,
         "server_id": p.server_id, "ip": p.ip, "node_id": p.node_id, "step": p.step,
-        "state": p.state, "error": p.error, "log": p.log[-15:], "created_at": p.created_at,
+        "state": p.state, "error": p.error, "log": p.log[-60:], "created_at": p.created_at,
         "updated_at": p.updated_at, "panel_url": _node_url(p) if p.ip else "", "username": p.username,
         "domain": p.domain, "cert_mode": p.cert_mode, "replaces": p.replaces,
         "region_id": p.region, "plan_id": p.plan, "project": p.project, "in_place": bool(p.in_place),
         "dns": "cloudflare" if p.dns_account_id else "",
         "site_template": p.site_template,
         "sub_port": p.sub_port,
+        "os": p.os, "os_label": hosters.OS_LABELS.get(p.os, p.os),
         "connections": [connections.item_public(c, p.name) for c in p.connections],
         # made before the admin kept its own SSH key: an OS reinstall re-runs the old cloud-init install
         "legacy_install": "service_key" not in p.secrets and p.state == "done",

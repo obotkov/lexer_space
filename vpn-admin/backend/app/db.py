@@ -89,7 +89,7 @@ MIGRATIONS = {
                    ("in_place", "INTEGER NOT NULL DEFAULT 0"), ("dns_account_id", "INTEGER NOT NULL DEFAULT 0"),
                    ("dns_zone_id", "TEXT NOT NULL DEFAULT ''"), ("dns_record_id", "TEXT NOT NULL DEFAULT ''"),
                    ("site_template", "TEXT NOT NULL DEFAULT ''"), ("sub_port", "INTEGER NOT NULL DEFAULT 0"),
-                   ("connections", "TEXT NOT NULL DEFAULT '[]'")],
+                   ("connections", "TEXT NOT NULL DEFAULT '[]'"), ("os", "TEXT NOT NULL DEFAULT 'ubuntu-24.04'")],
 }
 
 
@@ -420,6 +420,7 @@ class Provision:
     # connection templates planned for this server, ports fixed: [{template_id, kind, remark, port, options,
     # inbound_id?, error?}]
     connections: list = field(default_factory=list)
+    os: str = "ubuntu-24.04"  # system installed on the server (hosters.OS_LABELS); a reinstall keeps it
 
 
 _JSON_FIELDS = {"ssh_keys", "log", "labels", "connections"}

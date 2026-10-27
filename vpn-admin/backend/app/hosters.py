@@ -147,6 +147,24 @@ def _server(*, id: Any, name: str, status: str, status_label: str, region: str, 
             "kind": kind}
 
 
+# Systems a new server can get; the install is the same on all of them
+OS_LABELS = {"ubuntu-24.04": "Ubuntu 24.04", "ubuntu-22.04": "Ubuntu 22.04", "debian-13": "Debian 13",
+             "debian-12": "Debian 12"}
+DEFAULT_OS = "ubuntu-24.04"
+
+
+def _os_options(regions: dict[str, list[str] | None], min_disk: dict[str, int] | None = None) -> list[dict]:
+    """The systems a hosting has: {os: regions it is in, None = everywhere}, in OS_LABELS order."""
+    return [{"id": os, "label": label, "regions": regions[os], "min_disk_gb": (min_disk or {}).get(os)}
+            for os, label in OS_LABELS.items() if os in regions]
+
+
+def _os_name(names: dict[str, str], os: str) -> str:
+    if os not in names:
+        raise HosterError(f"Неизвестная система: {os}")
+    return names[os]
+
+
 CURRENCY_SIGNS = {"USD": "$", "EUR": "€", "RUB": "₽", "GBP": "£"}
 
 
@@ -285,7 +303,8 @@ def region_label(code: str, places: list[tuple[str, str, str]], with_code: bool 
 
 class DigitalOcean:
     title = "DigitalOcean"
-    image = "ubuntu-24-04-x64"
+    os_names = {"ubuntu-24.04": "ubuntu-24-04-x64", "ubuntu-22.04": "ubuntu-22-04-x64", "debian-13": "debian-13-x64",
+                "debian-12": "debian-12-x64"}
     rebuild = True  # in place, the IP stays; the droplet runs the user data it was created with again
 
     def __init__(self, credentials: dict[str, str]):
@@ -345,10 +364,10 @@ class DigitalOcean:
             created_at=d.get("created_at", ""),
         )
 
-    async def _all(self, path: str, key: str) -> list[dict]:
+    async def _all(self, path: str, key: str, **params) -> list[dict]:
         items, page = [], 1
         while True:
-            data = await self._get(path, per_page=200, page=page)
+            data = await self._get(path, per_page=200, page=page, **params)
             items += data.get(key) or []
             if not ((data.get("links") or {}).get("pages") or {}).get("next"):
                 return items
@@ -358,10 +377,13 @@ class DigitalOcean:
         return [self._droplet(d) for d in await self._all("/droplets", "droplets")]
 
     async def create_options(self, project: str | None = None) -> dict:
-        regions, sizes, keys = await asyncio.gather(
-            self._all("/regions", "regions"), self._all("/sizes", "sizes"), self._all("/account/keys", "ssh_keys"))
+        regions, sizes, keys, images = await asyncio.gather(
+            self._all("/regions", "regions"), self._all("/sizes", "sizes"), self._all("/account/keys", "ssh_keys"),
+            self._all("/images", "images", type="distribution"))
         plans = sorted((s for s in sizes if s.get("available")), key=lambda s: (s.get("price_monthly") or 0, s["slug"]))
+        by_slug = {i.get("slug"): i.get("regions") or [] for i in images}
         return {
+            "os": _os_options({os: by_slug[slug] for os, slug in self.os_names.items() if slug in by_slug}),
             "projects": None, "project": None, "ssh_multiple": True,
             "regions": sorted(({"id": r["slug"], "name": region_label(r["slug"], DO_PLACES)}
                                for r in regions if r.get("available")), key=lambda r: r["name"]),
@@ -376,9 +398,10 @@ class DigitalOcean:
         }
 
     async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
-                            project: str | None = None, admin_key: str | None = None) -> str:
+                            project: str | None = None, admin_key: str | None = None, os: str = DEFAULT_OS) -> str:
         data = await self._request("POST", "/droplets", json={
-            "name": name, "region": region, "size": plan, "image": self.image, "ipv6": True, "monitoring": True,
+            "name": name, "region": region, "size": plan, "image": _os_name(self.os_names, os), "ipv6": True,
+            "monitoring": True,
             "ssh_keys": [int(k) if k.isdigit() else k for k in ssh_keys], "user_data": user_data,
             "tags": ["vpn-admin"],
         })
@@ -391,10 +414,10 @@ class DigitalOcean:
         await self._request("DELETE", f"/droplets/{server_id}")
 
     async def rebuild_server(self, server_id: str, *, plan: str, name: str, project: str | None = None,
-                             admin_key: str | None = None) -> None:
+                             admin_key: str | None = None, os: str = DEFAULT_OS) -> None:
         """Wipe the disk and install the image again; returns once DigitalOcean reports the rebuild done."""
         action = (await self._request("POST", f"/droplets/{server_id}/actions",
-                                      json={"type": "rebuild", "image": self.image})).get("action") or {}
+                                      json={"type": "rebuild", "image": _os_name(self.os_names, os)})).get("action") or {}
         for _ in range(60):
             if action.get("status") == "completed":
                 return
@@ -414,7 +437,8 @@ class OVHcloud:
     """Classic OVH API keys: every call is signed with the application secret and consumer key.
     New servers are Public Cloud instances (hourly billing); classic VPS can only be ordered, not created."""
     title = "OVHcloud"
-    images = ("Ubuntu 24.04", "Ubuntu 22.04")
+    os_names = {"ubuntu-24.04": "Ubuntu 24.04", "ubuntu-22.04": "Ubuntu 22.04", "debian-13": "Debian 13",
+                "debian-12": "Debian 12"}
     rebuild = True  # in place, the IP stays
     instance_labels = {"ACTIVE": "Работает", "SHUTOFF": "Выключен", "BUILD": "Создаётся", "REBOOT": "Перезагрузка",
                        "HARD_REBOOT": "Перезагрузка", "RESCUE": "Rescue", "ERROR": "Ошибка", "SHELVED": "Отложен",
@@ -630,9 +654,14 @@ class OVHcloud:
                     for p, info in zip(ids, infos)]
         if project not in ids:  # by default an activated project, servers cannot be created in a Discovery one
             project = next((p["id"] for p in projects if not p["discovery"]), ids[0])
-        regions, flavors, keys = await asyncio.gather(
+        regions, flavors, keys, images = await asyncio.gather(
             self._get(f"/cloud/project/{project}/region"), self._get(f"/cloud/project/{project}/flavor"),
-            self._get(f"/cloud/project/{project}/sshkey"))
+            self._get(f"/cloud/project/{project}/sshkey"), self._get(f"/cloud/project/{project}/image?osType=linux"))
+        os_regions: dict[str, list[str] | None] = {}
+        for os, wanted in self.os_names.items():
+            found = [i.get("region") for i in images or [] if i.get("name") == wanted]
+            if found:
+                os_regions[os] = found
         catalog = await self._catalog(await self._subsidiary())
         plans: dict[str, dict] = {}
         for f in flavors:
@@ -654,7 +683,7 @@ class OVHcloud:
         for plan in ordered:
             del plan["_size"]
         return {
-            "projects": projects, "project": project, "ssh_multiple": False,
+            "projects": projects, "project": project, "ssh_multiple": False, "os": _os_options(os_regions),
             "regions": sorted(({"id": r, "name": region_label(r, OVH_PLACES)} for r in regions), key=lambda r: r["name"]),
             "plans": ordered,
             "ssh_keys": [{"id": k["id"], "name": k.get("name") or k["id"]} for k in keys],
@@ -691,8 +720,15 @@ class OVHcloud:
             _catalogs[url] = (time.time(), catalog)
         return catalog
 
+    def _image_for(self, images: list[dict], os: str, region: str) -> dict:
+        wanted = _os_name(self.os_names, os)
+        image = next((i for i in images if i.get("name") == wanted), None)
+        if not image:
+            raise HosterError(f"В регионе {region} нет образа {wanted}")
+        return image
+
     async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
-                            project: str | None = None, admin_key: str | None = None) -> str:
+                            project: str | None = None, admin_key: str | None = None, os: str = DEFAULT_OS) -> str:
         if not project:
             raise HosterError("Не выбран проект Public Cloud OVHcloud")
         flavors, images = await asyncio.gather(
@@ -701,9 +737,7 @@ class OVHcloud:
         flavor = next((f for f in flavors if f.get("name") == plan and f.get("region") == region), None)
         if not flavor:
             raise HosterError(f"Тариф {plan} недоступен в регионе {region}")
-        image = next((i for want in self.images for i in images if i.get("name") == want), None)
-        if not image:
-            raise HosterError(f"В регионе {region} нет образа Ubuntu 24.04 / 22.04")
+        image = self._image_for(images, os, region)
         body = {"name": name, "region": region, "flavorId": flavor["id"], "imageId": image["id"],
                 "userData": user_data, "monthlyBilling": False}
         if ssh_keys:
@@ -717,14 +751,12 @@ class OVHcloud:
         await self._request("DELETE", f"/cloud/project/{project}/instance/{server_id}")
 
     async def rebuild_server(self, server_id: str, *, plan: str, name: str, project: str | None = None,
-                             admin_key: str | None = None) -> None:
-        """Reinstall the instance from a fresh Ubuntu image; OpenStack keeps its IP and creation user data."""
+                             admin_key: str | None = None, os: str = DEFAULT_OS) -> None:
+        """Reinstall the instance from a fresh image; OpenStack keeps its IP and creation user data."""
         instance = await self._get(f"/cloud/project/{project}/instance/{server_id}")
         region = instance.get("region", "")
         images = await self._get(f"/cloud/project/{project}/image?osType=linux&region={region}")
-        image = next((i for want in self.images for i in images if i.get("name") == want), None)
-        if not image:
-            raise HosterError(f"В регионе {region} нет образа Ubuntu 24.04 / 22.04")
+        image = self._image_for(images, os, region)
         await self._request("POST", f"/cloud/project/{project}/instance/{server_id}/reinstall", {"imageId": image["id"]})
 
 
@@ -734,7 +766,8 @@ class VDSina:
     title = "VDSina"
     setup = "ssh"
     rebuild = True
-    images = ("Ubuntu 24.04", "Ubuntu 22.04")
+    os_names = {"ubuntu-24.04": "Ubuntu 24.04", "ubuntu-22.04": "Ubuntu 22.04", "debian-13": "Debian 13",
+                "debian-12": "Debian 12"}  # template names start with these
     status_map = {"active": "running", "new": "pending", "block": "stopped", "notpaid": "stopped", "deleted": "stopped"}
     status_labels = {"active": "Работает", "new": "Создаётся", "block": "Заблокирован", "notpaid": "Не оплачен",
                      "deleted": "Удалён"}
@@ -865,9 +898,11 @@ class VDSina:
                                        return_exceptions=True)
         return [self._server_view(d if isinstance(d, dict) else s) for s, d in zip(items, details)]
 
-    def _template_for(self, templates: list[dict], plan_id: int) -> dict | None:
+    def _template_for(self, templates: list[dict], plan_id: int, os: str | None = None) -> dict | None:
+        """A template of `os` (or of any supported system) the plan can be installed with."""
         usable = [t for t in templates if t.get("active") and t.get("ssh-key") and plan_id in (t.get("server-plan") or [])]
-        return next((t for want in self.images for t in usable if (t.get("name") or "").startswith(want)), None)
+        wanted = [self.os_names[os]] if os else list(self.os_names.values())
+        return next((t for want in wanted for t in usable if (t.get("name") or "").startswith(want)), None)
 
     def _prices(self, plan: dict) -> tuple[float | None, float | None]:
         """(per hour, per month) from the plan's cost per period; VDSina bills by the day."""
@@ -888,7 +923,7 @@ class VDSina:
         plans = []
         for group, items in zip(groups or [], group_plans):
             for plan in items or []:
-                # plan builders (has_params) need sizes chosen by hand; plans without Ubuntu cannot carry 3x-ui here
+                # plan builders (has_params) need sizes chosen by hand; plans without a supported system are no use
                 if not (plan.get("active") and plan.get("enable")) or plan.get("has_params"):
                     continue
                 if not self._template_for(templates or [], plan["id"]):
@@ -899,17 +934,24 @@ class VDSina:
                               "price_hour": hour, "price_month": month, "price_month_plan": None,
                               "currency": self.currency, "regions": [r["id"] for r in regions]})
         plans.sort(key=lambda p: (p["price_hour"] is None, p["price_hour"] or 0, p["label"]))
-        return {"projects": None, "project": None, "ssh_multiple": False,
+        usable = [t for t in templates or [] if t.get("active") and t.get("ssh-key")]
+        os_regions = {os: None for os, name in self.os_names.items()
+                      if any((t.get("name") or "").startswith(name) for t in usable)}
+        return {"projects": None, "project": None, "ssh_multiple": False, "os": _os_options(os_regions),
                 "regions": sorted(regions, key=lambda r: r["name"]), "plans": plans,
                 "ssh_keys": [{"id": str(k["id"]), "name": k.get("name") or str(k["id"])} for k in keys or []]}
 
+    async def _template(self, plan: str, os: str) -> dict:
+        template = self._template_for(await self._request("GET", "/template") or [], int(plan), os)
+        if not template:
+            raise HosterError(f"VDSina: для тарифа {plan} нет шаблона {_os_name(self.os_names, os)}")
+        return template
+
     async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
-                            project: str | None = None, admin_key: str | None = None) -> str:
+                            project: str | None = None, admin_key: str | None = None, os: str = DEFAULT_OS) -> str:
         if not admin_key:
             raise HosterError("VDSina: нет SSH-ключа админки для установки 3x-ui")
-        template = self._template_for(await self._request("GET", "/template") or [], int(plan))
-        if not template:
-            raise HosterError(f"VDSina: для тарифа {plan} нет шаблона Ubuntu 24.04 / 22.04")
+        template = await self._template(plan, os)
         key = await self._request("POST", "/ssh-key", {"name": f"vpn-admin {name}", "data": admin_key})
         try:
             server = await self._request("POST", "/server", {
@@ -924,13 +966,11 @@ class VDSina:
         return self._server_view(await self._request("GET", f"/server/{server_id}") or {})
 
     async def rebuild_server(self, server_id: str, *, plan: str, name: str, project: str | None = None,
-                             admin_key: str | None = None) -> None:
+                             admin_key: str | None = None, os: str = DEFAULT_OS) -> None:
         """Reinstall the OS with root getting the admin's one-time key, like a new server."""
         if not admin_key:
             raise HosterError("VDSina: нет SSH-ключа админки для установки 3x-ui")
-        template = self._template_for(await self._request("GET", "/template") or [], int(plan))
-        if not template:
-            raise HosterError(f"VDSina: для тарифа {plan} нет шаблона Ubuntu 24.04 / 22.04")
+        template = await self._template(plan, os)
         key = await self._request("POST", "/ssh-key", {"name": f"vpn-admin {name}", "data": admin_key})
         try:
             await self._request("PUT", f"/server.reinstall/{server_id}",
@@ -959,7 +999,8 @@ class UpCloud:
     server always gets login keys: the admin's one (removed by the install) plus the account's own key when set.
     Prices come in cents per hour; a month is capped at 28 days (672 hours)."""
     title = "UpCloud"
-    images = ("Ubuntu Server 24.04", "Ubuntu Server 22.04")
+    os_names = {"ubuntu-24.04": "Ubuntu Server 24.04", "ubuntu-22.04": "Ubuntu Server 22.04",
+                "debian-13": "Debian GNU/Linux 13", "debian-12": "Debian GNU/Linux 12"}  # template titles start with these
     hours_cap = 672
     state_map = {"started": "running", "maintenance": "pending", "stopped": "stopped", "error": "error"}
     state_labels = {"started": "Работает", "maintenance": "Обслуживание", "stopped": "Выключен", "error": "Ошибка"}
@@ -1032,13 +1073,14 @@ class UpCloud:
         return [self._view(s, by_server.get(s.get("uuid"), []))
                 for s in ((servers or {}).get("servers") or {}).get("server") or []]
 
-    async def _templates(self) -> list[dict]:
-        """Ubuntu cloud-init templates, preferred first (24.04, then 22.04; newest of each first)."""
+    async def _templates(self) -> dict[str, list[dict]]:
+        """Cloud-init templates of each supported system, newest first."""
         data = await self._request("GET", "/storage/template")
-        found = [t for t in ((data or {}).get("storages") or {}).get("storage") or []
-                 if t.get("template_type", "cloud-init") == "cloud-init"]
-        return [t for want in self.images for t in sorted(found, key=lambda t: t.get("title") or "", reverse=True)
-                if (t.get("title") or "").startswith(want)]
+        found = sorted((t for t in ((data or {}).get("storages") or {}).get("storage") or []
+                        if t.get("template_type", "cloud-init") == "cloud-init"),
+                       key=lambda t: t.get("title") or "", reverse=True)
+        out = {os: [t for t in found if (t.get("title") or "").startswith(name)] for os, name in self.os_names.items()}
+        return {os: items for os, items in out.items() if items}
 
     @staticmethod
     def _fitting(templates: list[dict], disk_gb: int) -> dict | None:
@@ -1052,7 +1094,7 @@ class UpCloud:
         for result in (zones, plans, prices):
             if isinstance(result, Exception):
                 raise result
-        templates = templates if isinstance(templates, list) else []
+        templates = templates if isinstance(templates, dict) else {}
         # prices come in the account's currency
         currency = ((details or {}).get("account") or {}).get("currency", "EUR") if isinstance(details, dict) else "EUR"
         public = [z for z in ((zones or {}).get("zones") or {}).get("zone") or [] if z.get("public") == "yes"]
@@ -1062,8 +1104,8 @@ class UpCloud:
             name = plan.get("name", "")
             if "GPU" in name.upper():
                 continue
-            if templates and not self._fitting(templates, plan.get("storage_size") or 0):
-                continue  # e.g. a 10 GB plan when the Ubuntu images are larger
+            if templates and not any(self._fitting(t, plan.get("storage_size") or 0) for t in templates.values()):
+                continue  # e.g. a 10 GB plan when every image is larger
             key = f"server_plan_{name}"
             regions = [z["id"] for z in public if key in price_by_zone.get(z["id"], {})]
             if not regions:
@@ -1074,9 +1116,11 @@ class UpCloud:
                         "specs": f"{plan.get('core_number')} vCPU · {round((plan.get('memory_amount') or 0) / 1024, 1):g} GB"
                                  f" · {plan.get('storage_size')} GB {(plan.get('storage_tier') or '').upper()}",
                         "price_hour": hour, "price_month": round(hour * self.hours_cap, 2) if hour else None,
-                        "price_month_plan": None})
+                        "price_month_plan": None, "disk_gb": plan.get("storage_size")})
         out.sort(key=lambda p: (p["price_hour"] is None, p["price_hour"] or 0, p["id"]))
         return {"projects": None, "project": None, "ssh_multiple": False, "ssh_keys": [],
+                "os": _os_options({os: None for os in templates} if templates else {os: None for os in self.os_names},
+                                  {os: min(t.get("size") or 0 for t in items) for os, items in templates.items()}),
                 "ssh_note": "Войти на сервер можно будет ключом из настроек аккаунта UpCloud в админке."
                             if self.user_key else
                             "В настройках аккаунта UpCloud в админке не задан SSH-ключ: сервер будет работать, но "
@@ -1086,17 +1130,19 @@ class UpCloud:
                 "plans": out}
 
     async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
-                            project: str | None = None, admin_key: str | None = None) -> str:
-        templates, plans = await asyncio.gather(self._templates(), self._request("GET", "/plan"))
+                            project: str | None = None, admin_key: str | None = None, os: str = DEFAULT_OS) -> str:
+        all_templates, plans = await asyncio.gather(self._templates(), self._request("GET", "/plan"))
+        wanted = _os_name(self.os_names, os)
+        templates = all_templates.get(os) or []
         if not templates:
-            raise HosterError("UpCloud: нет шаблона Ubuntu 24.04 / 22.04 с cloud-init")
+            raise HosterError(f"UpCloud: нет шаблона {wanted} с cloud-init")
         spec = next((p for p in ((plans or {}).get("plans") or {}).get("plan") or [] if p.get("name") == plan), {})
         disk = spec.get("storage_size") or 25
         template = self._fitting(templates, disk)
         if not template:
             smallest = min(t.get("size") or 0 for t in templates)
-            raise HosterError(f"UpCloud: образ Ubuntu занимает {smallest} ГБ, а диск тарифа {plan} — {disk} ГБ. "
-                              f"Выберите тариф с диском от {smallest} ГБ", "SIZE_INVALID")
+            raise HosterError(f"UpCloud: образ {OS_LABELS[os]} занимает {smallest} ГБ, а диск тарифа {plan} — {disk} ГБ. "
+                              f"Выберите тариф с диском от {smallest} ГБ или другую систему", "SIZE_INVALID")
         keys = [k for k in (admin_key, self.user_key) if k]
         body = {"server": {
             "zone": region, "title": name, "hostname": name, "plan": plan, "metadata": "yes", "user_data": user_data,
@@ -1141,7 +1187,8 @@ class Scaleway:
     A server is created stopped with a routed IPv4, gets the cloud-init script and is then powered on;
     the IDs kept by the admin are "zone/uuid". Project SSH keys are added to new servers by Scaleway itself."""
     title = "Scaleway"
-    images = ("ubuntu_noble", "ubuntu_jammy")
+    os_names = {"ubuntu-24.04": "ubuntu_noble", "ubuntu-22.04": "ubuntu_jammy", "debian-13": "debian_trixie",
+                "debian-12": "debian_bookworm"}  # Marketplace image labels
     state_map = {"running": "running", "starting": "pending", "stopping": "stopped", "stopped": "stopped",
                  "stopped in place": "stopped", "locked": "error"}
     state_labels = {"running": "Работает", "starting": "Запускается", "stopping": "Останавливается",
@@ -1283,24 +1330,24 @@ class Scaleway:
                 plan["regions"].append(z)
         ordered = sorted(plans.values(), key=lambda p: (p["price_hour"] is None, p["price_hour"] or 0, p["id"]))
         return {"projects": None, "project": None, "ssh_multiple": False, "ssh_keys": [],
+                "os": _os_options({os: None for os in self.os_names}),  # checked per zone and type when ordering
                 "ssh_note": "SSH-ключи проекта Scaleway (Console → IAM → SSH keys) Scaleway сам добавит на сервер.",
                 "regions": sorted(({"id": z, "name": region_label(z, SCW_PLACES)} for z, _, _ in zones),
                                   key=lambda r: r["name"]),
                 "plans": ordered}
 
-    async def _image(self, zone: str, plan: str) -> str:
-        for label in self.images:
-            data = await self._request("GET", "/marketplace/v2/local-images",
-                                       params={"image_label": label, "zone": zone, "type": "instance_sbs"})
-            for image in (data or {}).get("local_images") or []:
-                if plan in (image.get("compatible_commercial_types") or []):
-                    return image["id"]
-        raise HosterError(f"Scaleway: в зоне {zone} нет образа Ubuntu 24.04 / 22.04 для {plan}")
+    async def _image(self, zone: str, plan: str, os: str) -> str:
+        data = await self._request("GET", "/marketplace/v2/local-images",
+                                   params={"image_label": _os_name(self.os_names, os), "zone": zone, "type": "instance_sbs"})
+        for image in (data or {}).get("local_images") or []:
+            if plan in (image.get("compatible_commercial_types") or []):
+                return image["id"]
+        raise HosterError(f"Scaleway: в зоне {zone} нет образа {OS_LABELS[os]} для {plan}")
 
     async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
-                            project: str | None = None, admin_key: str | None = None) -> str:
+                            project: str | None = None, admin_key: str | None = None, os: str = DEFAULT_OS) -> str:
         zone = region
-        image = await self._image(zone, plan)
+        image = await self._image(zone, plan, os)
         ip = (await self._request("POST", f"/instance/v1/zones/{zone}/ips",
                                   json={"project": self.project, "type": "routed_ipv4"}))["ip"]
         try:

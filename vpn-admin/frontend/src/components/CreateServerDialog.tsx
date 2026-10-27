@@ -30,6 +30,7 @@ export function CreateServerDialog({
   const [name, setName] = useState(`vpn-node-${randomSuffix()}`);
   const [region, setRegion] = useState("");
   const [plan, setPlan] = useState("");
+  const [os, setOs] = useState("ubuntu-24.04");
   const [sshKeys, setSshKeys] = useState<string[]>([]);
   const [panelId, setPanelId] = useState(mainPanels[0]?.id ?? 0);
   // panel address: the server's IP, a domain whose A record the user makes, or a Cloudflare name the admin makes
@@ -77,7 +78,13 @@ export function CreateServerDialog({
 
   // regions without a single plan are of no use here
   const regions = options?.regions.filter((r) => options.plans.some((p) => p.regions.includes(r.id))) ?? [];
-  const plans = options?.plans.filter((p) => p.regions.includes(region)) ?? [];
+  const systems = options?.os.filter((o) => !o.regions || o.regions.includes(region)) ?? [];
+  // the chosen system if the region has it, otherwise the first one (Ubuntu 24.04 where there is)
+  const osId = systems.some((o) => o.id === os) ? os : systems[0]?.id ?? "";
+  const osChosen = systems.find((o) => o.id === osId);
+  // the disk must hold the system image (UpCloud)
+  const plans =
+    options?.plans.filter((p) => p.regions.includes(region) && !(osChosen?.min_disk_gb && p.disk_gb != null && p.disk_gb < osChosen.min_disk_gb)) ?? [];
   // the chosen plan if the region has it, otherwise the cheapest one there
   const planId = plans.some((p) => p.id === plan) ? plan : plans[0]?.id ?? "";
 
@@ -108,6 +115,7 @@ export function CreateServerDialog({
         dns_zone_id: address === "cloudflare" ? zoneId : "",
         site_template: siteTemplate ?? "",
         connections: withConnections && !!templates?.length,
+        os: osId,
       });
       onStarted();
     } catch (err) {
@@ -172,12 +180,24 @@ export function CreateServerDialog({
                   ))}
                 </select>
               </label>
+              <label className="field">
+                <span>Система</span>
+                <select className="input" required value={osId} onChange={(e) => setOs(e.target.value)} disabled={systems.length === 0}>
+                  {systems.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
 
             <div className="field">
               <span id="plan-label">Тариф</span>
               {plans.length === 0 ? (
-                <small className="muted">В этом регионе нет доступных тарифов</small>
+                <small className="muted">
+                  {osChosen?.min_disk_gb ? `В этом регионе нет тарифов с диском от ${osChosen.min_disk_gb} ГБ под ${osChosen.label}` : "В этом регионе нет доступных тарифов"}
+                </small>
               ) : (
                 <PlanList plans={plans} value={planId} onChange={setPlan} />
               )}
@@ -310,7 +330,7 @@ export function CreateServerDialog({
             )}
 
             <div className="notice notice-info small">
-              На сервер встанут Ubuntu 24.04, Docker, 3x-ui последней версии и сайт-заглушка. Админка зайдёт на сервер по SSH своим ключом и
+              На сервер встанут {osChosen?.label ?? "Ubuntu 24.04"}, Docker, 3x-ui последней версии и сайт-заглушка. Админка зайдёт на сервер по SSH своим ключом и
               установит всё сама: порт, путь, логин и пароль панели задаст сама, сертификат выпустит Let's Encrypt. В конце установки ключ админки
               удаляется с сервера. Обычно всё занимает 5–10 минут. Хостинг начнёт брать плату за сервер сразу после создания.
             </div>
@@ -324,7 +344,7 @@ export function CreateServerDialog({
           <button type="button" className="btn" onClick={onClose} disabled={busy}>
             Отмена
           </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || loading || !options || !planId || !region || mainPanels.length === 0 || discovery}>
+          <button type="submit" className="btn btn-primary" disabled={busy || loading || !options || !planId || !region || !osId || mainPanels.length === 0 || discovery}>
             {busy ? "Создаю…" : "Создать сервер"}
           </button>
         </div>

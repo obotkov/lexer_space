@@ -375,7 +375,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .step-failed .step-mark { background: rgba(var(--bad-rgb), 0.18); color: var(--bad); }
 @keyframes step-pulse { 50% { opacity: 0.55; } }
 .provision-error { max-width: none; }
-.provision-log { max-height: 220px; margin: 0; list-style: none; white-space: normal; word-break: break-word; }
+.provision-log { max-height: 320px; margin: 0; list-style: none; white-space: normal; word-break: break-word; }
 @media (max-width: 600px) { .provisions { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .step-active .step-mark { animation: none; } }
 

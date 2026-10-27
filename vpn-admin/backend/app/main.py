@@ -646,6 +646,14 @@ async def provisions_retry(provision_id: int):
     return _provision_call(lambda: provision.retry(provision_id))
 
 
+@app.post("/api/provisions/{provision_id}/restart-install", dependencies=[Depends(require_admin)])
+async def provisions_restart_install(provision_id: int):
+    try:
+        return await provision.restart_install(provision_id)
+    except provision.ProvisionError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/api/provisions/{provision_id}/reinstall", dependencies=[Depends(require_admin)])
 async def provisions_reinstall(provision_id: int, body: provision.ReinstallIn):
     try:

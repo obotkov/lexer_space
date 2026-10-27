@@ -444,6 +444,18 @@ export interface HostingPlan {
   regions: string[];
   /** the hosting allows one server of this plan per organisation (Scaleway STARDUST1) */
   single?: boolean;
+  /** UpCloud: disk size, which must hold the system image */
+  disk_gb?: number | null;
+}
+
+export interface HostingOs {
+  /** e.g. "ubuntu-24.04" */
+  id: string;
+  label: string;
+  /** regions that have the image; null = all of them */
+  regions: string[] | null;
+  /** UpCloud: size of the image, the plan's disk cannot be smaller */
+  min_disk_gb: number | null;
 }
 
 export interface CreateOptions {
@@ -458,6 +470,8 @@ export interface CreateOptions {
   ssh_keys: { id: string; name: string }[];
   /** shown instead of the key list when the hosting adds SSH keys by itself */
   ssh_note?: string;
+  /** systems the hosting can install */
+  os: HostingOs[];
 }
 
 export interface ProvisionForm {
@@ -480,6 +494,7 @@ export interface ProvisionForm {
   site_template: string;
   /** create the enabled connection templates on the new node */
   connections: boolean;
+  os: string;
 }
 
 export interface DnsZone {
@@ -611,6 +626,9 @@ export interface Provision {
   /** made before the admin kept its own SSH key: an OS reinstall re-runs the old cloud-init install */
   legacy_install: boolean;
   connections: ProvisionConnection[];
+  /** system installed on the server; a reinstall keeps it */
+  os: string;
+  os_label: string;
 }
 
 export interface ProvisionCredentials {
@@ -688,6 +706,7 @@ export const api = {
   provisions: () => request<Provision[]>("GET", "/api/provisions"),
   startProvision: (form: ProvisionForm) => request<Provision>("POST", "/api/provisions", form),
   retryProvision: (id: number) => request<Provision>("POST", `/api/provisions/${id}/retry`),
+  restartProvisionInstall: (id: number) => request<Provision>("POST", `/api/provisions/${id}/restart-install`),
   reinstallProvision: (id: number, body: { in_place: boolean; plan: string; plan_label: string; site_template: string }) =>
     request<Provision>("POST", `/api/provisions/${id}/reinstall`, body),
   deleteProvisionServer: (id: number) => request<Provision>("POST", `/api/provisions/${id}/delete-server`),

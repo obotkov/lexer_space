@@ -26,6 +26,15 @@ const STATE_BADGE: Record<Provision["state"], [string, string]> = {
   deleted: ["badge-disabled", "Сервер удалён"],
 };
 
+/** Keeps the log scrolled to its newest line unless it was scrolled up to read older ones; passed as a new
+ * function on each render, so React calls it after every update. */
+const followLog = (el: HTMLUListElement | null) => {
+  if (el && (!el.dataset.seen || el.scrollHeight - el.scrollTop - el.clientHeight < 120)) {
+    el.scrollTop = el.scrollHeight;
+    el.dataset.seen = "1";
+  }
+};
+
 const time = (ts: number) => new Date(ts * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 
 /** Jobs that order a server, install 3x-ui and attach it as a node; newest first. */
@@ -119,7 +128,7 @@ export function Provisions({
                       <span className="muted">аккаунт удалён</span>
                     )}
                   </div>
-                  <div className="muted small">{[p.region, p.plan, p.ip, p.domain && (p.dns ? `${p.domain} (Cloudflare)` : p.domain)].filter(Boolean).join(" · ")}</div>
+                  <div className="muted small">{[p.region, p.plan, p.os_label, p.ip, p.domain && (p.dns ? `${p.domain} (Cloudflare)` : p.domain)].filter(Boolean).join(" · ")}</div>
                 </div>
                 <span className={`badge ${badgeClass}`}>{badgeText}</span>
               </div>
@@ -207,7 +216,7 @@ export function Provisions({
               )}
 
               {openLog === p.id && (
-                <ul className="log provision-log">
+                <ul className="log provision-log" ref={(el) => followLog(el)}>
                   {p.log.map((l, i) => (
                     <li key={i}>
                       <span className="muted">{time(l.t)}</span> {l.msg}
@@ -223,6 +232,19 @@ export function Provisions({
                 {p.state === "failed" && (
                   <button className="btn btn-small btn-primary" disabled={busy === p.id} onClick={() => act(p.id, () => api.retryProvision(p.id))}>
                     Повторить
+                  </button>
+                )}
+                {p.state === "running" && p.step === "install" && (
+                  <button
+                    className="btn btn-small"
+                    disabled={busy === p.id}
+                    title="Если установка застряла, например из-за сетевой ошибки: незавершённая установка на сервере остановится и начнётся заново"
+                    onClick={() =>
+                      confirm("Перезапустить установку? Незавершённая установка на сервере остановится и начнётся с начала.") &&
+                      act(p.id, () => api.restartProvisionInstall(p.id))
+                    }
+                  >
+                    Перезапустить установку
                   </button>
                 )}
                 {p.state === "done" && p.node_id && (
