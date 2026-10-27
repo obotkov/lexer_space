@@ -189,16 +189,20 @@ export function Provisions({
                     Переустановить с нуля
                   </button>
                 )}
-                {p.state === "failed" && p.server_id && !replacedBy && (
+                {(p.state === "failed" || p.state === "done") && p.server_id && replacedBy?.state !== "running" && (
                   <button
                     className="btn btn-small btn-danger"
                     disabled={busy === p.id}
                     onClick={() =>
-                      confirm(`Удалить сервер «${p.name}» у хостинга? Он будет уничтожен вместе с данными, плата за него прекратится.`) &&
-                      act(p.id, () => api.deleteProvisionServer(p.id))
+                      confirm(
+                        `Удалить сервер «${p.name}»${p.ip ? ` (${p.ip})` : ""} у хостинга? Он будет уничтожен вместе с данными, плата за него прекратится.` +
+                          (p.state === "done"
+                            ? "\n\nVPN на этом сервере перестанет работать. Узел уберётся из основной панели; если к нему привязаны инбаунды, узел только выключится, а инбаунды и клиенты останутся, пока вы их не удалите или не перенесёте."
+                            : ""),
+                      ) && act(p.id, () => api.deleteProvisionServer(p.id))
                     }
                   >
-                    Удалить сервер у хостинга
+                    {p.state === "done" ? "Удалить сервер" : "Удалить сервер у хостинга"}
                   </button>
                 )}
                 {p.state !== "running" && (

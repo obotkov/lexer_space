@@ -151,12 +151,14 @@ async def add(panel_id: int, body: NodeIn) -> dict[str, Any]:
 
 
 async def get(panel_id: int, node_id: int) -> dict[str, Any] | None:
-    """The node as the main panel has it; None when the panel no longer knows this id."""
+    """The node as the main panel has it; None when the panel no longer knows this id.
+    Read from the list: only it carries the inbound and client counts."""
     _, xui = await main_panel(panel_id)
     try:
-        node = await xui.v3_node(node_id)
-    except XUIError:
-        return None
+        listed = await xui.v3_nodes()
+    except XUIError as exc:
+        raise NodeError(str(exc)) from exc
+    node = next((n for n in listed if n.get("id") == node_id), None)
     return node_view(node, None) if node else None
 
 

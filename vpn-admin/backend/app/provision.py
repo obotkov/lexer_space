@@ -590,18 +590,45 @@ def retry(provision_id: int) -> dict:
 
 
 async def delete_server(provision_id: int) -> dict:
-    """Destroy the server at the hosting company (it costs money) and close the job."""
+    """Destroy the server at the hosting company (it costs money) and close the job. The node it ran as
+    leaves the main panel; 3x-ui refuses that while inbounds are attached to it, so such a node is only
+    disabled and the user decides what happens to those inbounds and their clients."""
     p = db.get_provision(provision_id)
     if not p:
         raise ProvisionError("Задание не найдено")
     if p.state == "running":
         raise ProvisionError("Задание ещё выполняется: дождитесь ошибки или окончания")
+    if any(other.replaces == p.id and other.state == "running" for other in db.list_provisions()):
+        raise ProvisionError("Сервер сейчас переустанавливается: старый удалится сам, когда новый заработает")
     if p.server_id:
-        await _with_client(p, lambda c: c.delete_server(p.server_id, p.project or None))
-        _log(p, f"Сервер {p.server_id} удалён у хостинга")
+        try:
+            await _with_client(p, lambda c: c.delete_server(p.server_id, p.project or None))
+        except hosters.HosterError as exc:
+            if exc.code != "NOT_FOUND":  # already deleted in the hosting's own panel
+                raise
+        _log(p, f"Сервер {p.ip or p.server_id} удалён у хостинга")
     _set(p, state="deleted")
     hosters.invalidate(p.hoster_id)
+    # the node is this server's only once the connect step is through (a reinstall borrows the old one before)
+    if p.node_id and STEPS.index(p.step) > STEPS.index("connect"):
+        await _drop_node(p)
     return public(p)
+
+
+async def _drop_node(p: db.Provision) -> None:
+    try:
+        node = await nodes.get(p.panel_id, p.node_id)
+        if not node:
+            return
+        if node["inbounds"]:
+            await nodes.set_enable(p.panel_id, p.node_id, False)
+            _log(p, f"Узел «{node['name']}» выключен в основной панели: к нему привязано инбаундов — "
+                    f"{node['inbounds']}. Удалите или перенесите их, затем удалите узел на странице «Узлы»")
+        else:
+            await nodes.delete(p.panel_id, p.node_id)
+            _log(p, f"Узел «{node['name']}» удалён из основной панели")
+    except nodes.NodeError as exc:  # the server is gone already; the node is a cosmetic leftover
+        _log(p, f"Узел в основной панели не изменён: {exc}")
 
 
 def forget(provision_id: int) -> None:
