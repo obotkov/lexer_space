@@ -737,20 +737,30 @@ class VDSina:
                 "limits": f"средств хватит до {acc['forecast']}" if (acc or {}).get("forecast") else ""}
 
     @staticmethod
-    def _specs(data: dict) -> str:
+    def _specs(data: Any) -> str:
+        data = VDSina._obj(data)
+
         def part(key: str, unit: str) -> str:
-            item = data.get(key) or {}
+            item = VDSina._obj(data.get(key))
             value = item.get("total") or item.get("value")
             return f"{value:g} {unit}" if isinstance(value, (int, float)) else ""
-        disk = data.get("disk") or {}
-        traff = data.get("traff") or {}
+        disk = VDSina._obj(data.get("disk"))
+        traff = VDSina._obj(data.get("traff"))
         parts = [part("cpu", "vCPU"), part("ram", "GB"),
                  f"{part('disk', 'GB')} {disk.get('title', '')}".strip() if part("disk", "GB") else "",
                  f"{traff['value']:g} {traff.get('for', '')} трафика".strip() if isinstance(traff.get("value"), (int, float)) else ""]
         return " · ".join(p for p in parts if p)
 
     @staticmethod
-    def _dc_label(dc: dict) -> str:
+    def _obj(value: Any) -> dict:
+        """The server list may carry a bare name or ID where the server details have an object."""
+        if isinstance(value, dict):
+            return value
+        return {"name": str(value)} if value not in (None, "", [], False) else {}
+
+    @staticmethod
+    def _dc_label(dc: Any) -> str:
+        dc = VDSina._obj(dc)
         country = (dc.get("country") or "").upper()
         name = dc.get("name", "")
         if len(country) != 2:
@@ -765,25 +775,36 @@ class VDSina:
     def _server_view(self, s: dict) -> dict:
         status = s.get("status", "")
         ips = s.get("ip") or []
+        addresses = []  # objects {"ip", "type"} in the details, possibly bare addresses in the list
+        for item in ips if isinstance(ips, list) else [ips]:
+            address = str(item.get("ip") or "") if isinstance(item, dict) else str(item)
+            kind = str(item.get("type") or "") if isinstance(item, dict) else ""
+            if address:
+                addresses.append((address, kind or ("6" if ":" in address else "4")))
         return _server(
             id=s.get("id"), name=s.get("name", ""), kind="VDS",
             status=self.status_map.get(status, "unknown"),
             status_label=s.get("status_text") or self.status_labels.get(status, status),
-            region=self._dc_label(s.get("datacenter") or {}), plan=(s.get("server-plan") or {}).get("name", ""),
-            specs=self._specs(s.get("data") or {}),
-            ipv4=[i["ip"] for i in ips if str(i.get("type")) == "4" and i.get("ip")],
-            ipv6=[i["ip"] for i in ips if str(i.get("type")) == "6" and i.get("ip")],
-            created_at=self._moscow_iso(s.get("created", "")),
+            region=self._dc_label(s.get("datacenter")), plan=self._obj(s.get("server-plan")).get("name", ""),
+            specs=self._specs(s.get("data")),
+            ipv4=[a for a, kind in addresses if kind == "4"],
+            ipv6=[a for a, kind in addresses if kind == "6"],
+            created_at=self._moscow_iso(str(s.get("created") or "")),
         )
 
     async def servers(self) -> list[dict]:
+        """The list may lack fields (VDSina says to ask each server for the rest), so details are read per
+        server; a server whose details fail is shown from the list."""
         try:
             items = await self._request("GET", "/server") or []
         except HosterError as exc:
             if exc.code.startswith("No "):  # "No Server information": the account has none yet
                 return []
             raise
-        return [self._server_view(s) for s in items]
+        items = [s for s in items if isinstance(s, dict) and s.get("id")]
+        details = await asyncio.gather(*(self._request("GET", f"/server/{s['id']}") for s in items),
+                                       return_exceptions=True)
+        return [self._server_view(d if isinstance(d, dict) else s) for s, d in zip(items, details)]
 
     def _template_for(self, templates: list[dict], plan_id: int) -> dict | None:
         usable = [t for t in templates if t.get("active") and t.get("ssh-key") and plan_id in (t.get("server-plan") or [])]
