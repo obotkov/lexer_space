@@ -3,7 +3,19 @@ import { api, type ConnectionTemplate, type CreateOptions, type DnsAccount, type
 import { formatPrice } from "../format";
 import { StubTemplateSelect } from "./StubTemplateSelect";
 
-const randomSuffix = () => Math.random().toString(36).slice(2, 6);
+// default server name: two random words, e.g. "quiet-harbor"
+const NAME_WORDS = [
+  ["amber", "azure", "bold", "brave", "bright", "calm", "clever", "cosmic", "crisp", "dusty", "eager", "fancy", "gentle", "golden",
+   "happy", "hidden", "icy", "jolly", "keen", "lively", "lucky", "lunar", "mellow", "misty", "noble", "polar", "proud", "quick",
+   "quiet", "rapid", "royal", "rusty", "silent", "silver", "sleepy", "smooth", "snowy", "solar", "sunny", "swift", "tidy", "velvet",
+   "vivid", "wild", "windy", "witty", "young", "zesty"],
+  ["anchor", "badger", "beacon", "breeze", "canyon", "cedar", "comet", "coral", "cricket", "delta", "dolphin", "ember", "falcon",
+   "fjord", "forest", "fox", "glacier", "harbor", "heron", "island", "lagoon", "lantern", "maple", "meadow", "meteor", "otter",
+   "owl", "panda", "pebble", "pine", "planet", "prairie", "puffin", "raven", "reef", "river", "rocket", "sparrow", "summit",
+   "tiger", "tundra", "valley", "walrus", "willow", "wolf", "yak", "zebra", "zephyr"],
+];
+const pick = (words: string[]) => words[Math.floor(Math.random() * words.length)];
+const randomName = () => `${pick(NAME_WORDS[0])}-${pick(NAME_WORDS[1])}`;
 
 
 /** Order a server at a hosting account; the admin installs 3x-ui on it and attaches it as a node. */
@@ -27,7 +39,7 @@ export function CreateServerDialog({
   // project the options are loaded for (OVHcloud); null = the provider's default
   const [project, setProject] = useState<string | null>(null);
   const [options, setOptions] = useState<CreateOptions | null>(null);
-  const [name, setName] = useState(`vpn-node-${randomSuffix()}`);
+  const [name, setName] = useState(randomName);
   const [region, setRegion] = useState("");
   const [plan, setPlan] = useState("");
   const [os, setOs] = useState("ubuntu-24.04");
@@ -168,7 +180,12 @@ export function CreateServerDialog({
             <div className="field-row">
               <label className="field">
                 <span>Имя сервера</span>
-                <input className="input mono" required pattern="[a-zA-Z0-9][a-zA-Z0-9.\-]{0,62}" value={name} onChange={(e) => setName(e.target.value)} />
+                <div className="input-with-button">
+                  <input className="input mono" required pattern="[a-zA-Z0-9][a-zA-Z0-9.\-]{0,62}" value={name} onChange={(e) => setName(e.target.value)} />
+                  <button type="button" className="btn btn-small" title="Другое случайное имя" onClick={() => setName(randomName())}>
+                    ↻
+                  </button>
+                </div>
               </label>
               <label className="field">
                 <span>Регион</span>
