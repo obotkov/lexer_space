@@ -286,6 +286,21 @@ echo "vpn-admin: certificate $CERT"
 """
 
 
+def _sub_port_script(p: db.Provision) -> str:
+    """`x-ui setting` has no flag for the subscription port, so it goes into the panel's database before the
+    first start: 2096 is the first port scanners try on a 3x-ui server."""
+    if not p.sub_port:
+        return ""
+    return f"""python3 - <<'PY' || echo "vpn-admin: subscription port not changed"
+import sqlite3
+db = sqlite3.connect("/opt/3x-ui/db/x-ui.db")
+if not db.execute("UPDATE settings SET value = ? WHERE key = 'subPort'", ("{p.sub_port}",)).rowcount:
+    db.execute("INSERT INTO settings (key, value) VALUES ('subPort', ?)", ("{p.sub_port}",))
+db.commit()
+PY
+"""
+
+
 def install_script(p: db.Provision, extra: str = "") -> str:
     """The install the admin runs over SSH: Docker, the decoy page, a certificate and 3x-ui with the generated
     port, path, login and password; `extra` steps (keys) at the end."""
@@ -322,10 +337,12 @@ docker rm -f 3x-ui >/dev/null 2>&1 || true
 docker run --rm --entrypoint /app/x-ui -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/cert:/root/cert {XUI_IMAGE} \\
   setting -port {p.port} -username {p.username} -password {p.secrets["password"]} -webBasePath {p.base_path} \\
   -webCert "$CERT" -webCertKey "$KEY"
-docker run -d --name 3x-ui --restart unless-stopped --network host --cap-add NET_ADMIN --cap-add NET_RAW \\
+{_sub_port_script(p)}docker run -d --name 3x-ui --restart unless-stopped --network host --cap-add NET_ADMIN --cap-add NET_RAW \\
   -e XRAY_VMESS_AEAD_FORCED=false -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/cert:/root/cert {XUI_IMAGE}
 
-if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then ufw allow {p.port}/tcp; fi
+if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+  ufw allow {p.port}/tcp{f"; ufw allow {p.sub_port}/tcp" if p.sub_port else ""}
+fi
 {extra}echo "vpn-admin: done"
 """
 
@@ -700,8 +717,9 @@ def _new_job(service_key: str = "", **fields) -> db.Provision:
     SSH key is new too unless the server already trusts one (an OS reinstall)."""
     lower = string.ascii_lowercase + string.digits
     cert_pem, key_pem, pin = make_certificate()
+    port, sub_port = secrets.SystemRandom().sample(range(20000, 60000), 2)  # five digits each, never the same
     return db.create_provision(**{
-        "port": secrets.randbelow(40000) + 20000, "base_path": f"/{_random(14, lower)}/",
+        "port": port, "sub_port": sub_port, "base_path": f"/{_random(14, lower)}/",
         "username": f"adm_{_random(6, lower)}",
         "secrets": {"password": _random(20), "key_pem": key_pem, "service_key": service_key or make_ssh_key()},
         "cert_pem": cert_pem, "cert_pin": pin, "step": "create", "state": "running", **fields,
@@ -855,6 +873,7 @@ def public(p: db.Provision) -> dict[str, Any]:
         "region_id": p.region, "plan_id": p.plan, "project": p.project, "in_place": bool(p.in_place),
         "dns": "cloudflare" if p.dns_account_id else "",
         "site_template": p.site_template,
+        "sub_port": p.sub_port,
         # made before the admin kept its own SSH key: an OS reinstall re-runs the old cloud-init install
         "legacy_install": "service_key" not in p.secrets and p.state == "done",
     }

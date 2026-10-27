@@ -169,6 +169,12 @@ export function Provisions({
                       {p.panel_url}
                     </a>
                   </dd>
+                  {p.sub_port > 0 && (
+                    <>
+                      <dt>Порт подписки</dt>
+                      <dd className="mono">{p.sub_port}</dd>
+                    </>
+                  )}
                   <dt>Логин</dt>
                   <dd className="mono">{p.username}</dd>
                   <dt>Пароль</dt>

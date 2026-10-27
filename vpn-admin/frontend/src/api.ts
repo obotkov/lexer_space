@@ -537,6 +537,8 @@ export interface Provision {
   /** "cloudflare" when the admin keeps the domain's A record */
   dns: "" | "cloudflare";
   site_template: string;
+  /** subscription port of the node panel; 0 = 3x-ui's default (servers made before 0.18.0) */
+  sub_port: number;
   /** made before the admin kept its own SSH key: an OS reinstall re-runs the old cloud-init install */
   legacy_install: boolean;
 }

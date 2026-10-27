@@ -72,7 +72,7 @@ MIGRATIONS = {
                    ("cert_mode", "TEXT NOT NULL DEFAULT ''"), ("replaces", "INTEGER NOT NULL DEFAULT 0"),
                    ("in_place", "INTEGER NOT NULL DEFAULT 0"), ("dns_account_id", "INTEGER NOT NULL DEFAULT 0"),
                    ("dns_zone_id", "TEXT NOT NULL DEFAULT ''"), ("dns_record_id", "TEXT NOT NULL DEFAULT ''"),
-                   ("site_template", "TEXT NOT NULL DEFAULT ''")],
+                   ("site_template", "TEXT NOT NULL DEFAULT ''"), ("sub_port", "INTEGER NOT NULL DEFAULT 0")],
 }
 
 
@@ -326,6 +326,7 @@ class Provision:
     dns_zone_id: str = ""
     dns_record_id: str = ""
     site_template: str = ""  # decoy page nginx shows on port 80 of the node; "" = none
+    sub_port: int = 0  # subscription port of the node panel instead of 3x-ui's well-known 2096; 0 = left as is
 
 
 _JSON_FIELDS = {"ssh_keys", "log", "labels"}
