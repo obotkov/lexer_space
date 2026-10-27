@@ -39,6 +39,15 @@ export interface PanelInfo extends Panel {
   children: ChildNode[];
 }
 
+/** Download + upload speed (bytes/sec) of each server, sampled every `interval` seconds over `window`. */
+export interface NetLoad {
+  interval: number;
+  window: number;
+  series: { key: string; name: string; panel: string; kind: "main" | "node" }[];
+  /** null: the server did not answer at that moment */
+  points: { t: number; values: Record<string, number | null> }[];
+}
+
 /** Ping from the admin's own server to a main panel or a node. */
 export interface PingTarget {
   kind: "main" | "node";
@@ -714,6 +723,7 @@ export const api = {
   logout: () => request("POST", "/api/auth/logout"),
   setInboundEnable: (panelId: number, inboundId: number, enable: boolean) =>
     request<{ ok: boolean }>("POST", "/api/inbounds/enable", { panel_id: panelId, inbound_id: inboundId, enable }),
+  netload: () => request<NetLoad>("GET", "/api/netload"),
   ping: (refresh = false) => request<PingResult>("GET", `/api/ping${refresh ? "?refresh=true" : ""}`),
   overview: (refresh = false) => request<Overview>("GET", `/api/overview${refresh ? "?refresh=true" : ""}`),
   panels: () => request<Panel[]>("GET", "/api/panels"),

@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import clients, connections, db, dns, hosters, nodes, ping, provision, site, system, tls
+from . import clients, connections, db, dns, hosters, netload, nodes, ping, provision, site, system, tls
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -31,9 +31,11 @@ async def lifespan(_: FastAPI):
     db.init_db()
     seed_panel_from_env()
     renewal = asyncio.create_task(tls.renewal_loop())
+    sampler = asyncio.create_task(netload.loop())
     provision.resume_all()
     yield
     renewal.cancel()
+    sampler.cancel()
     await pool.close_all()
 
 
@@ -663,6 +665,12 @@ async def site_custom(body: SiteCustomIn):
 @app.get("/api/overview", dependencies=[Depends(require_admin)])
 async def overview(refresh: bool = False):
     return await overview_cache.get(force=refresh)
+
+
+@app.get("/api/netload", dependencies=[Depends(require_admin)])
+async def network_load():
+    """Download + upload speed of each server over the last 5 minutes, sampled every 5 seconds."""
+    return netload.snapshot()
 
 
 @app.get("/api/ping", dependencies=[Depends(require_admin)])

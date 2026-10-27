@@ -1,5 +1,6 @@
 import { useState, type MouseEvent } from "react";
 import type { ChildNode, Overview as OverviewData, PanelInfo } from "../api";
+import { NetLoadWidget } from "../components/NetLoadWidget";
 import { PingWidget } from "../components/PingWidget";
 import { Empty, StatCard } from "../components/ui";
 import { formatBytes, formatUptime } from "../format";
@@ -64,6 +65,9 @@ export function Overview({ data, onGoServers }: { data: OverviewData; onGoServer
           </tbody>
         </table>
       </div>
+
+      <h2 className="section-title">Сетевая нагрузка</h2>
+      <NetLoadWidget multiPanel={data.panels.length > 1} />
 
       <div className="overview-widgets">
         <section className="overview-widget">
