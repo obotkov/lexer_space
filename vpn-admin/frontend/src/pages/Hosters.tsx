@@ -210,7 +210,11 @@ function AccountBlock({
         </div>
         <div className="hoster-actions">
           {h.ok ? <span className="badge badge-active">Ключ работает</span> : <span className="badge badge-expired">Ошибка</span>}
-          {h.account?.balance && <span className="badge badge-disabled">{h.account.balance}</span>}
+          {h.account?.balance && (
+            <span className="badge badge-disabled" title="Деньги на счёте, расход за текущий месяц и долг — то, что отдаёт API хостера">
+              {h.account.balance}
+            </span>
+          )}
           {h.ok && (
             <button className="btn btn-small btn-primary" onClick={onCreate}>
               + Создать сервер

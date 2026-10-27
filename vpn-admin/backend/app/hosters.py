@@ -147,6 +147,28 @@ def _server(*, id: Any, name: str, status: str, status_label: str, region: str, 
             "kind": kind}
 
 
+CURRENCY_SIGNS = {"USD": "$", "EUR": "€", "RUB": "₽", "GBP": "£"}
+
+
+def _money(value: float, currency: str) -> str:
+    """1 234,50 € — the way the account badge shows every hosting's money."""
+    return f"{value:,.2f}".replace(",", " ").replace(".", ",") + " " + CURRENCY_SIGNS.get(currency, currency)
+
+
+def _balance(credit: dict[str, float], spent: dict[str, float] | None = None, due: dict[str, float] | None = None) -> str | None:
+    """Badge text for an account billed after the fact: money on the account, this month's spending, debt.
+    Each part is {currency: amount}; a part that could not be read is None and is left out."""
+    parts = [_money(v, c) for c, v in credit.items() if v > 0.005]
+    parts += [f"{_money(v, c)} за месяц" for c, v in (spent or {}).items()]
+    parts += [f"долг {_money(v, c)}" for c, v in (due or {}).items() if v > 0.005]
+    return " · ".join(parts) or (_money(0, next(iter(credit))) if credit else None)
+
+
+def _add(total: dict[str, float], currency: str, value: Any) -> None:
+    if isinstance(value, (int, float)) and currency:
+        total[currency] = total.get(currency, 0.0) + float(value)
+
+
 # OVH answers {"class": "Client::Forbidden", "message": "..."}: the message is all there is to go by
 OVH_ERROR_HINTS = [
     ("application key is invalid", "INVALID_KEY", "Application Key не найден на этом API"),
@@ -295,9 +317,14 @@ class DigitalOcean:
                "limits": f"лимит дроплетов: {acc['droplet_limit']}" if acc.get("droplet_limit") else ""}
         try:  # needs the billing:read scope on custom-scoped tokens
             bal = await self._get("/customers/my/balance")
-            out["balance"] = f"${bal.get('month_to_date_balance', '0')} за месяц"
         except HosterError:
-            pass
+            out["limits"] = " · ".join(x for x in (out["limits"], "баланс не виден: у токена нет billing:read") if x)
+            return out
+        # account_balance: what was left after the last bill, below zero it is prepaid credit, above zero unpaid;
+        # this month's usage is billed at the start of the next one
+        left = float(bal.get("account_balance") or 0)
+        out["balance"] = _balance({"USD": max(-left, 0.0)}, {"USD": float(bal.get("month_to_date_usage") or 0)},
+                                  {"USD": left})
         return out
 
     @staticmethod
@@ -500,10 +527,45 @@ class OVHcloud:
         name = " ".join(x for x in (me.get("firstname"), me.get("name")) if x) or me.get("organisation", "")
         expires = (cred.get("expiration") or "")[:10]
         rights = "права ключа: " + ", ".join(f"{r.get('method')} {r.get('path')}" for r in rules)
-        return {"login": me.get("nichandle", ""), "name": name if me else "без доступа к данным аккаунта (/me)",
-                "status": me.get("state", ""), "balance": None,
-                "limits": " · ".join(x for x in (me.get("email", ""), me.get("country", ""),
-                                                 "" if me else rights, f"ключ до {expires}" if expires else "") if x)}
+        login = me.get("nichandle", "")
+        return {"login": login, "name": name if me else "без доступа к данным аккаунта (/me)",
+                "status": me.get("state", ""), "balance": await self._balance(),
+                "limits": " · ".join(x for x in (me.get("email", "") if me.get("email") != login else "",
+                                                 me.get("country", ""), "" if me else rights,
+                                                 f"ключ до {expires}" if expires else "") if x)}
+
+    async def _balance(self) -> str | None:
+        """Prepaid money and vouchers, this month's Public Cloud spending and unpaid bills: OVH bills afterwards,
+        so there is no single balance. Whatever cannot be read is left out."""
+        async def credit() -> dict[str, float]:
+            total: dict[str, float] = {}
+            for b in await asyncio.gather(*(self._get(f"/me/credit/balance/{n}")
+                                            for n in await self._get("/me/credit/balance"))):
+                _add(total, ((b or {}).get("amount") or {}).get("currencyCode", ""), ((b or {}).get("amount") or {}).get("value"))
+            return total
+
+        async def spent() -> dict[str, float]:
+            total: dict[str, float] = {}
+            for u in await asyncio.gather(*(self._get(f"/cloud/project/{p}/usage/current")
+                                            for p in await self._get("/cloud/project"))):
+                price = (u or {}).get("totalPrice") or {}
+                _add(total, price.get("currencyCode", ""), price.get("value"))
+            return total
+
+        async def due() -> dict[str, float]:
+            price = ((await self._get("/me/debtAccount")) or {}).get("dueAmount") or {}
+            total: dict[str, float] = {}
+            _add(total, price.get("currencyCode", ""), price.get("value"))
+            return total
+
+        parts = await asyncio.gather(credit(), spent(), due(), return_exceptions=True)
+        if all(isinstance(p, Exception) for p in parts):
+            return None
+        credits, spending, debt = (None if isinstance(p, Exception) else p for p in parts)
+        if credits is not None and not credits:  # no prepaid account: show zero in the account's currency
+            currency = next(iter({**(spending or {}), **(debt or {})}), "")
+            credits = {currency: 0.0} if currency else {}
+        return _balance(credits or {}, spending, debt)
 
     async def servers(self) -> list[dict]:
         vps, cloud = await asyncio.gather(self._vps(), self._cloud(), return_exceptions=True)
@@ -726,14 +788,11 @@ class VDSina:
                                    f"вариант «{label}»", "WRONG_ENDPOINT")
         return error
 
-    def _money(self, value: float) -> str:
-        return f"{value:,.2f}".replace(",", " ").replace(".", ",") + (" ₽" if self.currency == "RUB" else " $")
-
     async def account(self) -> dict:
         acc, balance = await asyncio.gather(self._request("GET", "/account"), self._request("GET", "/account.balance"))
         real = (balance or {}).get("real")
         return {"login": ((acc or {}).get("account") or {}).get("name", ""), "name": "", "status": "",
-                "balance": self._money(float(real)) if real is not None else None,
+                "balance": _money(float(real), self.currency) if real is not None else None,
                 "limits": f"средств хватит до {acc['forecast']}" if (acc or {}).get("forecast") else ""}
 
     @staticmethod
@@ -944,8 +1003,7 @@ class UpCloud:
         currency = ((details or {}).get("account") or {}).get("currency", "EUR") if isinstance(details, dict) else "EUR"
         credits = acc.get("credits")  # in cents
         return {"login": acc.get("username", ""), "name": "", "status": "",
-                "balance": (f"{credits / 100:,.2f}".replace(",", " ").replace(".", ",") + f" {currency}"
-                            if isinstance(credits, (int, float)) else None),
+                "balance": _money(credits / 100, currency) if isinstance(credits, (int, float)) else None,
                 "limits": "SSH-ключ для новых серверов задан" if self.user_key else "SSH-ключ для новых серверов не задан"}
 
     @staticmethod
@@ -1106,8 +1164,51 @@ class Scaleway:
             await self._request("GET", f"/instance/v1/zones/{SCW_ZONES[0]}/servers",
                                 params={"project": self.project, "per_page": 1})
             project = {}
-        return {"login": project.get("name") or self.project, "name": "", "status": "", "balance": None,
-                "limits": f"организация {project['organization_id'][:8]}…" if project.get("organization_id") else ""}
+        org = project.get("organization_id", "")
+        try:
+            balance = await self._balance(org)
+        except HosterError:  # the key has no BillingReadOnly permission set
+            balance = None
+        return {"login": project.get("name") or self.project, "name": "", "status": "", "balance": balance,
+                "limits": " · ".join(x for x in (f"организация {org[:8]}…" if org else "",
+                                                 "" if balance else "баланс не виден: у ключа нет BillingReadOnly") if x)}
+
+    async def _balance(self, org: str) -> str | None:
+        """Scaleway bills after the month: this month's spending (after discounts) and what is left of
+        vouchers and credits. Without the organization ID only this project's spending is counted."""
+        owner = {"organization_id": org} if org else {"project_id": self.project}
+        spent, total, page = 0.0, None, 1
+        currency = "EUR"
+        while total is None or (page - 1) * 100 < total:
+            data = await self._request("GET", "/billing/v2beta1/consumptions", params={**owner, "page": page, "page_size": 100})
+            total = (data or {}).get("total_count") or 0
+            for c in (data or {}).get("consumptions") or []:
+                value = c.get("value") or {}
+                currency = value.get("currency_code") or currency
+                spent += float(value.get("units") or 0) + float(value.get("nanos") or 0) / 1e9
+            if page == 1:
+                spent -= abs(float((data or {}).get("total_discount_untaxed_value") or 0))
+            if not (data or {}).get("consumptions"):
+                break
+            page += 1
+        credit = 0.0
+        if org:
+            try:
+                discounts = (await self._request("GET", "/billing/v2beta1/discounts",
+                                                 params={"organization_id": org, "page_size": 100}) or {}).get("discounts") or []
+            except HosterError:
+                discounts = []
+            now = datetime.datetime.now(datetime.timezone.utc)
+
+            def active(d: dict) -> bool:
+                try:
+                    return not d.get("stop_date") or datetime.datetime.fromisoformat(d["stop_date"].replace("Z", "+00:00")) > now
+                except ValueError:
+                    return True
+
+            credit = sum(float(d.get("value_remaining") or 0) for d in discounts
+                         if d.get("mode") in ("discount_mode_value", "discount_mode_splittable") and active(d))
+        return _balance({currency: credit}, {currency: max(spent, 0.0)})
 
     def _view(self, s: dict) -> dict:
         state = s.get("state", "")
