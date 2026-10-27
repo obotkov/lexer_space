@@ -173,7 +173,7 @@ tbody tr:hover { background: var(--bg-hover); }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
 .card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
 .card-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
-.card-actions { display: flex; gap: 8px; margin-top: auto; }
+.card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }  /* narrow cards: buttons go to the next line */
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; word-break: break-all; }
@@ -355,7 +355,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .provision { gap: 12px; }
 .provision-source { display: flex; align-items: center; gap: 8px; margin: 4px 0 2px; min-width: 0; }
 .provider-badge-small { padding: 1px 7px; font-size: 11px; }
-.provision .card-actions { flex-wrap: wrap; }
 .steps { display: flex; gap: 6px; margin: 0; padding: 0; list-style: none; flex-wrap: wrap; }
 .step { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding: 4px 10px 4px 4px;
   border: 1px solid var(--border); border-radius: 999px; }
