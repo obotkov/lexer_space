@@ -65,41 +65,45 @@ export function Overview({ data, onGoServers }: { data: OverviewData; onGoServer
         </table>
       </div>
 
-      <h2 className="section-title">Пинг до серверов</h2>
-      <PingWidget multiPanel={data.panels.length > 1} />
+      <div className="overview-widgets">
+        <section className="overview-widget">
+          <h2 className="section-title">Пинг до серверов</h2>
+          <PingWidget multiPanel={data.panels.length > 1} />
+        </section>
 
-      {children.length > 0 && (
-        <>
-          <h2 className="section-title">Трафик узлов</h2>
-          <NodeTrafficChart items={children.map(({ node, panel }) => ({ node, label: data.panels.length > 1 ? `${panel.name} › ${node.name}` : node.name }))} />
-        </>
-      )}
+        {children.length > 0 && (
+          <section className="overview-widget">
+            <h2 className="section-title">Трафик узлов</h2>
+            <NodeTrafficChart items={children.map(({ node, panel }) => ({ node, label: data.panels.length > 1 ? `${panel.name} › ${node.name}` : node.name }))} />
+          </section>
+        )}
 
-      {topUsers.length > 0 && (
-        <>
-          <h2 className="section-title">Топ по трафику</h2>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Подписка</th>
-                  <th>Клиенты</th>
-                  <th className="num">Трафик</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topUsers.map((s) => (
-                  <tr key={s.sub_id}>
-                    <td className="mono">{s.sub_id}</td>
-                    <td>{s.emails.join(", ")}</td>
-                    <td className="num">{formatBytes(s.up + s.down)}</td>
+        {topUsers.length > 0 && (
+          <section className="overview-widget">
+            <h2 className="section-title">Топ по трафику</h2>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Подписка</th>
+                    <th>Клиенты</th>
+                    <th className="num">Трафик</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
+                </thead>
+                <tbody>
+                  {topUsers.map((s) => (
+                    <tr key={s.sub_id}>
+                      <td className="mono">{s.sub_id}</td>
+                      <td className="overview-top-emails">{s.emails.join(", ")}</td>
+                      <td className="num">{formatBytes(s.up + s.down)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+      </div>
     </>
   );
 }

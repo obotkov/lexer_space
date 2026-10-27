@@ -313,6 +313,16 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .tree-line::after { content: ""; position: absolute; left: 0; top: 19px; width: 12px; border-top: 1px solid var(--border); }
 .tree-last::before { bottom: auto; height: 20px; }
 
+/* overview: ping, node traffic and top users side by side, stacked on narrower screens */
+.overview-widgets { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 0 16px; }
+.overview-widget { min-width: 0; display: flex; flex-direction: column; }
+.overview-widget > .card, .overview-widget > .table-wrap { flex: 1; }
+.overview-top-emails { word-break: break-word; }
+/* a third of the page is narrow: the bar goes under the name and the value */
+.overview-widget .ping-row { grid-template-columns: minmax(0, 1fr) auto; }
+.overview-widget .ping-track { grid-column: 1 / -1; grid-row: 2; }
+.overview-widget .traffic-row { grid-template-columns: minmax(70px, 140px) 1fr auto; }
+
 /* overview: ping from the admin to each server */
 .ping-card { gap: 10px; }
 .ping-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
