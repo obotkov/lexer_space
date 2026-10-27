@@ -1,5 +1,6 @@
 import { useState, type MouseEvent } from "react";
 import type { ChildNode, Overview as OverviewData, PanelInfo } from "../api";
+import { PingWidget } from "../components/PingWidget";
 import { Empty, StatCard } from "../components/ui";
 import { formatBytes, formatUptime } from "../format";
 
@@ -63,6 +64,9 @@ export function Overview({ data, onGoServers }: { data: OverviewData; onGoServer
           </tbody>
         </table>
       </div>
+
+      <h2 className="section-title">Пинг до серверов</h2>
+      <PingWidget multiPanel={data.panels.length > 1} />
 
       {children.length > 0 && (
         <>

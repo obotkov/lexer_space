@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import clients, connections, db, dns, hosters, nodes, provision, site, system, tls
+from . import clients, connections, db, dns, hosters, nodes, ping, provision, site, system, tls
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -641,6 +641,12 @@ async def site_custom(body: SiteCustomIn):
 @app.get("/api/overview", dependencies=[Depends(require_admin)])
 async def overview(refresh: bool = False):
     return await overview_cache.get(force=refresh)
+
+
+@app.get("/api/ping", dependencies=[Depends(require_admin)])
+async def ping_servers(refresh: bool = False):
+    """Ping from the admin's server to each main panel and node."""
+    return await ping.ping_all(force=refresh)
 
 
 @app.get("/api/health")

@@ -313,6 +313,30 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .tree-line::after { content: ""; position: absolute; left: 0; top: 19px; width: 12px; border-top: 1px solid var(--border); }
 .tree-last::before { bottom: auto; height: 20px; }
 
+/* overview: ping from the admin to each server */
+.ping-card { gap: 10px; }
+.ping-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.ping-rows { display: flex; flex-direction: column; }
+.ping-row { display: grid; grid-template-columns: minmax(120px, 240px) 1fr 150px; gap: 12px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); }
+.ping-row:first-child { border-top: 0; }
+.ping-label { min-width: 0; }
+.ping-name, .ping-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ping-track { position: relative; height: 12px; background: var(--bg-sunken); border-radius: 4px; overflow: hidden; }
+.ping-bar { position: absolute; inset: 0 auto 0 0; border-radius: 0 4px 4px 0; opacity: 0.85; }
+.ping-range { position: absolute; top: 0; bottom: 0; background: var(--border); }
+.ping-good { background: var(--good); }
+.ping-warn { background: var(--warn); }
+.ping-bad { background: var(--bad); }
+.ping-value { text-align: right; font-variant-numeric: tabular-nums; }
+.ping-ms { font-weight: 600; }
+.ping-text-good { color: var(--good); }
+.ping-text-warn { color: var(--warn); }
+.ping-text-bad { color: var(--bad); }
+@media (max-width: 640px) {
+  .ping-row { grid-template-columns: 1fr auto; }
+  .ping-track { grid-column: 1 / -1; grid-row: 2; }
+}
+
 /* overview: node traffic chart */
 .traffic-chart { gap: 14px; }
 .traffic-chart-note { margin: 0; }

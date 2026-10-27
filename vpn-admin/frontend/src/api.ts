@@ -39,6 +39,32 @@ export interface PanelInfo extends Panel {
   children: ChildNode[];
 }
 
+/** Ping from the admin's own server to a main panel or a node. */
+export interface PingTarget {
+  kind: "main" | "node";
+  panel: string;
+  name: string;
+  host: string;
+  ip: string;
+  port: number;
+  enable: boolean;
+  /** icmp, or tcp (connect time to the panel port) where ICMP is not allowed or dropped */
+  method: "icmp" | "tcp" | "";
+  avg_ms: number | null;
+  min_ms: number | null;
+  max_ms: number | null;
+  /** percent of lost probes */
+  loss: number | null;
+  /** latency the main panel itself measures to this node (its heartbeat) */
+  panel_ms: number | null;
+  error: string;
+}
+
+export interface PingResult {
+  checked_at: number;
+  targets: PingTarget[];
+}
+
 /** A node as shown on the overview: heartbeat stats plus traffic summed over the inbounds it hosts. */
 export interface ChildNode extends XNode {
   up: number;
@@ -686,6 +712,7 @@ export const api = {
   login: (username: string, password: string) =>
     request<{ username: string }>("POST", "/api/auth/login", { username, password }),
   logout: () => request("POST", "/api/auth/logout"),
+  ping: (refresh = false) => request<PingResult>("GET", `/api/ping${refresh ? "?refresh=true" : ""}`),
   overview: (refresh = false) => request<Overview>("GET", `/api/overview${refresh ? "?refresh=true" : ""}`),
   panels: () => request<Panel[]>("GET", "/api/panels"),
   createPanel: (form: PanelForm) => request<Panel>("POST", "/api/panels", form),
