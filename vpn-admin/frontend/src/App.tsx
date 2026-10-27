@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Overview as OverviewData, type UpdateCheck } from "./api";
+import { ThemeSwitch } from "./components/ThemeSwitch";
 import { Login, Shield } from "./pages/Login";
 import { Connections } from "./pages/Connections";
 import { Hosters } from "./pages/Hosters";
@@ -108,10 +109,13 @@ export function App() {
           ))}
         </nav>
         <div className="sidebar-foot">
-          <span className="muted small">{user}</span>
-          <button className="btn btn-small" onClick={logout}>
-            Выйти
-          </button>
+          <ThemeSwitch />
+          <div className="sidebar-user">
+            <span className="muted small">{user}</span>
+            <button className="btn btn-small" onClick={logout}>
+              Выйти
+            </button>
+          </div>
         </div>
       </aside>
 
