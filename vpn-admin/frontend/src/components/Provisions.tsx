@@ -4,6 +4,7 @@ import { api, type HosterInfo, type HosterProvider, type Provision, type Provisi
 
 const STEPS: { id: ProvisionStep; title: string }[] = [
   { id: "create", title: "Заказ сервера" },
+  { id: "rebuild", title: "Переустановка системы" }, // only an in-place reinstall has it
   { id: "boot", title: "Запуск" },
   { id: "install", title: "Установка 3x-ui" },
   { id: "connect", title: "Подключение узлом" },
@@ -82,11 +83,16 @@ export function Provisions({
       <div className="provisions">
         {items.map((p) => {
           const account = accounts.find((a) => a.id === p.hoster_id);
-          const steps = p.replaces ? STEPS : STEPS.filter((s) => s.id !== "retire");
+          // in place nothing is ordered and nothing is removed; a new server has no rebuild
+          const steps = STEPS.filter((s) =>
+            p.in_place ? s.id !== "create" && s.id !== "retire" : s.id !== "rebuild" && (p.replaces > 0 || s.id !== "retire"),
+          );
           const found = steps.findIndex((s) => s.id === p.step);
           const current = found < 0 ? steps.length : found; // a step without a chip runs after all of them
           // a refused attempt (no server ordered) does not hold the old server: a new reinstall replaces it
-          const replacedBy = items.find((x) => x.replaces === p.id && (x.state === "running" || (x.state === "failed" && !!x.server_id)));
+          const replacedBy = items.find(
+            (x) => x.replaces === p.id && (x.state === "running" || (x.state === "failed" && !!x.server_id && !(x.in_place && x.step === "rebuild"))),
+          );
           const canReinstall = !replacedBy && !!p.server_id && (p.state === "done" || (p.state === "failed" && !p.replaces));
           const [badgeClass, badgeText] = STATE_BADGE[p.state];
           const c = creds[p.id];
@@ -135,11 +141,22 @@ export function Provisions({
                   старого сервера — это задание заменится новым.
                 </div>
               )}
+              {p.in_place && p.state === "failed" && (
+                <div className="muted small">
+                  {p.step === "rebuild"
+                    ? "Нажмите «Повторить» или «Переустановить с нуля» на карточке прежнего задания: там можно выбрать и новый сервер вместо переустановки на месте."
+                    : "Система на сервере уже переустановлена: нажмите «Повторить», чтобы продолжить с этого шага."}
+                </div>
+              )}
               {replacedBy && (
                 <div className="notice notice-info small">
                   {replacedBy.state === "running"
-                    ? `Сервер переустанавливается: новый заказан в задании «${replacedBy.name} · переустановка», после переключения узла этот будет удалён.`
-                    : `Переустановка остановилась с ошибкой: повторите задание «${replacedBy.name} · переустановка» или удалите его сервер. Этот сервер пока работает.`}
+                    ? replacedBy.in_place
+                      ? `Система на сервере переустанавливается в задании «${replacedBy.name} · переустановка», IP сохранится. После этого эта карточка заменится новой.`
+                      : `Сервер переустанавливается: новый заказан в задании «${replacedBy.name} · переустановка», после переключения узла этот будет удалён.`
+                    : replacedBy.in_place
+                      ? `Переустановка системы остановилась с ошибкой: повторите задание «${replacedBy.name} · переустановка». Пока она не закончится, VPN на сервере не работает.`
+                      : `Переустановка остановилась с ошибкой: повторите задание «${replacedBy.name} · переустановка» или удалите его сервер. Этот сервер пока работает.`}
                 </div>
               )}
               {p.state === "running" && p.log.length > 0 && <div className="muted small">{p.log[p.log.length - 1].msg}…</div>}
@@ -189,7 +206,7 @@ export function Provisions({
                     Переустановить с нуля
                   </button>
                 )}
-                {(p.state === "failed" || p.state === "done") && p.server_id && replacedBy?.state !== "running" && (
+                {(p.state === "done" || (p.state === "failed" && !p.in_place)) && p.server_id && replacedBy?.state !== "running" && (
                   <button
                     className="btn btn-small btn-danger"
                     disabled={busy === p.id}
@@ -230,6 +247,7 @@ export function Provisions({
           job={reinstalling}
           provider={reinstallAccount.provider}
           providerTitle={providers[reinstallAccount.provider]?.title ?? reinstallAccount.provider}
+          rebuild={!!providers[reinstallAccount.provider]?.rebuild}
           onClose={() => setReinstalling(null)}
           onStarted={() => {
             setReinstalling(null);

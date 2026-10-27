@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS hosters (
 MIGRATIONS = {
     "panels": [("api_token_enc", "TEXT NOT NULL DEFAULT ''")],
     "provisions": [("labels", "TEXT NOT NULL DEFAULT '{}'"), ("domain", "TEXT NOT NULL DEFAULT ''"),
-                   ("cert_mode", "TEXT NOT NULL DEFAULT ''"), ("replaces", "INTEGER NOT NULL DEFAULT 0")],
+                   ("cert_mode", "TEXT NOT NULL DEFAULT ''"), ("replaces", "INTEGER NOT NULL DEFAULT 0"),
+                   ("in_place", "INTEGER NOT NULL DEFAULT 0")],
 }
 
 
@@ -261,6 +262,7 @@ class Provision:
     domain: str = ""  # wanted address of the node panel; empty = its IP
     cert_mode: str = ""  # certificate the panel ended up with: "domain" / "ip" (Let's Encrypt) or "self"
     replaces: int = 0  # reinstall: the job whose server this one takes over
+    in_place: int = 0  # reinstall by the hosting on the same server (the IP stays) instead of a new server
 
 
 _JSON_FIELDS = {"ssh_keys", "log", "labels"}

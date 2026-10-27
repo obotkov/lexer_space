@@ -264,6 +264,7 @@ def region_label(code: str, places: list[tuple[str, str, str]], with_code: bool 
 class DigitalOcean:
     title = "DigitalOcean"
     image = "ubuntu-24-04-x64"
+    rebuild = True  # in place, the IP stays; the droplet runs the user data it was created with again
 
     def __init__(self, credentials: dict[str, str]):
         token = credentials.get("token", "").strip()
@@ -362,6 +363,20 @@ class DigitalOcean:
     async def delete_server(self, server_id: str, project: str | None = None) -> None:
         await self._request("DELETE", f"/droplets/{server_id}")
 
+    async def rebuild_server(self, server_id: str, *, plan: str, name: str, project: str | None = None,
+                             admin_key: str | None = None) -> None:
+        """Wipe the disk and install the image again; returns once DigitalOcean reports the rebuild done."""
+        action = (await self._request("POST", f"/droplets/{server_id}/actions",
+                                      json={"type": "rebuild", "image": self.image})).get("action") or {}
+        for _ in range(60):
+            if action.get("status") == "completed":
+                return
+            if action.get("status") == "errored":
+                raise HosterError("DigitalOcean: переустановка дроплета завершилась с ошибкой")
+            await asyncio.sleep(10)
+            action = (await self._get(f"/actions/{action['id']}")).get("action") or {}
+        raise HosterError("DigitalOcean: переустановка дроплета не закончилась за 10 минут")
+
 
 # when the key may not read /me: the usual subsidiary of each API
 OVH_DEFAULT_SUBSIDIARY = {"ovh-eu": "FR", "ovh-ca": "WE", "ovh-us": "US"}
@@ -373,6 +388,7 @@ class OVHcloud:
     New servers are Public Cloud instances (hourly billing); classic VPS can only be ordered, not created."""
     title = "OVHcloud"
     images = ("Ubuntu 24.04", "Ubuntu 22.04")
+    rebuild = True  # in place, the IP stays
     instance_labels = {"ACTIVE": "Работает", "SHUTOFF": "Выключен", "BUILD": "Создаётся", "REBOOT": "Перезагрузка",
                        "HARD_REBOOT": "Перезагрузка", "RESCUE": "Rescue", "ERROR": "Ошибка", "SHELVED": "Отложен",
                        "SHELVED_OFFLOADED": "Отложен", "STOPPED": "Выключен", "SUSPENDED": "Приостановлен"}
@@ -638,12 +654,24 @@ class OVHcloud:
     async def delete_server(self, server_id: str, project: str | None = None) -> None:
         await self._request("DELETE", f"/cloud/project/{project}/instance/{server_id}")
 
+    async def rebuild_server(self, server_id: str, *, plan: str, name: str, project: str | None = None,
+                             admin_key: str | None = None) -> None:
+        """Reinstall the instance from a fresh Ubuntu image; OpenStack keeps its IP and creation user data."""
+        instance = await self._get(f"/cloud/project/{project}/instance/{server_id}")
+        region = instance.get("region", "")
+        images = await self._get(f"/cloud/project/{project}/image?osType=linux&region={region}")
+        image = next((i for want in self.images for i in images if i.get("name") == want), None)
+        if not image:
+            raise HosterError(f"В регионе {region} нет образа Ubuntu 24.04 / 22.04")
+        await self._request("POST", f"/cloud/project/{project}/instance/{server_id}/reinstall", {"imageId": image["id"]})
+
 
 class VDSina:
     """VDSina user API: token in the Authorization header, answers wrapped in {"status": "ok", "data": ...}.
     VDSina has no cloud-init, so new servers get a one-time SSH key of the admin, which installs 3x-ui over SSH."""
     title = "VDSina"
     setup = "ssh"
+    rebuild = True
     images = ("Ubuntu 24.04", "Ubuntu 22.04")
     status_map = {"active": "running", "new": "pending", "block": "stopped", "notpaid": "stopped", "deleted": "stopped"}
     status_labels = {"active": "Работает", "new": "Создаётся", "block": "Заблокирован", "notpaid": "Не оплачен",
@@ -814,6 +842,22 @@ class VDSina:
 
     async def get_server(self, server_id: str, project: str | None = None) -> dict:
         return self._server_view(await self._request("GET", f"/server/{server_id}") or {})
+
+    async def rebuild_server(self, server_id: str, *, plan: str, name: str, project: str | None = None,
+                             admin_key: str | None = None) -> None:
+        """Reinstall the OS with root getting the admin's one-time key, like a new server."""
+        if not admin_key:
+            raise HosterError("VDSina: нет SSH-ключа админки для установки 3x-ui")
+        template = self._template_for(await self._request("GET", "/template") or [], int(plan))
+        if not template:
+            raise HosterError(f"VDSina: для тарифа {plan} нет шаблона Ubuntu 24.04 / 22.04")
+        key = await self._request("POST", "/ssh-key", {"name": f"vpn-admin {name}", "data": admin_key})
+        try:
+            await self._request("PUT", f"/server.reinstall/{server_id}",
+                                {"template": template["id"], "ssh-key": int(key["id"])})
+        except HosterError:
+            await self.forget_setup_key(name)
+            raise
 
     async def delete_server(self, server_id: str, project: str | None = None) -> None:
         await self._request("DELETE", f"/server/{server_id}")

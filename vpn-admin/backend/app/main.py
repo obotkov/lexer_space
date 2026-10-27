@@ -300,7 +300,9 @@ async def _hoster_check(provider: str, credentials: dict[str, str]) -> dict:
 
 @app.get("/api/hosters/providers", dependencies=[Depends(require_admin)])
 async def hosters_providers():
-    return hosters.PROVIDERS
+    # rebuild: the hosting reinstalls the OS of a server in place, keeping its IP
+    return {key: {**info, "rebuild": getattr(hosters.CLIENTS[key], "rebuild", False)}
+            for key, info in hosters.PROVIDERS.items()}
 
 
 @app.get("/api/hosters", dependencies=[Depends(require_admin)])

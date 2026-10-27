@@ -377,6 +377,8 @@ export interface HosterProvider {
   help_url: string;
   /** per value of the "endpoint" field, when the key page depends on it */
   help_urls?: Record<string, string>;
+  /** the hosting reinstalls a server's OS in place, keeping its IP */
+  rebuild?: boolean;
 }
 
 export interface HosterServer {
@@ -473,7 +475,7 @@ export interface ProvisionForm {
   domain: string;
 }
 
-export type ProvisionStep = "create" | "boot" | "install" | "connect" | "retire" | "done";
+export type ProvisionStep = "create" | "rebuild" | "boot" | "install" | "connect" | "retire" | "done";
 
 export interface Provision {
   id: number;
@@ -503,6 +505,8 @@ export interface Provision {
   region_id: string;
   plan_id: string;
   project: string;
+  /** reinstall on the same server by the hosting (the IP stays) */
+  in_place: boolean;
 }
 
 export interface ProvisionCredentials {
@@ -576,7 +580,7 @@ export const api = {
   provisions: () => request<Provision[]>("GET", "/api/provisions"),
   startProvision: (form: ProvisionForm) => request<Provision>("POST", "/api/provisions", form),
   retryProvision: (id: number) => request<Provision>("POST", `/api/provisions/${id}/retry`),
-  reinstallProvision: (id: number, body: { plan: string; plan_label: string }) =>
+  reinstallProvision: (id: number, body: { in_place: boolean; plan: string; plan_label: string }) =>
     request<Provision>("POST", `/api/provisions/${id}/reinstall`, body),
   deleteProvisionServer: (id: number) => request<Provision>("POST", `/api/provisions/${id}/delete-server`),
   provisionCredentials: (id: number) => request<ProvisionCredentials>("GET", `/api/provisions/${id}/credentials`),

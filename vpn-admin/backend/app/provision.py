@@ -10,8 +10,10 @@ checks which certificate it serves, logs in, mints an API token for the main
 panel and adds the node there: verified by the CA for a Let's Encrypt
 certificate, pinned for the self-signed fallback.
 
-A reinstall is a new job that takes over an existing one: a fresh server, the
-same node of the main panel switched over to it, then the old server removed.
+A reinstall is a new job that takes over an existing one. Where the hosting can
+reinstall the OS (DigitalOcean, OVHcloud, VDSina) it does so on the same server
+and the IP stays; elsewhere a fresh server is ordered and the old one removed.
+Either way the same node of the main panel switches over to the new install.
 
 Steps run in a background task and are saved after each one, so an admin restart
 resumes the job where it stopped.
@@ -48,6 +50,7 @@ log = logging.getLogger("vpn-admin.provision")
 XUI_IMAGE = "ghcr.io/mhsanaei/3x-ui:latest"
 SSH_KEY_COMMENT = "vpn-admin-setup"
 STEPS = ["create", "boot", "install", "connect", "retire", "done"]
+IN_PLACE_STEPS = ["rebuild", "boot", "install", "connect", "retire", "done"]
 BOOT_TIMEOUT = 10 * 60
 INSTALL_TIMEOUT = 25 * 60
 DNS_WAIT = 20 * 60  # how long the script waits for the domain's A record before taking a certificate for the IP
@@ -91,7 +94,8 @@ class ProvisionIn(BaseModel):
 
 
 class ReinstallIn(BaseModel):
-    plan: str = ""  # empty = the plan of the server being replaced
+    in_place: bool = True  # only where the hosting can reinstall the OS; otherwise a new server
+    plan: str = ""  # new server only; empty = the plan of the server being replaced
     plan_label: str = ""
 
 
@@ -300,6 +304,48 @@ async def _step_create(p: db.Provision) -> None:
     _log(p, f"Сервер создан у хостинга (id {server_id})")
 
 
+def _steps(p: db.Provision) -> list[str]:
+    return IN_PLACE_STEPS if p.in_place else STEPS
+
+
+async def _panel_answers(p: db.Provision) -> bool:
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=10) as http:  # noqa: S501 - only whether it is up
+            return (await http.get(_node_url(p, p.ip))).status_code < 500
+    except httpx.HTTPError:
+        return False
+
+
+async def _step_rebuild(p: db.Provision) -> None:
+    """The hosting reinstalls the OS on the same server. DigitalOcean and OVHcloud then run the script the
+    server was created with, so this job carries the old panel credentials; VDSina gets a one-time key
+    and the admin installs over SSH, as for a new server."""
+    _log(p, f"Переустанавливаю систему на сервере {p.ip}: IP сохранится")
+
+    def rebuild(client):
+        admin_key = None
+        if getattr(client, "setup", "") == "ssh":
+            private, admin_key = make_ssh_key()
+            _set(p, secrets={**p.secrets, "ssh_key": private})
+        return client.rebuild_server(p.server_id, plan=p.plan, name=p.name, project=p.project or None,
+                                     admin_key=admin_key)
+
+    await _with_client(p, rebuild)
+    _log(p, "Хостинг принял переустановку, жду, пока старая система остановится")
+    # the old panel must be gone before the install is awaited, or the admin would talk to the old one
+    deadline, misses = time.time() + BOOT_TIMEOUT, 0
+    while True:
+        server = await _with_client(p, lambda c: c.get_server(p.server_id, p.project or None))
+        misses = 0 if await _panel_answers(p) else misses + 1
+        if server["status"] != "running" or misses >= 2:
+            break
+        if time.time() > deadline:
+            raise ProvisionError(f"Старая система на сервере работает уже {BOOT_TIMEOUT // 60} минут после "
+                                 "запроса переустановки: проверьте сервер в панели хостинга")
+        await asyncio.sleep(POLL_EVERY)
+    _log(p, "Старая система остановлена, хостинг ставит новую")
+
+
 async def _step_boot(p: db.Provision) -> None:
     deadline = time.time() + BOOT_TIMEOUT
     while True:
@@ -309,7 +355,7 @@ async def _step_boot(p: db.Provision) -> None:
         if server["status"] == "running" and server["ipv4"]:
             _set(p, ip=server["ipv4"][0])
             _log(p, f"Сервер запущен, IP {p.ip}")
-            if p.domain:
+            if p.domain and not p.in_place:
                 _log(p, f"Создайте у регистратора домена A-запись {p.domain} → {p.ip}: установка ждёт её до "
                         f"{DNS_WAIT // 60} минут, иначе возьмёт сертификат Let's Encrypt на IP")
             return
@@ -448,9 +494,10 @@ async def _step_connect(p: db.Provision) -> None:
             # which pushes them to the fresh panel
             body.name, body.remark, body.enable = current["name"], current["remark"], current["enable"]
             body.inbound_sync_mode, body.inbound_tags = current["inbound_sync_mode"], current["inbound_tags"]
-            _log(p, f"API-токен узла создан, переключаю узел «{current['name']}» основной панели на новый сервер")
+            target = "новую установку 3x-ui" if p.in_place else "новый сервер"
+            _log(p, f"API-токен узла создан, переключаю узел «{current['name']}» основной панели на {target}")
             await nodes.update(p.panel_id, p.node_id, body)
-            _log(p, "Узел основной панели переключён на новый сервер")
+            _log(p, f"Узел основной панели переключён на {target}")
             return
         _log(p, "API-токен узла создан, добавляю узел в основную панель")
         created = await nodes.add(p.panel_id, body)
@@ -466,7 +513,7 @@ async def _step_retire(p: db.Provision) -> None:
     old = db.get_provision(p.replaces) if p.replaces else None
     if not old:
         return
-    if old.server_id and old.state != "deleted":
+    if old.server_id and old.server_id != p.server_id and old.state != "deleted":
         _log(p, f"Удаляю старый сервер {old.ip or old.server_id} у хостинга")
         try:
             await _with_client(old, lambda c: c.delete_server(old.server_id, old.project or None))
@@ -474,11 +521,12 @@ async def _step_retire(p: db.Provision) -> None:
             if exc.code != "NOT_FOUND":  # already deleted in the hosting's own panel
                 raise
     db.delete_provision(old.id)
-    _log(p, "Старый сервер удалён, его задание убрано из списка")
+    _log(p, "Прежнее задание этого сервера убрано из списка" if p.in_place
+         else "Старый сервер удалён, его задание убрано из списка")
 
 
-STEP_RUNNERS = {"create": _step_create, "boot": _step_boot, "install": _step_install, "connect": _step_connect,
-                "retire": _step_retire}
+STEP_RUNNERS = {"create": _step_create, "rebuild": _step_rebuild, "boot": _step_boot, "install": _step_install,
+                "connect": _step_connect, "retire": _step_retire}
 
 
 async def run(provision_id: int) -> None:
@@ -488,7 +536,8 @@ async def run(provision_id: int) -> None:
     try:
         while p.step != "done":
             await STEP_RUNNERS[p.step](p)
-            _set(p, step=STEPS[STEPS.index(p.step) + 1])
+            steps = _steps(p)
+            _set(p, step=steps[steps.index(p.step) + 1])
         _set(p, state="done", error="")
         _log(p, "Готово: сервер работает узлом основной панели")
     except asyncio.CancelledError:
@@ -534,19 +583,20 @@ async def start(body: ProvisionIn) -> dict:
 
 
 def _new_job(**fields) -> db.Provision:
-    """A job with fresh panel credentials and certificate for a server that is yet to be ordered."""
+    """A job with fresh panel credentials and certificate for a server that is yet to be set up."""
     lower = string.ascii_lowercase + string.digits
     cert_pem, key_pem, pin = make_certificate()
-    return db.create_provision(
-        **fields, port=secrets.randbelow(40000) + 20000, base_path=f"/{_random(14, lower)}/",
-        username=f"adm_{_random(6, lower)}", secrets={"password": _random(20), "key_pem": key_pem},
-        cert_pem=cert_pem, cert_pin=pin, step="create", state="running",
-    )
+    return db.create_provision(**{
+        "port": secrets.randbelow(40000) + 20000, "base_path": f"/{_random(14, lower)}/",
+        "username": f"adm_{_random(6, lower)}", "secrets": {"password": _random(20), "key_pem": key_pem},
+        "cert_pem": cert_pem, "cert_pin": pin, "step": "create", "state": "running", **fields,
+    })
 
 
 async def reinstall(provision_id: int, body: ReinstallIn) -> dict:
-    """Start from zero: a new server with the same hosting and region (the plan may change) and a freshly
-    installed 3x-ui; the node of the main panel switches to it and the old server is deleted. The IP changes."""
+    """Start from zero with a freshly installed 3x-ui, the node of the main panel switching over to it.
+    In place where the hosting can reinstall the OS (the IP stays), otherwise a new server with the same
+    hosting and region (the plan may change) and the old server deleted (the IP changes)."""
     old = db.get_provision(provision_id)
     if not old:
         raise ProvisionError("Задание не найдено")
@@ -555,17 +605,25 @@ async def reinstall(provision_id: int, body: ReinstallIn) -> dict:
     for other in db.list_provisions():
         if other.replaces != old.id:
             continue
-        if other.state == "failed" and not other.server_id:
+        if other.state == "failed" and (not other.server_id or other.step == "rebuild"):
             db.delete_provision(other.id)  # an attempt the hosting refused left nothing behind: start over
         else:
             raise ProvisionError("Для этого сервера уже есть задание переустановки: дождитесь его, повторите или "
                                  "удалите его сервер")
-    if not db.get_hoster(old.hoster_id):
+    hoster = db.get_hoster(old.hoster_id)
+    if not hoster:
         raise ProvisionError("Аккаунт хостинга удалён из админки")
     try:
         await nodes.main_panel(old.panel_id)
     except nodes.NodeError as exc:
         raise ProvisionError(f"Основная панель: {exc}") from exc
+    client_class = hosters.CLIENTS[hoster.provider]
+    if body.in_place and getattr(client_class, "rebuild", False):
+        p = _in_place_job(old, ssh_install=getattr(client_class, "setup", "") == "ssh")
+        _log(p, f"Переустановка системы на том же сервере {old.ip}: узел основной панели переключится на новую "
+                "установку 3x-ui, IP не изменится")
+        _spawn(p.id)
+        return public(p)
     plan = body.plan.strip() or old.plan
     labels = {**old.labels, "plan": body.plan_label.strip()[:100]} if plan != old.plan else old.labels
     p = _new_job(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=plan,
@@ -575,6 +633,19 @@ async def reinstall(provision_id: int, body: ReinstallIn) -> dict:
             "него, старый сервер будет удалён")
     _spawn(p.id)
     return public(p)
+
+
+def _in_place_job(old: db.Provision, ssh_install: bool) -> db.Provision:
+    same = dict(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=old.plan,
+                project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=old.labels,
+                node_id=old.node_id, replaces=old.id, in_place=1, server_id=old.server_id, ip=old.ip,
+                step="rebuild")
+    if ssh_install:  # the admin runs the script itself, so it may as well be a fresh one
+        return _new_job(**same)
+    # DigitalOcean and OVHcloud run the script from the server's creation again: its panel settings stay
+    return db.create_provision(**same, port=old.port, base_path=old.base_path, username=old.username,
+                               secrets={"password": old.secrets["password"]}, cert_pem=old.cert_pem,
+                               cert_pin=old.cert_pin, state="running")
 
 
 def retry(provision_id: int) -> dict:
@@ -598,6 +669,9 @@ async def delete_server(provision_id: int) -> dict:
         raise ProvisionError("Задание не найдено")
     if p.state == "running":
         raise ProvisionError("Задание ещё выполняется: дождитесь ошибки или окончания")
+    if p.in_place and p.state != "done":
+        raise ProvisionError("Это переустановка на том же сервере: повторите её или удалите сервер с карточки "
+                             "прежнего задания")
     if any(other.replaces == p.id and other.state == "running" for other in db.list_provisions()):
         raise ProvisionError("Сервер сейчас переустанавливается: старый удалится сам, когда новый заработает")
     if p.server_id:
@@ -610,7 +684,7 @@ async def delete_server(provision_id: int) -> dict:
     _set(p, state="deleted")
     hosters.invalidate(p.hoster_id)
     # the node is this server's only once the connect step is through (a reinstall borrows the old one before)
-    if p.node_id and STEPS.index(p.step) > STEPS.index("connect"):
+    if p.node_id and _steps(p).index(p.step) > _steps(p).index("connect"):
         await _drop_node(p)
     return public(p)
 
@@ -648,7 +722,7 @@ def public(p: db.Provision) -> dict[str, Any]:
         "state": p.state, "error": p.error, "log": p.log[-15:], "created_at": p.created_at,
         "updated_at": p.updated_at, "panel_url": _node_url(p) if p.ip else "", "username": p.username,
         "domain": p.domain, "cert_mode": p.cert_mode, "replaces": p.replaces,
-        "region_id": p.region, "plan_id": p.plan, "project": p.project,
+        "region_id": p.region, "plan_id": p.plan, "project": p.project, "in_place": bool(p.in_place),
     }
 
 
