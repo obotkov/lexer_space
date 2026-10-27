@@ -513,9 +513,9 @@ async def provisions_retry(provision_id: int):
 
 
 @app.post("/api/provisions/{provision_id}/reinstall", dependencies=[Depends(require_admin)])
-async def provisions_reinstall(provision_id: int):
+async def provisions_reinstall(provision_id: int, body: provision.ReinstallIn):
     try:
-        return await provision.reinstall(provision_id)
+        return await provision.reinstall(provision_id, body)
     except provision.ProvisionError as exc:
         raise HTTPException(400, str(exc)) from exc
 

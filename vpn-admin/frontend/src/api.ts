@@ -440,6 +440,8 @@ export interface HostingPlan {
   price_month_plan: number | null;
   currency: string;
   regions: string[];
+  /** the hosting allows one server of this plan per organisation (Scaleway STARDUST1) */
+  single?: boolean;
 }
 
 export interface CreateOptions {
@@ -497,6 +499,10 @@ export interface Provision {
   cert_mode: "" | "domain" | "ip" | "self";
   /** reinstall: id of the job whose server this one replaces */
   replaces: number;
+  /** the hosting's own IDs; region and plan above are what the form showed */
+  region_id: string;
+  plan_id: string;
+  project: string;
 }
 
 export interface ProvisionCredentials {
@@ -570,7 +576,8 @@ export const api = {
   provisions: () => request<Provision[]>("GET", "/api/provisions"),
   startProvision: (form: ProvisionForm) => request<Provision>("POST", "/api/provisions", form),
   retryProvision: (id: number) => request<Provision>("POST", `/api/provisions/${id}/retry`),
-  reinstallProvision: (id: number) => request<Provision>("POST", `/api/provisions/${id}/reinstall`),
+  reinstallProvision: (id: number, body: { plan: string; plan_label: string }) =>
+    request<Provision>("POST", `/api/provisions/${id}/reinstall`, body),
   deleteProvisionServer: (id: number) => request<Provision>("POST", `/api/provisions/${id}/delete-server`),
   provisionCredentials: (id: number) => request<ProvisionCredentials>("GET", `/api/provisions/${id}/credentials`),
   forgetProvision: (id: number) => request("DELETE", `/api/provisions/${id}`),

@@ -169,7 +169,10 @@ OVH_DISCOVERY_HINT = (
 
 def _quota_error(data: dict, provider: str) -> HosterError:
     """Scaleway: {"type": "quotas_exceeded", "details": [{"resource": "instances_stardust1_s", "quota": 0, "current": 0}]}"""
-    details = [d for d in data.get("details") or [] if isinstance(d, dict)]
+    details = []
+    for d in data.get("details") or []:  # Scaleway may list the same quota twice
+        if isinstance(d, dict) and d not in details:
+            details.append(d)
     what = "; ".join(f"{d.get('resource', '?')} — лимит {d.get('quota', '?')}, занято {d.get('current', '?')}"
                      for d in details)
     if any(d.get("quota") == 0 for d in details):
@@ -1091,6 +1094,7 @@ class Scaleway:
                     "specs": f"{t.get('ncpus')} vCPU · {round((t.get('ram') or 0) / 1024 ** 3, 1):g} GB"
                              + (f" · {t['arch']}" if t.get("arch") and t["arch"] != "x86_64" else "")
                              + (" · не больше 1 на организацию" if name.startswith("STARDUST") else ""),
+                    "single": name.startswith("STARDUST"),
                     "price_hour": t.get("hourly_price"), "price_month": t.get("monthly_price"), "price_month_plan": None})
                 plan["regions"].append(z)
         ordered = sorted(plans.values(), key=lambda p: (p["price_hour"] is None, p["price_hour"] or 0, p["id"]))

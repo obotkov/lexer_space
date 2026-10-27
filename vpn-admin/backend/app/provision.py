@@ -90,6 +90,11 @@ class ProvisionIn(BaseModel):
         return value
 
 
+class ReinstallIn(BaseModel):
+    plan: str = ""  # empty = the plan of the server being replaced
+    plan_label: str = ""
+
+
 # ---------- what the new server gets ----------
 
 def _random(length: int, alphabet: str = string.ascii_letters + string.digits) -> str:
@@ -539,24 +544,32 @@ def _new_job(**fields) -> db.Provision:
     )
 
 
-async def reinstall(provision_id: int) -> dict:
-    """Start from zero: a new server with the same hosting, region and plan and a freshly installed 3x-ui;
-    the node of the main panel switches to it and the old server is deleted. The IP changes."""
+async def reinstall(provision_id: int, body: ReinstallIn) -> dict:
+    """Start from zero: a new server with the same hosting and region (the plan may change) and a freshly
+    installed 3x-ui; the node of the main panel switches to it and the old server is deleted. The IP changes."""
     old = db.get_provision(provision_id)
     if not old:
         raise ProvisionError("Задание не найдено")
     if old.state not in ("done", "failed") or not old.server_id:
         raise ProvisionError("Переустановить можно сервер, который уже создан у хостинга")
-    if any(p.replaces == old.id for p in db.list_provisions()):
-        raise ProvisionError("Для этого сервера уже есть задание переустановки")
+    for other in db.list_provisions():
+        if other.replaces != old.id:
+            continue
+        if other.state == "failed" and not other.server_id:
+            db.delete_provision(other.id)  # an attempt the hosting refused left nothing behind: start over
+        else:
+            raise ProvisionError("Для этого сервера уже есть задание переустановки: дождитесь его, повторите или "
+                                 "удалите его сервер")
     if not db.get_hoster(old.hoster_id):
         raise ProvisionError("Аккаунт хостинга удалён из админки")
     try:
         await nodes.main_panel(old.panel_id)
     except nodes.NodeError as exc:
         raise ProvisionError(f"Основная панель: {exc}") from exc
-    p = _new_job(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=old.plan,
-                 project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=old.labels,
+    plan = body.plan.strip() or old.plan
+    labels = {**old.labels, "plan": body.plan_label.strip()[:100]} if plan != old.plan else old.labels
+    p = _new_job(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=plan,
+                 project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=labels,
                  node_id=old.node_id, replaces=old.id)
     _log(p, f"Переустановка: новый сервер заменит {old.ip or old.server_id}, узел основной панели переключится на "
             "него, старый сервер будет удалён")
@@ -608,6 +621,7 @@ def public(p: db.Provision) -> dict[str, Any]:
         "state": p.state, "error": p.error, "log": p.log[-15:], "created_at": p.created_at,
         "updated_at": p.updated_at, "panel_url": _node_url(p) if p.ip else "", "username": p.username,
         "domain": p.domain, "cert_mode": p.cert_mode, "replaces": p.replaces,
+        "region_id": p.region, "plan_id": p.plan, "project": p.project,
     }
 
 

@@ -156,6 +156,12 @@ export function CreateServerDialog({
                 <PlanList plans={plans} value={planId} onChange={setPlan} />
               )}
               {chosen && <PlanNote plan={chosen} provider={hoster.provider} />}
+              {chosen?.single && (
+                <div className="notice notice-warn small">
+                  {providerTitle} разрешает только один сервер {chosen.label} на организацию. На таком сервере не получится «Переустановить с
+                  нуля» на тот же тариф: новый сервер заказывается до удаления старого. При переустановке можно будет выбрать другой тариф.
+                </div>
+              )}
             </div>
 
             <div className="field">
@@ -255,7 +261,7 @@ export function CreateServerDialog({
 }
 
 /** Plans as radio rows: name and resources on the left, price per month and per hour on the right. */
-function PlanList({ plans, value, onChange }: { plans: HostingPlan[]; value: string; onChange: (id: string) => void }) {
+export function PlanList({ plans, value, onChange }: { plans: HostingPlan[]; value: string; onChange: (id: string) => void }) {
   const selected = useRef<HTMLLabelElement>(null);
 
   // keep the chosen plan in sight when the list changes (another region or project)
@@ -293,7 +299,7 @@ const BILLING_NOTES: Record<string, string> = {
     "Оплата посуточная с баланса аккаунта VDSina, месяц — 30 дней; цена в час — суточная, делённая на 24. Для заказа на балансе должно хватать средств на тариф.",
 };
 
-function PlanNote({ plan, provider }: { plan: HostingPlan; provider: string }) {
+export function PlanNote({ plan, provider }: { plan: HostingPlan; provider: string }) {
   if (plan.price_hour == null && plan.price_month == null)
     return <small className="muted">Цена тарифа {plan.label} не найдена в прайс-листе хостинга: посмотрите её в панели хостинга.</small>;
   return (

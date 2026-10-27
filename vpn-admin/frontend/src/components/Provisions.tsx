@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ReinstallDialog } from "./ReinstallDialog";
 import { api, type HosterInfo, type HosterProvider, type Provision, type ProvisionCredentials, type ProvisionStep } from "../api";
 
 const STEPS: { id: ProvisionStep; title: string }[] = [
@@ -41,6 +42,8 @@ export function Provisions({
   const [error, setError] = useState("");
   const [creds, setCreds] = useState<Record<number, ProvisionCredentials>>({});
   const [openLog, setOpenLog] = useState<number | null>(null);
+  const [reinstalling, setReinstalling] = useState<Provision | null>(null);
+  const reinstallAccount = reinstalling && accounts.find((a) => a.id === reinstalling.hoster_id);
 
   const act = async (id: number, action: () => Promise<unknown>) => {
     setBusy(id);
@@ -82,7 +85,8 @@ export function Provisions({
           const steps = p.replaces ? STEPS : STEPS.filter((s) => s.id !== "retire");
           const found = steps.findIndex((s) => s.id === p.step);
           const current = found < 0 ? steps.length : found; // a step without a chip runs after all of them
-          const replacedBy = items.find((x) => x.replaces === p.id && x.state !== "deleted");
+          // a refused attempt (no server ordered) does not hold the old server: a new reinstall replaces it
+          const replacedBy = items.find((x) => x.replaces === p.id && (x.state === "running" || (x.state === "failed" && !!x.server_id)));
           const canReinstall = !replacedBy && !!p.server_id && (p.state === "done" || (p.state === "failed" && !p.replaces));
           const [badgeClass, badgeText] = STATE_BADGE[p.state];
           const c = creds[p.id];
@@ -125,9 +129,17 @@ export function Provisions({
               </ol>
 
               {p.error && <div className="error-text small provision-error">{p.error}</div>}
+              {p.replaces > 0 && p.state === "failed" && !p.server_id && (
+                <div className="muted small">
+                  Новый сервер не заказан, старый работает как прежде. Чтобы выбрать другой тариф, нажмите «Переустановить с нуля» на карточке
+                  старого сервера — это задание заменится новым.
+                </div>
+              )}
               {replacedBy && (
                 <div className="notice notice-info small">
-                  Сервер переустанавливается: новый заказан в задании «{replacedBy.name}», после переключения узла этот будет удалён.
+                  {replacedBy.state === "running"
+                    ? `Сервер переустанавливается: новый заказан в задании «${replacedBy.name} · переустановка», после переключения узла этот будет удалён.`
+                    : `Переустановка остановилась с ошибкой: повторите задание «${replacedBy.name} · переустановка» или удалите его сервер. Этот сервер пока работает.`}
                 </div>
               )}
               {p.state === "running" && p.log.length > 0 && <div className="muted small">{p.log[p.log.length - 1].msg}…</div>}
@@ -173,17 +185,7 @@ export function Provisions({
                   </button>
                 )}
                 {canReinstall && (
-                  <button
-                    className="btn btn-small"
-                    disabled={busy === p.id}
-                    onClick={() =>
-                      confirm(
-                        `Переустановить «${p.name}» с нуля?\n\nАдминка закажет новый сервер с теми же хостингом, регионом и тарифом, ` +
-                          "поставит 3x-ui заново и переключит на него узел основной панели: инбаунды и клиенты сохранятся. " +
-                          `Потом старый сервер будет удалён. IP изменится${p.domain ? ` — A-запись ${p.domain} нужно будет направить на новый IP` : ""}.`,
-                      ) && act(p.id, () => api.reinstallProvision(p.id))
-                    }
-                  >
+                  <button className="btn btn-small" disabled={busy === p.id} onClick={() => setReinstalling(p)}>
                     Переустановить с нуля
                   </button>
                 )}
@@ -219,6 +221,18 @@ export function Provisions({
           );
         })}
       </div>
+      {reinstalling && reinstallAccount && (
+        <ReinstallDialog
+          job={reinstalling}
+          provider={reinstallAccount.provider}
+          providerTitle={providers[reinstallAccount.provider]?.title ?? reinstallAccount.provider}
+          onClose={() => setReinstalling(null)}
+          onStarted={() => {
+            setReinstalling(null);
+            onChanged();
+          }}
+        />
+      )}
     </>
   );
 }
