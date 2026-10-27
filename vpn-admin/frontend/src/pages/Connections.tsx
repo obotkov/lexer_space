@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { SUPPORTED_PROTOCOLS, type Node, type Overview } from "../api";
+import { api, SUPPORTED_PROTOCOLS, type Node, type Overview } from "../api";
 import { CreateClientDialog } from "../components/CreateClientDialog";
+import { Switch } from "../components/NodeDialog";
 import { Empty, PanelFilter, TrafficBar } from "../components/ui";
 import { formatBytes, formatExpiry, formatLimit } from "../format";
 
@@ -8,6 +9,27 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
   const [panelId, setPanelId] = useState(0);
   const [addingTo, setAddingTo] = useState<Node | null>(null);
   const [query, setQuery] = useState("");
+  // switched here but not yet back in the overview data: key -> the new state
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [error, setError] = useState("");
+
+  const toggle = async (n: Node, enable: boolean) => {
+    const key = `${n.panel_id}-${n.id}`;
+    setPending((p) => ({ ...p, [key]: enable }));
+    setError("");
+    try {
+      await api.setInboundEnable(n.panel_id, n.id, enable);
+      await onChanged();
+    } catch (e) {
+      setError(`«${n.remark || `#${n.id}`}»: ${(e as Error).message}`);
+    } finally {
+      setPending((p) => {
+        const next = { ...p };
+        delete next[key];
+        return next;
+      });
+    }
+  };
 
   const nodes = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -25,6 +47,7 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
         <PanelFilter panels={data.panels} value={panelId} onChange={setPanelId} />
         <span className="muted">{nodes.length} шт.</span>
       </div>
+      {error && <div className="notice notice-bad small">{error}</div>}
       {nodes.length === 0 ? (
         <Empty>Коннекты не найдены</Empty>
       ) : (
@@ -46,8 +69,11 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
               </tr>
             </thead>
             <tbody>
-              {nodes.map((n) => (
-                <tr key={`${n.panel_id}-${n.id}`} className={n.enable ? "" : "row-muted"}>
+              {nodes.map((n) => {
+                const key = `${n.panel_id}-${n.id}`;
+                const enabled = pending[key] ?? n.enable;
+                return (
+                <tr key={key} className={enabled ? "" : "row-muted"}>
                   <td className="strong">{n.remark || `#${n.id}`}</td>
                   <td>{n.panel_name}</td>
                   <td>
@@ -65,7 +91,17 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
                     <TrafficBar used={n.up + n.down} total={n.total} />
                   </td>
                   <td className="small">{formatExpiry(n.expiry_time)}</td>
-                  <td>{n.enable ? <span className="badge badge-active">Включён</span> : <span className="badge badge-disabled">Выключен</span>}</td>
+                  <td>
+                    <span className="inbound-switch">
+                      <Switch
+                        checked={enabled}
+                        disabled={key in pending}
+                        onChange={(v) => toggle(n, v)}
+                        title={enabled ? "Выключить коннект: клиенты не смогут через него подключаться" : "Включить коннект"}
+                      />
+                      <span className={enabled ? "good-text small" : "muted small"}>{enabled ? "Включён" : "Выключен"}</span>
+                    </span>
+                  </td>
                   <td>
                     {SUPPORTED_PROTOCOLS.includes(n.protocol) && (
                       <button className="btn btn-small" onClick={() => setAddingTo(n)}>
@@ -74,7 +110,8 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
                     )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

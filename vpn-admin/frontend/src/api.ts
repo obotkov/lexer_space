@@ -712,6 +712,8 @@ export const api = {
   login: (username: string, password: string) =>
     request<{ username: string }>("POST", "/api/auth/login", { username, password }),
   logout: () => request("POST", "/api/auth/logout"),
+  setInboundEnable: (panelId: number, inboundId: number, enable: boolean) =>
+    request<{ ok: boolean }>("POST", "/api/inbounds/enable", { panel_id: panelId, inbound_id: inboundId, enable }),
   ping: (refresh = false) => request<PingResult>("GET", `/api/ping${refresh ? "?refresh=true" : ""}`),
   overview: (refresh = false) => request<Overview>("GET", `/api/overview${refresh ? "?refresh=true" : ""}`),
   panels: () => request<Panel[]>("GET", "/api/panels"),

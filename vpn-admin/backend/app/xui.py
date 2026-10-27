@@ -233,6 +233,18 @@ class XUIClient:
         await self._call("POST", f"/panel/api/clients/resetTraffic/{quote(email, safe='')}")
 
 
+    async def set_inbound_enable(self, inbound_id: int, enable: bool) -> None:
+        """v3 toggles only the flag; 2.x has no such call, so the stored inbound goes back with the new flag."""
+        await self.ensure_ready()
+        if self.is_v3:
+            await self._call("POST", f"/panel/api/inbounds/setEnable/{inbound_id}", json={"enable": enable})
+            return
+        inbound = await self.inbound(inbound_id)
+        if not inbound:
+            raise XUIError(f"Коннект #{inbound_id} не найден")
+        inbound.pop("clientStats", None)  # traffic rows are not part of the inbound's settings
+        await self._call("POST", f"/panel/api/inbounds/update/{inbound_id}", json={**inbound, "enable": enable})
+
     async def delete_inbound(self, inbound_id: int) -> None:
         await self._call("POST", f"/panel/api/inbounds/del/{inbound_id}")
 

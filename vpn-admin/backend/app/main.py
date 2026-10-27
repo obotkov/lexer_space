@@ -216,6 +216,28 @@ async def clients_delete(body: RefsIn):
     return {"results": await clients.delete_clients(body.refs)}
 
 
+# ---------- connects (inbounds) ----------
+
+class InboundEnableIn(BaseModel):
+    panel_id: int
+    inbound_id: int
+    enable: bool
+
+
+@app.post("/api/inbounds/enable", dependencies=[Depends(require_admin)])
+async def inbounds_enable(body: InboundEnableIn):
+    """Switch a connect on or off; a node's connect is switched through its main panel."""
+    panel = db.get_panel(body.panel_id)
+    if not panel:
+        raise HTTPException(404, "Сервер не найден")
+    try:
+        await (await pool.get(panel)).set_inbound_enable(body.inbound_id, body.enable)
+    except XUIError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    overview_cache.invalidate()
+    return {"ok": True}
+
+
 # ---------- nodes (remote 3x-ui servers of a main v3 panel) ----------
 
 class NodeCreateIn(nodes.NodeIn):
