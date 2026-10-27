@@ -45,7 +45,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from pydantic import BaseModel, Field, field_validator
 
-from . import db, dns, hosters, nodes, site
+from . import connections, db, dns, hosters, nodes, site
 from .aggregator import overview_cache
 from .xui import XUIClient, XUIError
 
@@ -54,8 +54,8 @@ log = logging.getLogger("vpn-admin.provision")
 XUI_IMAGE = "ghcr.io/mhsanaei/3x-ui:latest"
 STUB_IMAGE = "nginx:alpine"
 SSH_KEY_COMMENT = "vpn-admin-setup"
-STEPS = ["create", "boot", "install", "connect", "retire", "done"]
-IN_PLACE_STEPS = ["rebuild", "boot", "install", "connect", "retire", "done"]
+STEPS = ["create", "boot", "install", "connect", "connections", "retire", "done"]
+IN_PLACE_STEPS = ["rebuild", "boot", "install", "connect", "connections", "retire", "done"]
 BOOT_TIMEOUT = 10 * 60
 INSTALL_TIMEOUT = 25 * 60
 DNS_WAIT = 20 * 60  # how long the script waits for the domain's A record before taking a certificate for the IP
@@ -90,6 +90,7 @@ class ProvisionIn(BaseModel):
     dns_account_id: int = 0
     dns_zone_id: str = ""
     site_template: str = ""  # decoy page on port 80: a template of the admin's site, "custom" or "" for none
+    connections: bool = True  # create the enabled connection templates on the new node
 
     @field_validator("site_template")
     @classmethod
@@ -341,7 +342,7 @@ docker run --rm --entrypoint /app/x-ui -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/
   -e XRAY_VMESS_AEAD_FORCED=false -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/cert:/root/cert {XUI_IMAGE}
 
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
-  ufw allow {p.port}/tcp{f"; ufw allow {p.sub_port}/tcp" if p.sub_port else ""}
+  ufw allow {p.port}/tcp{f"; ufw allow {p.sub_port}/tcp" if p.sub_port else ""}{"".join(f"; ufw allow {r}" for r in connections.ufw_rules(p.connections))}
 fi
 {extra}echo "vpn-admin: done"
 """
@@ -636,8 +637,74 @@ async def _step_retire(p: db.Provision) -> None:
          else "Старый сервер удалён, его задание убрано из списка")
 
 
+def _busy_ports(p: db.Provision) -> set[tuple[int, str]]:
+    """Ports of the node no connection may take: the panel, the subscription and the decoy page."""
+    return {(p.port, "tcp"), (p.sub_port, "tcp"), (80, "tcp")}
+
+
+def _target(p: db.Provision) -> connections.Target:
+    """The server as its inbounds see it: its name and the certificate the install left. Clients get the node's
+    address from the main panel itself."""
+    if p.cert_mode in ("domain", "ip"):
+        cert, key, pin = "/root/cert/le.crt", "/root/cert/le.key", ""
+    elif p.cert_mode == "self":
+        cert, key, pin = "/root/cert/panel.crt", "/root/cert/panel.key", connections.pin_hex(p.cert_pin)
+    else:
+        cert = key = pin = ""
+    return connections.Target(server=p.name, tls_name=p.domain if p.cert_mode == "domain" else "",
+                              cert_file=cert, key_file=key, pin_hex=pin, stub_html=_stub_html(p) if p.site_template else "")
+
+
+async def _roll_out(p: db.Provision) -> None:
+    _, xui = await nodes.main_panel(p.panel_id)
+    try:
+        await connections.rollout(xui, p.node_id, p.connections, _target(p), lambda m: _log(p, m),
+                                  lambda items: _set(p, connections=items))
+    except connections.TemplateError as exc:
+        raise ProvisionError(f"Подключения: {exc}") from exc
+    finally:
+        overview_cache.invalidate()
+
+
+async def _step_connections(p: db.Provision) -> None:
+    pending = [c for c in p.connections if not c.get("inbound_id") and not c.get("error")]
+    if not pending or not p.node_id:
+        return  # nothing planned, or a reinstall: the node keeps the inbounds it had
+    _log(p, f"Создаю подключения на узле: {len(pending)} шт.")
+    await _roll_out(p)
+
+
+async def apply_connections(provision_id: int) -> dict:
+    """Add the enabled templates this node does not have yet; what it has stays untouched."""
+    p = db.get_provision(provision_id)
+    if not p:
+        raise ProvisionError("Задание не найдено")
+    if p.state != "done" or not p.node_id:
+        raise ProvisionError("Раскатать подключения можно на сервер, который уже работает узлом основной панели")
+    try:
+        _, xui = await nodes.main_panel(p.panel_id)
+        existing = [i for i in await xui.inbounds() if i.get("nodeId") == p.node_id]
+    except (nodes.NodeError, XUIError) as exc:
+        raise ProvisionError(f"Основная панель: {exc}") from exc
+    alive = {i.get("id") for i in existing}
+    kept = [c for c in p.connections if c.get("inbound_id") in alive]
+    have = {c["template_id"] for c in kept}
+    missing = [t for t in connections.snapshot(connections.templates()) if t["template_id"] not in have]
+    if not missing:
+        raise ProvisionError("На сервере уже есть все включённые подключения")
+    taken = _busy_ports(p) | {(i.get("port"), n) for i in existing for n in connections.inbound_nets(i)}
+    _set(p, connections=kept + connections.plan(missing, taken))
+    _log(p, f"Раскатываю подключения на узел: {len(missing)} шт.")
+    try:
+        await _roll_out(p)
+    except (ProvisionError, nodes.NodeError) as exc:
+        _log(p, f"Ошибка: {exc}")
+        raise ProvisionError(str(exc)) from exc
+    return public(db.get_provision(p.id))
+
+
 STEP_RUNNERS = {"create": _step_create, "rebuild": _step_rebuild, "boot": _step_boot, "install": _step_install,
-                "connect": _step_connect, "retire": _step_retire}
+                "connect": _step_connect, "connections": _step_connections, "retire": _step_retire}
 
 
 async def run(provision_id: int) -> None:
@@ -692,6 +759,9 @@ async def start(body: ProvisionIn) -> dict:
                  site_template=body.site_template,
                  dns_account_id=body.dns_account_id if body.domain else 0, dns_zone_id=body.dns_zone_id,
                  labels={"region": body.region_label.strip()[:100], "plan": body.plan_label.strip()[:100]})
+    if body.connections:
+        # ports are fixed now: the install opens them in ufw
+        _set(p, connections=connections.plan(connections.snapshot(connections.templates()), _busy_ports(p)))
     _log(p, "Задание создано")
     _spawn(p.id)
     return public(p)
@@ -763,7 +833,8 @@ async def reinstall(provision_id: int, body: ReinstallIn) -> dict:
     labels = {**old.labels, "plan": body.plan_label.strip()[:100]} if plan != old.plan else old.labels
     p = _new_job(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=plan,
                  project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=labels,
-                 node_id=old.node_id, replaces=old.id, site_template=old.site_template, **_dns_fields(old))
+                 node_id=old.node_id, replaces=old.id, site_template=old.site_template,
+                 connections=old.connections, **_dns_fields(old))
     _log(p, f"Переустановка: новый сервер заменит {old.ip or old.server_id}, узел основной панели переключится на "
             "него, старый сервер будет удалён")
     _spawn(p.id)
@@ -779,7 +850,7 @@ def _in_place_job(old: db.Provision, ssh_install: bool) -> db.Provision:
     same = dict(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=old.plan,
                 project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=old.labels,
                 node_id=old.node_id, replaces=old.id, in_place=1, server_id=old.server_id, ip=old.ip,
-                site_template=old.site_template, step="rebuild", **_dns_fields(old))
+                site_template=old.site_template, step="rebuild", connections=old.connections, **_dns_fields(old))
     if "service_key" in old.secrets:  # its cloud-init lets the same key in again: the usual install from zero
         return _new_job(service_key=old.secrets["service_key"], **same)
     if ssh_install:  # VDSina takes a key with the reinstall
@@ -874,6 +945,7 @@ def public(p: db.Provision) -> dict[str, Any]:
         "dns": "cloudflare" if p.dns_account_id else "",
         "site_template": p.site_template,
         "sub_port": p.sub_port,
+        "connections": [connections.item_public(c, p.name) for c in p.connections],
         # made before the admin kept its own SSH key: an OS reinstall re-runs the old cloud-init install
         "legacy_install": "service_key" not in p.secrets and p.state == "done",
     }

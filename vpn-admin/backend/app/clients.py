@@ -289,9 +289,11 @@ async def _create_legacy(xui: XUIClient, body: "ClientCreate", targets: list[Cre
 
 async def _create_v3(xui: XUIClient, body: "ClientCreate", targets: list[CreateTarget], email: str,
                      sub_id: str) -> list[dict]:
-    """v3: one record attached to all chosen inbounds; the panel generates UUIDs/passwords itself."""
+    """v3: one record attached to all chosen inbounds; the panel generates UUIDs and the protocols' own keys itself."""
     inbound_ids = [t.inbound_id for t in targets]
-    client = {**_common_fields(body, email, sub_id, 0)}
+    # one password serves all of the user's inbounds: a 16-byte base64 key suits Trojan and Shadowsocks 2022
+    # (aes-128) alike, so the user can later be added to either on any server
+    client = {**_common_fields(body, email, sub_id, 0), "password": base64.b64encode(secrets.token_bytes(16)).decode()}
     try:
         flow = body.flow
         if flow is None:

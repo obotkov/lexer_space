@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import clients, db, dns, hosters, nodes, provision, site, system, tls
+from . import clients, connections, db, dns, hosters, nodes, provision, site, system, tls
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -393,6 +393,93 @@ async def dns_accounts_delete(account_id: int):
     return {"ok": True}
 
 
+# ---------- connection templates for new servers ----------
+
+async def _panel_emails() -> list[str]:
+    """Users of the v3 panels, to choose who gets the new servers' connections."""
+    async def one(panel: db.Panel) -> list[str]:
+        try:
+            xui = await pool.get(panel)
+            await xui.ensure_ready()
+            return [c["email"] for c in await xui.v3_clients() if c.get("email")] if xui.is_v3 else []
+        except XUIError:
+            return []
+    return sorted({e for chunk in await asyncio.gather(*(one(p) for p in db.list_panels())) for e in chunk})
+
+
+@app.get("/api/connections", dependencies=[Depends(require_admin)])
+async def connections_list():
+    return {"templates": [connections.public(t) for t in connections.templates()], "kinds": connections.kinds_public(),
+            "users": connections.users(), "emails": await _panel_emails()}
+
+
+def _template_fields(body: connections.TemplateIn) -> dict:
+    try:
+        options = body.cleaned()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"kind": body.kind, "remark": body.remark, "enabled": body.enabled, "port": body.port, "options": options}
+
+
+@app.post("/api/connections", dependencies=[Depends(require_admin)])
+async def connections_create(body: connections.TemplateIn):
+    return connections.public(db.create_connection_template(**_template_fields(body)))
+
+
+@app.put("/api/connections/{template_id}", dependencies=[Depends(require_admin)])
+async def connections_update(template_id: int, body: connections.TemplateIn):
+    if not db.get_connection_template(template_id):
+        raise HTTPException(404, "Подключение не найдено")
+    return connections.public(db.update_connection_template(template_id, **_template_fields(body)))
+
+
+class EnabledIn(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/connections/{template_id}/enabled", dependencies=[Depends(require_admin)])
+async def connections_set_enabled(template_id: int, body: EnabledIn):
+    if not db.get_connection_template(template_id):
+        raise HTTPException(404, "Подключение не найдено")
+    return connections.public(db.update_connection_template(template_id, enabled=body.enabled))
+
+
+class OrderIn(BaseModel):
+    ids: list[int]
+
+
+@app.post("/api/connections/order", dependencies=[Depends(require_admin)])
+async def connections_order(body: OrderIn):
+    for position, template_id in enumerate(body.ids):
+        db.update_connection_template(template_id, position=position)
+    return {"ok": True}
+
+
+@app.delete("/api/connections/{template_id}", dependencies=[Depends(require_admin)])
+async def connections_delete(template_id: int):
+    if not db.delete_connection_template(template_id):
+        raise HTTPException(404, "Подключение не найдено")
+    return {"ok": True}
+
+
+@app.put("/api/connections-users", dependencies=[Depends(require_admin)])
+async def connections_users(body: connections.UsersIn):
+    connections.set_users(body)
+    return connections.users()
+
+
+class SniIn(BaseModel):
+    host: str = Field(min_length=1, max_length=253)
+
+
+@app.post("/api/connections/check-sni", dependencies=[Depends(require_admin)])
+async def connections_check_sni(body: SniIn):
+    results = {}
+    for host in [h.strip() for h in body.host.replace(";", ",").split(",") if h.strip()][:10]:
+        results[host] = await asyncio.to_thread(connections.check_sni, host)
+    return {"results": results}
+
+
 # ---------- version & self-update ----------
 
 @app.get("/api/system/version", dependencies=[Depends(require_admin)])
@@ -555,6 +642,14 @@ async def provisions_retry(provision_id: int):
 async def provisions_reinstall(provision_id: int, body: provision.ReinstallIn):
     try:
         return await provision.reinstall(provision_id, body)
+    except provision.ProvisionError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/provisions/{provision_id}/connections", dependencies=[Depends(require_admin)])
+async def provisions_connections(provision_id: int):
+    try:
+        return await provision.apply_connections(provision_id)
     except provision.ProvisionError as exc:
         raise HTTPException(400, str(exc)) from exc
 

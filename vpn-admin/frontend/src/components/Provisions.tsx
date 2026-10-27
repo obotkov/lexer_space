@@ -8,6 +8,7 @@ const STEPS: { id: ProvisionStep; title: string }[] = [
   { id: "boot", title: "Запуск" },
   { id: "install", title: "Установка 3x-ui" },
   { id: "connect", title: "Подключение узлом" },
+  { id: "connections", title: "Подключения" }, // only when templates were planned for the server
   { id: "retire", title: "Удаление старого сервера" }, // only a reinstall has it
 ];
 
@@ -84,8 +85,10 @@ export function Provisions({
         {items.map((p) => {
           const account = accounts.find((a) => a.id === p.hoster_id);
           // in place nothing is ordered and nothing is removed; a new server has no rebuild
-          const steps = STEPS.filter((s) =>
-            p.in_place ? s.id !== "create" && s.id !== "retire" : s.id !== "rebuild" && (p.replaces > 0 || s.id !== "retire"),
+          const steps = STEPS.filter(
+            (s) =>
+              (p.in_place ? s.id !== "create" && s.id !== "retire" : s.id !== "rebuild" && (p.replaces > 0 || s.id !== "retire")) &&
+              (s.id !== "connections" || (!p.replaces && p.connections.length > 0)),
           );
           const found = steps.findIndex((s) => s.id === p.step);
           const current = found < 0 ? steps.length : found; // a step without a chip runs after all of them
@@ -188,6 +191,21 @@ export function Provisions({
               )}
               {p.state === "done" && <div className="muted small">{CERT_NOTES[p.cert_mode ?? ""](p)}</div>}
 
+              {p.connections.length > 0 && (p.state === "done" || p.step === "connections") && (
+                <div className="provision-connections">
+                  {p.connections.map((c, i) => (
+                    <span
+                      key={i}
+                      className={`badge ${c.inbound_id ? "badge-active" : c.error ? "badge-expired" : "badge-disabled"}`}
+                      title={c.error || `${c.title}, порт ${c.port}${c.net === "tcp" ? "" : `/${c.net === "both" ? "tcp+udp" : c.net}`}`}
+                    >
+                      {c.remark || c.title} :{c.port}
+                      {c.net === "udp" ? "/udp" : ""}
+                    </span>
+                  ))}
+                </div>
+              )}
+
               {openLog === p.id && (
                 <ul className="log provision-log">
                   {p.log.map((l, i) => (
@@ -205,6 +223,16 @@ export function Provisions({
                 {p.state === "failed" && (
                   <button className="btn btn-small btn-primary" disabled={busy === p.id} onClick={() => act(p.id, () => api.retryProvision(p.id))}>
                     Повторить
+                  </button>
+                )}
+                {p.state === "done" && p.node_id && (
+                  <button
+                    className="btn btn-small"
+                    disabled={busy === p.id}
+                    title="Добавить на этот сервер включённые подключения из раздела «Подключения», которых на нём ещё нет"
+                    onClick={() => act(p.id, () => api.applyProvisionConnections(p.id))}
+                  >
+                    {busy === p.id ? "Раскатываю…" : "Раскатать подключения"}
                   </button>
                 )}
                 {canReinstall && (

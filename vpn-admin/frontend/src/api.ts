@@ -478,6 +478,8 @@ export interface ProvisionForm {
   dns_zone_id: string;
   /** decoy page on port 80 of the node: a site template id, "custom" or "" for none */
   site_template: string;
+  /** create the enabled connection templates on the new node */
+  connections: boolean;
 }
 
 export interface DnsZone {
@@ -502,7 +504,74 @@ export interface DnsAccounts {
   help_url: string;
 }
 
-export type ProvisionStep = "create" | "rebuild" | "boot" | "install" | "connect" | "retire" | "done";
+export type ProvisionStep = "create" | "rebuild" | "boot" | "install" | "connect" | "connections" | "retire" | "done";
+
+export type ConnectionNet = "tcp" | "udp" | "both";
+
+/** one connection planned for or created on a server */
+export interface ProvisionConnection {
+  template_id: number;
+  kind: string;
+  title: string;
+  remark: string;
+  port: number;
+  net: ConnectionNet;
+  /** inbound of the main panel bound to the node; null until created */
+  inbound_id: number | null;
+  error: string;
+}
+
+export type ConnectionOptionValue = string | number | boolean;
+
+export interface ConnectionKind {
+  kind: string;
+  title: string;
+  protocol: string;
+  net: ConnectionNet;
+  /** needs the server's certificate */
+  tls: boolean;
+  /** suggested port; 0 = random */
+  port: number;
+  remark: string;
+  note: string;
+  options: Record<string, { default: ConnectionOptionValue; choices: ConnectionOptionValue[] | null }>;
+}
+
+export interface ConnectionTemplate {
+  id: number;
+  kind: string;
+  kind_title: string;
+  protocol: string;
+  net: ConnectionNet;
+  tls: boolean;
+  remark: string;
+  enabled: boolean;
+  /** 0 = a random free port on every server */
+  port: number;
+  options: Record<string, ConnectionOptionValue>;
+  position: number;
+}
+
+export interface ConnectionUsers {
+  mode: "all" | "selected" | "none";
+  emails: string[];
+}
+
+export interface ConnectionsData {
+  templates: ConnectionTemplate[];
+  kinds: ConnectionKind[];
+  users: ConnectionUsers;
+  /** users of the v3 panels */
+  emails: string[];
+}
+
+export interface ConnectionTemplateForm {
+  kind: string;
+  remark: string;
+  enabled: boolean;
+  port: number;
+  options: Record<string, ConnectionOptionValue>;
+}
 
 export interface Provision {
   id: number;
@@ -541,6 +610,7 @@ export interface Provision {
   sub_port: number;
   /** made before the admin kept its own SSH key: an OS reinstall re-runs the old cloud-init install */
   legacy_install: boolean;
+  connections: ProvisionConnection[];
 }
 
 export interface ProvisionCredentials {
@@ -621,6 +691,15 @@ export const api = {
   reinstallProvision: (id: number, body: { in_place: boolean; plan: string; plan_label: string; site_template: string }) =>
     request<Provision>("POST", `/api/provisions/${id}/reinstall`, body),
   deleteProvisionServer: (id: number) => request<Provision>("POST", `/api/provisions/${id}/delete-server`),
+  applyProvisionConnections: (id: number) => request<Provision>("POST", `/api/provisions/${id}/connections`),
+  connections: () => request<ConnectionsData>("GET", "/api/connections"),
+  createConnection: (form: ConnectionTemplateForm) => request<ConnectionTemplate>("POST", "/api/connections", form),
+  updateConnection: (id: number, form: ConnectionTemplateForm) => request<ConnectionTemplate>("PUT", `/api/connections/${id}`, form),
+  enableConnection: (id: number, enabled: boolean) => request<ConnectionTemplate>("POST", `/api/connections/${id}/enabled`, { enabled }),
+  orderConnections: (ids: number[]) => request("POST", "/api/connections/order", { ids }),
+  deleteConnection: (id: number) => request("DELETE", `/api/connections/${id}`),
+  setConnectionUsers: (users: ConnectionUsers) => request<ConnectionUsers>("PUT", "/api/connections-users", users),
+  checkSni: (host: string) => request<{ results: Record<string, string> }>("POST", "/api/connections/check-sni", { host }),
   provisionCredentials: (id: number) => request<ProvisionCredentials>("GET", `/api/provisions/${id}/credentials`),
   forgetProvision: (id: number) => request("DELETE", `/api/provisions/${id}`),
   testHoster: (form: HosterForm, hosterId?: number) => request<HosterAccount>("POST", "/api/hosters/test", { ...form, hoster_id: hosterId ?? null }),

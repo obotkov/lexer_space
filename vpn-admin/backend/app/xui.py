@@ -233,6 +233,14 @@ class XUIClient:
         await self._call("POST", f"/panel/api/clients/resetTraffic/{quote(email, safe='')}")
 
 
+    async def v3_add_inbound(self, inbound: dict) -> dict:
+        return await self._call("POST", "/panel/api/inbounds/add", json=inbound) or {}
+
+    async def v3_bulk_attach(self, emails: list[str], inbound_ids: list[int]) -> dict:
+        """Attach existing clients to inbounds: the panel fills each protocol's credentials itself."""
+        return await self._call("POST", "/panel/api/clients/bulkAttach",
+                                json={"emails": emails, "inboundIds": inbound_ids}) or {}
+
     # ---------- v3 nodes: remote 3x-ui panels managed by this (main) panel ----------
 
     async def v3_nodes(self) -> list[dict]:

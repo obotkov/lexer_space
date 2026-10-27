@@ -3,6 +3,7 @@ import { api, type Overview as OverviewData, type UpdateCheck } from "./api";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { Login, Shield } from "./pages/Login";
 import { Connections } from "./pages/Connections";
+import { ConnectionTemplates } from "./pages/ConnectionTemplates";
 import { Hosters } from "./pages/Hosters";
 import { Nodes } from "./pages/Nodes";
 import { Overview } from "./pages/Overview";
@@ -19,6 +20,7 @@ const TABS = [
   { id: "users", title: "Пользователи" },
   { id: "servers", title: "Серверы 3x-ui" },
   { id: "hosters", title: "VPN API Hoster" },
+  { id: "templates", title: "Подключения" },
   { id: "system", title: "Система" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
@@ -122,7 +124,7 @@ export function App() {
       <main className="content">
         <header className="topbar">
           <h1>{TABS.find((t) => t.id === tab)?.title}</h1>
-          <div className="topbar-right" hidden={tab === "system" || tab === "hosters"}>
+          <div className="topbar-right" hidden={tab === "system" || tab === "hosters" || tab === "templates"}>
             {data && <span className="muted small">обновлено {new Date(data.generated_at * 1000).toLocaleTimeString("ru-RU")}</span>}
             <button className="btn" onClick={() => load(true)} disabled={loading}>
               {loading ? "Обновление…" : "Обновить"}
@@ -132,6 +134,8 @@ export function App() {
 
         {tab === "system" ? (
           <System check={updateCheck} onCheck={setUpdateCheck} />
+        ) : tab === "templates" ? (
+          <ConnectionTemplates />
         ) : error && !data ? (
           <div className="notice notice-bad">{error}</div>
         ) : !data ? (

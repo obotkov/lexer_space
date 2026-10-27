@@ -56,6 +56,22 @@ CREATE TABLE IF NOT EXISTS hosters (
     created_at      INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS connection_templates (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT    NOT NULL,
+    remark      TEXT    NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    port        INTEGER NOT NULL DEFAULT 0,
+    options     TEXT    NOT NULL DEFAULT '{}',
+    position    INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS dns_accounts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     provider        TEXT    NOT NULL,
@@ -72,7 +88,8 @@ MIGRATIONS = {
                    ("cert_mode", "TEXT NOT NULL DEFAULT ''"), ("replaces", "INTEGER NOT NULL DEFAULT 0"),
                    ("in_place", "INTEGER NOT NULL DEFAULT 0"), ("dns_account_id", "INTEGER NOT NULL DEFAULT 0"),
                    ("dns_zone_id", "TEXT NOT NULL DEFAULT ''"), ("dns_record_id", "TEXT NOT NULL DEFAULT ''"),
-                   ("site_template", "TEXT NOT NULL DEFAULT ''"), ("sub_port", "INTEGER NOT NULL DEFAULT 0")],
+                   ("site_template", "TEXT NOT NULL DEFAULT ''"), ("sub_port", "INTEGER NOT NULL DEFAULT 0"),
+                   ("connections", "TEXT NOT NULL DEFAULT '[]'")],
 }
 
 
@@ -290,6 +307,79 @@ def delete_dns_account(account_id: int) -> bool:
     return cur.rowcount > 0
 
 
+# ---------- connection templates: inbounds every new server gets ----------
+
+@dataclass
+class ConnectionTemplate:
+    id: int
+    kind: str
+    remark: str
+    enabled: bool
+    port: int
+    options: dict
+    position: int
+    created_at: int
+
+
+def _row_to_template(row: sqlite3.Row) -> ConnectionTemplate:
+    return ConnectionTemplate(id=row["id"], kind=row["kind"], remark=row["remark"], enabled=bool(row["enabled"]),
+                              port=row["port"], options=json.loads(row["options"]), position=row["position"],
+                              created_at=row["created_at"])
+
+
+def list_connection_templates() -> list[ConnectionTemplate]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM connection_templates ORDER BY position, id").fetchall()
+    return [_row_to_template(r) for r in rows]
+
+
+def get_connection_template(template_id: int) -> ConnectionTemplate | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM connection_templates WHERE id = ?", (template_id,)).fetchone()
+    return _row_to_template(row) if row else None
+
+
+def create_connection_template(kind: str, remark: str, enabled: bool, port: int, options: dict,
+                               position: int | None = None) -> ConnectionTemplate:
+    with connect() as conn:
+        if position is None:
+            position = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM connection_templates").fetchone()[0]
+        cur = conn.execute("INSERT INTO connection_templates (kind, remark, enabled, port, options, position, created_at) "
+                           "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                           (kind, remark, int(enabled), port, json.dumps(options), position, int(time.time())))
+        template_id = cur.lastrowid
+    return get_connection_template(template_id)
+
+
+def update_connection_template(template_id: int, **fields) -> ConnectionTemplate | None:
+    if "options" in fields:
+        fields["options"] = json.dumps(fields["options"])
+    if "enabled" in fields:
+        fields["enabled"] = int(fields["enabled"])
+    with connect() as conn:
+        conn.execute(f"UPDATE connection_templates SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                     (*fields.values(), template_id))
+    return get_connection_template(template_id)
+
+
+def delete_connection_template(template_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM connection_templates WHERE id = ?", (template_id,))
+    return cur.rowcount > 0
+
+
+def get_app_setting(key: str) -> str | None:
+    with connect() as conn:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_app_setting(key: str, value: str) -> None:
+    with connect() as conn:
+        conn.execute("INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+
+
 # ---------- new servers ordered through a hosting account ----------
 
 @dataclass
@@ -327,9 +417,12 @@ class Provision:
     dns_record_id: str = ""
     site_template: str = ""  # decoy page nginx shows on port 80 of the node; "" = none
     sub_port: int = 0  # subscription port of the node panel instead of 3x-ui's well-known 2096; 0 = left as is
+    # connection templates planned for this server, ports fixed: [{template_id, kind, remark, port, options,
+    # inbound_id?, error?}]
+    connections: list = field(default_factory=list)
 
 
-_JSON_FIELDS = {"ssh_keys", "log", "labels"}
+_JSON_FIELDS = {"ssh_keys", "log", "labels", "connections"}
 
 
 def _row_to_provision(row: sqlite3.Row) -> Provision:

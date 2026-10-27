@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { api, type CreateOptions, type DnsAccount, type HosterInfo, type HostingPlan, type PanelInfo } from "../api";
+import { api, type ConnectionTemplate, type CreateOptions, type DnsAccount, type HosterInfo, type HostingPlan, type PanelInfo } from "../api";
 import { formatPrice } from "../format";
 import { StubTemplateSelect } from "./StubTemplateSelect";
 
@@ -38,6 +38,15 @@ export function CreateServerDialog({
   const [zoneKey, setZoneKey] = useState(dnsAccounts[0] ? `${dnsAccounts[0].id}:${dnsAccounts[0].zones[0].id}` : "");
   const [subdomain, setSubdomain] = useState<string | null>(null); // null = follow the server name
   const [siteTemplate, setSiteTemplate] = useState<string | null>(null);
+  const [withConnections, setWithConnections] = useState(true);
+  // enabled connection templates: what the new node gets right after it joins the main panel
+  const [templates, setTemplates] = useState<ConnectionTemplate[] | null>(null);
+  useEffect(() => {
+    api.connections().then(
+      (d) => setTemplates(d.templates.filter((t) => t.enabled)),
+      () => setTemplates([]),
+    );
+  }, []);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -98,6 +107,7 @@ export function CreateServerDialog({
         dns_account_id: address === "cloudflare" ? Number(dnsAccountId) : 0,
         dns_zone_id: address === "cloudflare" ? zoneId : "",
         site_template: siteTemplate ?? "",
+        connections: withConnections && !!templates?.length,
       });
       onStarted();
     } catch (err) {
@@ -279,6 +289,25 @@ export function CreateServerDialog({
                 ))}
               </select>
             </label>
+
+            {templates && (
+              <div className="field">
+                {templates.length > 0 ? (
+                  <>
+                    <label className="checkbox">
+                      <input type="checkbox" checked={withConnections} onChange={(e) => setWithConnections(e.target.checked)} />
+                      Создать подключения из раздела «Подключения»: {templates.length} шт.
+                    </label>
+                    <small className="muted">{templates.map((t) => t.remark.replace("{server}", name).trim()).join(", ")}</small>
+                  </>
+                ) : (
+                  <small className="muted">
+                    Подключения на новом сервере не создаются: в разделе «Подключения» ни одно не включено. Инбаунды узлу можно добавить потом в
+                    основной панели.
+                  </small>
+                )}
+              </div>
+            )}
 
             <div className="notice notice-info small">
               На сервер встанут Ubuntu 24.04, Docker, 3x-ui последней версии и сайт-заглушка. Админка зайдёт на сервер по SSH своим ключом и
