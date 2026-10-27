@@ -98,7 +98,8 @@ class ProvisionIn(BaseModel):
     dns_account_id: int = 0
     dns_zone_id: str = ""
     site_template: str = ""  # decoy page on port 80: a template of the admin's site, "custom" or "" for none
-    connections: bool = True  # create the enabled connection templates on the new node
+    connections: bool = True  # create connection templates on the new node
+    connection_ids: list[int] | None = None  # which templates; None = every enabled one
     os: str = hosters.DEFAULT_OS  # one of hosters.OS_LABELS
 
     @field_validator("os")
@@ -974,7 +975,8 @@ async def start(body: ProvisionIn) -> dict:
                  labels={"region": body.region_label.strip()[:100], "plan": body.plan_label.strip()[:100]})
     if body.connections:
         # ports are fixed now: the install opens them in ufw
-        _set(p, connections=connections.plan(connections.snapshot(connections.templates()), _busy_ports(p)))
+        chosen = connections.snapshot(connections.templates(), body.connection_ids)
+        _set(p, connections=connections.plan(chosen, _busy_ports(p)))
     _log(p, "Задание создано")
     _spawn(p.id)
     return public(p)

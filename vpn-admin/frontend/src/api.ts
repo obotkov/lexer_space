@@ -544,6 +544,8 @@ export interface ProvisionForm {
   site_template: string;
   /** create the enabled connection templates on the new node */
   connections: boolean;
+  /** templates picked in the form; omitted = every enabled one */
+  connection_ids?: number[];
   os: string;
 }
 

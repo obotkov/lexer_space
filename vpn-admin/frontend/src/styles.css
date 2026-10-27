@@ -465,6 +465,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* connection templates */
 .provision-connections { display: flex; flex-wrap: wrap; gap: 6px; }
 .provision-connections .badge { font-weight: 500; }
+.conn-pick { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); max-height: 240px; overflow: auto; }
 .conn-macros { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .conn-table td { vertical-align: middle; }
 .conn-table .conn-options { max-width: 340px; }

@@ -247,9 +247,10 @@ def plan(items: list[dict[str, Any]], taken: set[tuple[int, str]]) -> list[dict[
     return out
 
 
-def snapshot(rows: list[db.ConnectionTemplate]) -> list[dict[str, Any]]:
+def snapshot(rows: list[db.ConnectionTemplate], ids: list[int] | None = None) -> list[dict[str, Any]]:
+    """The enabled templates, or exactly the ones `ids` names (picked in the create form)."""
     return [{"template_id": t.id, "kind": t.kind, "remark": t.remark, "port": t.port, "options": t.options}
-            for t in rows if t.enabled]
+            for t in rows if (t.id in ids if ids is not None else t.enabled)]
 
 
 def inbound_nets(inbound: dict[str, Any]) -> list[str]:

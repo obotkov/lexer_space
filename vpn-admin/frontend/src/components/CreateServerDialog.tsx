@@ -3,6 +3,27 @@ import { api, type ConnectionTemplate, type CreateOptions, type DnsAccount, type
 import { formatPrice } from "../format";
 import { StubTemplateSelect } from "./StubTemplateSelect";
 
+/** A template's remark as the new server will show it; mirrors connections.macros on the backend. */
+function fillRemark(remark: string, server: string, regionLabel: string): string {
+  let label = regionLabel.split(" — ")[0].trim();
+  let flag = "";
+  for (const ch of Array.from(label)) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x1f1e6 || code > 0x1f1ff) break; // regional indicator letters make the flag
+    flag += ch;
+  }
+  label = label.slice(flag.length).trim();
+  const [country, ...rest] = label.split(", ");
+  const city = rest[0] || country;
+  const region = [flag, rest.length ? `${country}, ${city}` : country].filter(Boolean).join(" ");
+  const values: Record<string, string> = { "{server}": server, "{flag}": flag, "{country}": country, "{city}": city, "{region}": region };
+  return Object.entries(values)
+    .reduce((text, [macro, value]) => text.split(macro).join(value), remark)
+    .split(/\s+/)
+    .join(" ")
+    .trim();
+}
+
 // default server name: two random words, e.g. "quiet-harbor"
 const NAME_WORDS = [
   ["amber", "azure", "bold", "brave", "bright", "calm", "clever", "cosmic", "crisp", "dusty", "eager", "fancy", "gentle", "golden",
@@ -51,15 +72,26 @@ export function CreateServerDialog({
   const [zoneKey, setZoneKey] = useState(dnsAccounts[0] ? `${dnsAccounts[0].id}:${dnsAccounts[0].zones[0].id}` : "");
   const [subdomain, setSubdomain] = useState<string | null>(null); // null = follow the server name
   const [siteTemplate, setSiteTemplate] = useState<string | null>(null);
-  const [withConnections, setWithConnections] = useState(true);
-  // enabled connection templates: what the new node gets right after it joins the main panel
+  // enabled connection templates: what the new node can get right after it joins the main panel; all ticked at first
   const [templates, setTemplates] = useState<ConnectionTemplate[] | null>(null);
+  const [picked, setPicked] = useState<Set<number>>(new Set());
   useEffect(() => {
     api.connections().then(
-      (d) => setTemplates(d.templates.filter((t) => t.enabled)),
+      (d) => {
+        const enabled = d.templates.filter((t) => t.enabled);
+        setTemplates(enabled);
+        setPicked(new Set(enabled.map((t) => t.id)));
+      },
       () => setTemplates([]),
     );
   }, []);
+  const pick = (id: number, on: boolean) =>
+    setPicked((all) => {
+      const next = new Set(all);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -126,7 +158,8 @@ export function CreateServerDialog({
         dns_account_id: address === "cloudflare" ? Number(dnsAccountId) : 0,
         dns_zone_id: address === "cloudflare" ? zoneId : "",
         site_template: siteTemplate ?? "",
-        connections: withConnections && !!templates?.length,
+        connections: picked.size > 0,
+        connection_ids: [...picked],
         os: osId,
       });
       onStarted();
@@ -329,13 +362,39 @@ export function CreateServerDialog({
 
             {templates && (
               <div className="field">
+                <span>Подключения на сервере</span>
                 {templates.length > 0 ? (
                   <>
-                    <label className="checkbox">
-                      <input type="checkbox" checked={withConnections} onChange={(e) => setWithConnections(e.target.checked)} />
-                      Создать подключения из раздела «Подключения»: {templates.length} шт.
-                    </label>
-                    <small className="muted">{templates.map((t) => t.remark.replace("{server}", name).trim()).join(", ")}</small>
+                    <div className="conn-pick">
+                      {templates.map((t) => (
+                        <label key={t.id} className="checkbox">
+                          <input type="checkbox" checked={picked.has(t.id)} onChange={(e) => pick(t.id, e.target.checked)} />
+                          <span>
+                            {fillRemark(t.remark, name, regions.find((r) => r.id === region)?.name ?? "")}
+                            <span className="muted small">
+                              {" "}
+                              · {t.kind_title} · порт {t.port || "случайный"}
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <small className="muted">
+                      Включённые подключения из раздела «Подключения». Выбрано {picked.size} из {templates.length}:{" "}
+                      <button type="button" className="link-button" onClick={() => setPicked(new Set(templates.map((t) => t.id)))}>
+                        все
+                      </button>{" "}
+                      ·{" "}
+                      <button type="button" className="link-button" onClick={() => setPicked(new Set())}>
+                        ни одного
+                      </button>
+                    </small>
+                    {address !== "cloudflare" && templates.some((t) => t.kind === "vless_xhttp_cdn" && picked.has(t.id)) && (
+                      <small className="error-text">
+                        Подключение через CDN создаётся только на сервере с доменом Cloudflare: выберите адрес «Домен Cloudflare» выше или снимите
+                        его галочку.
+                      </small>
+                    )}
                   </>
                 ) : (
                   <small className="muted">
