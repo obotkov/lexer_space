@@ -116,7 +116,7 @@ export function Provisions({
                       <span className="muted">аккаунт удалён</span>
                     )}
                   </div>
-                  <div className="muted small">{[p.region, p.plan, p.ip].filter(Boolean).join(" · ")}</div>
+                  <div className="muted small">{[p.region, p.plan, p.ip, p.domain && (p.dns ? `${p.domain} (Cloudflare)` : p.domain)].filter(Boolean).join(" · ")}</div>
                 </div>
                 <span className={`badge ${badgeClass}`}>{badgeText}</span>
               </div>

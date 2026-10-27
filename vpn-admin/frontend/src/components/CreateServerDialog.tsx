@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { api, type CreateOptions, type HosterInfo, type HostingPlan, type PanelInfo } from "../api";
+import { api, type CreateOptions, type DnsAccount, type HosterInfo, type HostingPlan, type PanelInfo } from "../api";
 import { formatPrice } from "../format";
 
 const randomSuffix = () => Math.random().toString(36).slice(2, 6);
@@ -8,12 +8,15 @@ const randomSuffix = () => Math.random().toString(36).slice(2, 6);
 /** Order a server at a hosting account; the admin installs 3x-ui on it and attaches it as a node. */
 export function CreateServerDialog({
   hoster,
+  dnsAccounts,
   providerTitle,
   panels,
   onClose,
   onStarted,
 }: {
   hoster: HosterInfo;
+  /** Cloudflare accounts with zones: their domains can be given to the server automatically */
+  dnsAccounts: DnsAccount[];
   providerTitle: string;
   panels: PanelInfo[];
   onClose: () => void;
@@ -28,8 +31,11 @@ export function CreateServerDialog({
   const [plan, setPlan] = useState("");
   const [sshKeys, setSshKeys] = useState<string[]>([]);
   const [panelId, setPanelId] = useState(mainPanels[0]?.id ?? 0);
-  const [useDomain, setUseDomain] = useState(false);
+  // panel address: the server's IP, a domain whose A record the user makes, or a Cloudflare name the admin makes
+  const [address, setAddress] = useState<"ip" | "domain" | "cloudflare">(dnsAccounts.length ? "cloudflare" : "ip");
   const [domain, setDomain] = useState("");
+  const [zoneKey, setZoneKey] = useState(dnsAccounts[0] ? `${dnsAccounts[0].id}:${dnsAccounts[0].zones[0].id}` : "");
+  const [subdomain, setSubdomain] = useState<string | null>(null); // null = follow the server name
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -66,6 +72,11 @@ export function CreateServerDialog({
 
   const chosen = plans.find((p) => p.id === planId);
 
+  const [dnsAccountId, zoneId] = zoneKey.split(":");
+  const zone = dnsAccounts.find((a) => String(a.id) === dnsAccountId)?.zones.find((z) => z.id === zoneId);
+  const label = (subdomain ?? name).trim().toLowerCase();
+  const cloudflareName = zone ? (label ? `${label}.${zone.name}` : zone.name) : "";
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -81,7 +92,9 @@ export function CreateServerDialog({
         ssh_keys: sshKeys,
         region_label: regions.find((r) => r.id === region)?.name ?? region,
         plan_label: chosen?.label ?? planId,
-        domain: useDomain ? domain.trim() : "",
+        domain: address === "domain" ? domain.trim() : address === "cloudflare" ? cloudflareName : "",
+        dns_account_id: address === "cloudflare" ? Number(dnsAccountId) : 0,
+        dns_zone_id: address === "cloudflare" ? zoneId : "",
       });
       onStarted();
     } catch (err) {
@@ -198,14 +211,19 @@ export function CreateServerDialog({
             <div className="field">
               <span>Адрес панели узла и сертификат</span>
               <div className="segmented">
-                <button type="button" className={useDomain ? "" : "active"} aria-pressed={!useDomain} onClick={() => setUseDomain(false)}>
-                  IP-адрес сервера
-                </button>
-                <button type="button" className={useDomain ? "active" : ""} aria-pressed={useDomain} onClick={() => setUseDomain(true)}>
-                  Свой домен
-                </button>
+                {(
+                  [
+                    ["ip", "IP-адрес сервера"],
+                    ...(dnsAccounts.length ? [["cloudflare", "Домен Cloudflare"]] : []),
+                    ["domain", "Свой домен"],
+                  ] as ["ip" | "domain" | "cloudflare", string][]
+                ).map(([id, title]) => (
+                  <button key={id} type="button" className={address === id ? "active" : ""} aria-pressed={address === id} onClick={() => setAddress(id)}>
+                    {title}
+                  </button>
+                ))}
               </div>
-              {useDomain && (
+              {address === "domain" && (
                 <input
                   className="input mono"
                   required
@@ -215,10 +233,33 @@ export function CreateServerDialog({
                   onChange={(e) => setDomain(e.target.value)}
                 />
               )}
+              {address === "cloudflare" && (
+                <div className="domain-row">
+                  <input
+                    className="input mono"
+                    aria-label="Имя в домене"
+                    pattern="([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*"
+                    value={subdomain ?? name}
+                    onChange={(e) => setSubdomain(e.target.value)}
+                  />
+                  <span className="muted">.</span>
+                  <select className="input" aria-label="Домен Cloudflare" value={zoneKey} onChange={(e) => setZoneKey(e.target.value)}>
+                    {dnsAccounts.map((a) =>
+                      a.zones.map((z) => (
+                        <option key={`${a.id}:${z.id}`} value={`${a.id}:${z.id}`}>
+                          {dnsAccounts.length > 1 ? `${z.name} (${a.name})` : z.name}
+                        </option>
+                      )),
+                    )}
+                  </select>
+                </div>
+              )}
               <small className="muted">
-                {useDomain
-                  ? "IP сервера станет известен после заказа: он появится в журнале задания, тогда создайте A-запись домена на него. Установка ждёт её до 20 минут и выпускает сертификат Let's Encrypt на домен; если запись не появится — на IP."
-                  : "Сертификат Let's Encrypt на IP: короткий (около 6 дней), сервер продлевает его сам."}{" "}
+                {address === "cloudflare"
+                  ? `Как только сервер получит IP, админка создаст в Cloudflare A-запись ${cloudflareName} на него (без проксирования, иначе VPN не заработает), а сервер выпустит на этот домен сертификат Let's Encrypt. При переустановке запись переедет на новый IP, при удалении сервера — удалится.`
+                  : address === "domain"
+                    ? "IP сервера станет известен после заказа: он появится в журнале задания, тогда создайте A-запись домена на него. Установка ждёт её до 20 минут и выпускает сертификат Let's Encrypt на домен; если запись не появится — на IP."
+                    : "Сертификат Let's Encrypt на IP: короткий (около 6 дней), сервер продлевает его сам."}{" "}
                 Если Let's Encrypt откажет, панель останется на самоподписанном сертификате, закреплённом в основной панели.
               </small>
             </div>

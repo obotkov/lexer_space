@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { api, type HosterAccount, type HosterForm, type HosterInfo, type HosterProvider, type HosterServer, type PanelInfo, type Provision } from "../api";
+import { api, type DnsAccounts as DnsAccountsData, type HosterAccount, type HosterForm, type HosterInfo, type HosterProvider, type HosterServer, type PanelInfo, type Provision } from "../api";
 import { CreateServerDialog } from "../components/CreateServerDialog";
+import { DnsAccounts } from "../components/DnsAccounts";
 import { Provisions } from "../components/Provisions";
 import { Empty, StatCard } from "../components/ui";
 
@@ -42,6 +43,7 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
   const [editing, setEditing] = useState<HosterInfo | "new" | null>(null);
   const [creating, setCreating] = useState<HosterInfo | null>(null);
   const [provisions, setProvisions] = useState<Provision[]>([]);
+  const [dnsData, setDnsData] = useState<DnsAccountsData | null>(null);
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -56,12 +58,14 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
   }, []);
 
   const loadProvisions = useCallback(() => api.provisions().then(setProvisions, (e) => setError((e as Error).message)), []);
+  const loadDns = useCallback(() => api.dnsAccounts().then(setDnsData, (e) => setError((e as Error).message)), []);
 
   useEffect(() => {
     api.hosterProviders().then(setProviders, (e) => setError((e as Error).message));
     load();
     loadProvisions();
-  }, [load, loadProvisions]);
+    loadDns();
+  }, [load, loadProvisions, loadDns]);
 
   // follow running jobs; when one ends, the new server and node show up elsewhere too
   const running = provisions.filter((p) => p.state === "running").length;
@@ -144,9 +148,12 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
         ))
       )}
 
+      {dnsData && <DnsAccounts data={dnsData} onChanged={loadDns} />}
+
       {creating && (
         <CreateServerDialog
           hoster={creating}
+          dnsAccounts={dnsData?.accounts.filter((a) => a.ok && a.zones.length > 0) ?? []}
           providerTitle={providers[creating.provider]?.title ?? creating.provider}
           panels={panels}
           onClose={() => setCreating(null)}

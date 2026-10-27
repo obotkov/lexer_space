@@ -343,6 +343,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 }
 .provider-digitalocean { border-color: rgba(var(--accent-rgb), 0.45); color: var(--accent); }
 .provider-ovh { border-color: rgba(var(--muted-rgb), 0.5); }
+.provider-cloudflare { border-color: rgba(var(--warn-rgb), 0.55); color: var(--warn); }
+.dns-zones { display: flex; flex-wrap: wrap; gap: 6px; }
+.dns-empty { margin-bottom: 14px; }
+.toolbar h2 { margin: 0; }
+.domain-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.domain-row .input { flex: 1 1 160px; min-width: 0; }
 .hoster-error { max-width: none; }
 .hoster-servers .hoster-ipv6 { word-break: break-all; }
 .hoster-card .table-wrap { margin: 0; }

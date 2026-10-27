@@ -41,7 +41,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from pydantic import BaseModel, Field, field_validator
 
-from . import db, hosters, nodes
+from . import db, dns, hosters, nodes
 from .aggregator import overview_cache
 from .xui import XUIClient, XUIError
 
@@ -75,6 +75,9 @@ class ProvisionIn(BaseModel):
     region_label: str = ""
     plan_label: str = ""
     domain: str = ""  # panel address with a Let's Encrypt certificate; empty = the server's IP
+    # the admin keeps the domain's A record in this Cloudflare account and zone; 0 = the user creates it
+    dns_account_id: int = 0
+    dns_zone_id: str = ""
 
     @field_validator("domain")
     @classmethod
@@ -355,7 +358,14 @@ async def _step_boot(p: db.Provision) -> None:
         if server["status"] == "running" and server["ipv4"]:
             _set(p, ip=server["ipv4"][0])
             _log(p, f"Сервер запущен, IP {p.ip}")
-            if p.domain and not p.in_place:
+            if p.dns_account_id:
+                try:
+                    record_id = await dns.point(p.dns_account_id, p.dns_zone_id, p.domain, p.ip)
+                except dns.DNSError as exc:
+                    raise ProvisionError(f"Не удалось создать A-запись {p.domain}: {exc}") from exc
+                _set(p, dns_record_id=record_id)
+                _log(p, f"Cloudflare: A-запись {p.domain} → {p.ip} (без проксирования)")
+            elif p.domain and not p.in_place:
                 _log(p, f"Создайте у регистратора домена A-запись {p.domain} → {p.ip}: установка ждёт её до "
                         f"{DNS_WAIT // 60} минут, иначе возьмёт сертификат Let's Encrypt на IP")
             return
@@ -574,12 +584,30 @@ async def start(body: ProvisionIn) -> dict:
         await nodes.main_panel(body.panel_id)  # must be a reachable 3x-ui v3 panel
     except nodes.NodeError as exc:
         raise ProvisionError(f"Основная панель: {exc}") from exc
+    if body.dns_account_id:
+        await _check_dns_name(body)
     p = _new_job(hoster_id=hoster.id, panel_id=body.panel_id, name=body.name, region=body.region, plan=body.plan,
                  project=body.project or "", ssh_keys=body.ssh_keys, domain=body.domain,
+                 dns_account_id=body.dns_account_id if body.domain else 0, dns_zone_id=body.dns_zone_id,
                  labels={"region": body.region_label.strip()[:100], "plan": body.plan_label.strip()[:100]})
     _log(p, "Задание создано")
     _spawn(p.id)
     return public(p)
+
+
+async def _check_dns_name(body: ProvisionIn) -> None:
+    """The name must belong to the chosen zone and must not already point somewhere else."""
+    if not body.domain:
+        raise ProvisionError("Укажите имя сервера в домене Cloudflare")
+    try:
+        zone = await dns.zone_name(body.dns_account_id, body.dns_zone_id)
+        if body.domain != zone and not body.domain.endswith("." + zone):
+            raise ProvisionError(f"Имя {body.domain} не из домена {zone}")
+        taken = await dns.existing_a(body.dns_account_id, body.dns_zone_id, body.domain)
+    except dns.DNSError as exc:
+        raise ProvisionError(str(exc)) from exc
+    if taken:
+        raise ProvisionError(f"В Cloudflare уже есть A-запись {body.domain} → {taken}: выберите другое имя")
 
 
 def _new_job(**fields) -> db.Provision:
@@ -628,18 +656,23 @@ async def reinstall(provision_id: int, body: ReinstallIn) -> dict:
     labels = {**old.labels, "plan": body.plan_label.strip()[:100]} if plan != old.plan else old.labels
     p = _new_job(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=plan,
                  project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=labels,
-                 node_id=old.node_id, replaces=old.id)
+                 node_id=old.node_id, replaces=old.id, **_dns_fields(old))
     _log(p, f"Переустановка: новый сервер заменит {old.ip or old.server_id}, узел основной панели переключится на "
             "него, старый сервер будет удалён")
     _spawn(p.id)
     return public(p)
 
 
+def _dns_fields(old: db.Provision) -> dict:
+    """A reinstall keeps the domain record: a new server gets it pointed at its IP during boot."""
+    return {"dns_account_id": old.dns_account_id, "dns_zone_id": old.dns_zone_id, "dns_record_id": old.dns_record_id}
+
+
 def _in_place_job(old: db.Provision, ssh_install: bool) -> db.Provision:
     same = dict(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=old.plan,
                 project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=old.labels,
                 node_id=old.node_id, replaces=old.id, in_place=1, server_id=old.server_id, ip=old.ip,
-                step="rebuild")
+                step="rebuild", **_dns_fields(old))
     if ssh_install:  # the admin runs the script itself, so it may as well be a fresh one
         return _new_job(**same)
     # DigitalOcean and OVHcloud run the script from the server's creation again: its panel settings stay
@@ -683,6 +716,12 @@ async def delete_server(provision_id: int) -> dict:
         _log(p, f"Сервер {p.ip or p.server_id} удалён у хостинга")
     _set(p, state="deleted")
     hosters.invalidate(p.hoster_id)
+    if p.dns_account_id and p.dns_record_id:
+        try:
+            await dns.remove(p.dns_account_id, p.dns_zone_id, p.dns_record_id)
+            _log(p, f"Cloudflare: A-запись {p.domain} удалена")
+        except dns.DNSError as exc:  # the server is gone already; a stale record is only a leftover
+            _log(p, f"Cloudflare: A-запись {p.domain} не удалена: {exc}")
     # the node is this server's only once the connect step is through (a reinstall borrows the old one before)
     if p.node_id and _steps(p).index(p.step) > _steps(p).index("connect"):
         await _drop_node(p)
@@ -723,6 +762,7 @@ def public(p: db.Provision) -> dict[str, Any]:
         "updated_at": p.updated_at, "panel_url": _node_url(p) if p.ip else "", "username": p.username,
         "domain": p.domain, "cert_mode": p.cert_mode, "replaces": p.replaces,
         "region_id": p.region, "plan_id": p.plan, "project": p.project, "in_place": bool(p.in_place),
+        "dns": "cloudflare" if p.dns_account_id else "",
     }
 
 

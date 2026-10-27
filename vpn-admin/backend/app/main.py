@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import clients, db, hosters, nodes, provision, site, system, tls
+from . import clients, db, dns, hosters, nodes, provision, site, system, tls
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -353,6 +353,43 @@ async def hosters_delete(hoster_id: int):
     if not db.delete_hoster(hoster_id):
         raise HTTPException(404, "Аккаунт не найден")
     hosters.invalidate(hoster_id)
+    return {"ok": True}
+
+
+# ---------- DNS accounts (Cloudflare) ----------
+
+@app.get("/api/dns-accounts", dependencies=[Depends(require_admin)])
+async def dns_accounts_list():
+    return {"accounts": await dns.list_all(), "help": dns.TOKEN_HELP, "help_url": dns.TOKEN_HELP_URL}
+
+
+@app.post("/api/dns-accounts", dependencies=[Depends(require_admin)])
+async def dns_accounts_create(body: dns.DnsAccountIn):
+    try:
+        await dns.check(body.token)  # never store a token Cloudflare rejects
+    except dns.DNSError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return dns.public(db.create_dns_account("cloudflare", body.name.strip(), {"token": body.token.strip()}))
+
+
+@app.put("/api/dns-accounts/{account_id}", dependencies=[Depends(require_admin)])
+async def dns_accounts_update(account_id: int, body: dns.DnsAccountIn):
+    stored = db.get_dns_account(account_id)
+    if not stored:
+        raise HTTPException(404, "Аккаунт не найден")
+    token = body.token.strip() or stored.credentials.get("token", "")
+    if token != stored.credentials.get("token"):
+        try:
+            await dns.check(token)
+        except dns.DNSError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    return dns.public(db.update_dns_account(account_id, body.name.strip(), {"token": token}))
+
+
+@app.delete("/api/dns-accounts/{account_id}", dependencies=[Depends(require_admin)])
+async def dns_accounts_delete(account_id: int):
+    if not db.delete_dns_account(account_id):
+        raise HTTPException(404, "Аккаунт не найден")
     return {"ok": True}
 
 

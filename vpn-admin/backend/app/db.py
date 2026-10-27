@@ -55,6 +55,14 @@ CREATE TABLE IF NOT EXISTS hosters (
     credentials_enc TEXT    NOT NULL,
     created_at      INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS dns_accounts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider        TEXT    NOT NULL,
+    name            TEXT    NOT NULL,
+    credentials_enc TEXT    NOT NULL,
+    created_at      INTEGER NOT NULL
+);
 """
 
 # Columns added after a table first shipped: table -> [(name, definition)]
@@ -62,7 +70,8 @@ MIGRATIONS = {
     "panels": [("api_token_enc", "TEXT NOT NULL DEFAULT ''")],
     "provisions": [("labels", "TEXT NOT NULL DEFAULT '{}'"), ("domain", "TEXT NOT NULL DEFAULT ''"),
                    ("cert_mode", "TEXT NOT NULL DEFAULT ''"), ("replaces", "INTEGER NOT NULL DEFAULT 0"),
-                   ("in_place", "INTEGER NOT NULL DEFAULT 0")],
+                   ("in_place", "INTEGER NOT NULL DEFAULT 0"), ("dns_account_id", "INTEGER NOT NULL DEFAULT 0"),
+                   ("dns_zone_id", "TEXT NOT NULL DEFAULT ''"), ("dns_record_id", "TEXT NOT NULL DEFAULT ''")],
 }
 
 
@@ -231,6 +240,55 @@ def delete_hoster(hoster_id: int) -> bool:
     return cur.rowcount > 0
 
 
+# ---------- DNS accounts (Cloudflare) ----------
+
+@dataclass
+class DnsAccount:
+    id: int
+    provider: str
+    name: str
+    credentials: dict
+    created_at: int
+
+
+def _row_to_dns_account(row: sqlite3.Row) -> DnsAccount:
+    return DnsAccount(id=row["id"], provider=row["provider"], name=row["name"],
+                      credentials=json.loads(decrypt(row["credentials_enc"]) or "{}"), created_at=row["created_at"])
+
+
+def list_dns_accounts() -> list[DnsAccount]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM dns_accounts ORDER BY id").fetchall()
+    return [_row_to_dns_account(r) for r in rows]
+
+
+def get_dns_account(account_id: int) -> DnsAccount | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM dns_accounts WHERE id = ?", (account_id,)).fetchone()
+    return _row_to_dns_account(row) if row else None
+
+
+def create_dns_account(provider: str, name: str, credentials: dict) -> DnsAccount:
+    with connect() as conn:
+        cur = conn.execute("INSERT INTO dns_accounts (provider, name, credentials_enc, created_at) VALUES (?, ?, ?, ?)",
+                           (provider, name, encrypt(json.dumps(credentials)), int(time.time())))
+        account_id = cur.lastrowid
+    return get_dns_account(account_id)
+
+
+def update_dns_account(account_id: int, name: str, credentials: dict) -> DnsAccount | None:
+    with connect() as conn:
+        conn.execute("UPDATE dns_accounts SET name=?, credentials_enc=? WHERE id=?",
+                     (name, encrypt(json.dumps(credentials)), account_id))
+    return get_dns_account(account_id)
+
+
+def delete_dns_account(account_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM dns_accounts WHERE id = ?", (account_id,))
+    return cur.rowcount > 0
+
+
 # ---------- new servers ordered through a hosting account ----------
 
 @dataclass
@@ -263,6 +321,9 @@ class Provision:
     cert_mode: str = ""  # certificate the panel ended up with: "domain" / "ip" (Let's Encrypt) or "self"
     replaces: int = 0  # reinstall: the job whose server this one takes over
     in_place: int = 0  # reinstall by the hosting on the same server (the IP stays) instead of a new server
+    dns_account_id: int = 0  # Cloudflare account that keeps the domain's A record; 0 = the user does it
+    dns_zone_id: str = ""
+    dns_record_id: str = ""
 
 
 _JSON_FIELDS = {"ssh_keys", "log", "labels"}

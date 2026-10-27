@@ -473,6 +473,31 @@ export interface ProvisionForm {
   plan_label: string;
   /** panel address with a Let's Encrypt certificate; empty = the server's IP */
   domain: string;
+  /** the admin creates the domain's A record in this Cloudflare account and zone; 0 = the user does */
+  dns_account_id: number;
+  dns_zone_id: string;
+}
+
+export interface DnsZone {
+  id: string;
+  name: string;
+}
+
+export interface DnsAccount {
+  id: number;
+  provider: "cloudflare";
+  name: string;
+  created_at: number;
+  ok: boolean;
+  error: string;
+  zones: DnsZone[];
+}
+
+export interface DnsAccounts {
+  accounts: DnsAccount[];
+  /** how to make a token, and where */
+  help: string;
+  help_url: string;
 }
 
 export type ProvisionStep = "create" | "rebuild" | "boot" | "install" | "connect" | "retire" | "done";
@@ -507,6 +532,8 @@ export interface Provision {
   project: string;
   /** reinstall on the same server by the hosting (the IP stays) */
   in_place: boolean;
+  /** "cloudflare" when the admin keeps the domain's A record */
+  dns: "" | "cloudflare";
 }
 
 export interface ProvisionCredentials {
@@ -575,6 +602,10 @@ export const api = {
   createHoster: (form: HosterForm) => request<Hoster>("POST", "/api/hosters", form),
   updateHoster: (id: number, form: HosterForm) => request<Hoster>("PUT", `/api/hosters/${id}`, form),
   deleteHoster: (id: number) => request("DELETE", `/api/hosters/${id}`),
+  dnsAccounts: () => request<DnsAccounts>("GET", "/api/dns-accounts"),
+  createDnsAccount: (body: { name: string; token: string }) => request("POST", "/api/dns-accounts", body),
+  updateDnsAccount: (id: number, body: { name: string; token: string }) => request("PUT", `/api/dns-accounts/${id}`, body),
+  deleteDnsAccount: (id: number) => request("DELETE", `/api/dns-accounts/${id}`),
   hosterOptions: (id: number, project?: string | null) =>
     request<CreateOptions>("GET", `/api/hosters/${id}/options${project ? `?project=${encodeURIComponent(project)}` : ""}`),
   provisions: () => request<Provision[]>("GET", "/api/provisions"),
