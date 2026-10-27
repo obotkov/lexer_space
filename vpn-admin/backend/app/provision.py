@@ -60,6 +60,7 @@ STEPS = ["create", "boot", "install", "connect", "connections", "retire", "done"
 IN_PLACE_STEPS = ["rebuild", "boot", "install", "connect", "connections", "retire", "done"]
 BOOT_TIMEOUT = 10 * 60
 INSTALL_TIMEOUT = 25 * 60
+SSH_WAIT = 5 * 60  # how long a started server may keep SSH closed before the install gives up
 DNS_WAIT = 20 * 60  # how long the script waits for the domain's A record before taking a certificate for the IP
 POLL_EVERY = 10
 NODE_LOG = "/var/log/vpn-admin-node.log"
@@ -523,7 +524,7 @@ async def _install_over_ssh(p: db.Provision, fresh: bool) -> None:
 
     keys_script = _authorized_keys_script(await _with_client(p, user_keys))
     key = asyncssh.import_private_key(p.secrets.get("service_key") or p.secrets["ssh_key"])
-    deadline = time.time() + _install_timeout(p)
+    deadline, ssh_deadline = time.time() + _install_timeout(p), time.time() + SSH_WAIT
     started, finished, shown, lost = False, False, 0, False
     _log(p, "Подключаюсь к серверу по SSH")
     while True:
@@ -575,13 +576,17 @@ async def _install_over_ssh(p: db.Provision, fresh: bool) -> None:
         except (OSError, asyncssh.Error) as exc:  # the OS is still being installed, sshd is not up, the link dropped
             if finished and isinstance(exc, asyncssh.PermissionDenied):
                 break  # the keys were swapped before the link dropped
+            why = _ssh_reason(exc)
+            if not started and time.time() > ssh_deadline:
+                raise ProvisionError(f"Сервер {p.ip} не пустил по SSH за {SSH_WAIT // 60} минут ({why}): установка "
+                                     "остановлена. Проверьте сервер в панели хостинга и нажмите «Повторить»") from exc
             if time.time() > deadline:
                 raise ProvisionError(f"Не удалось выполнить установку по SSH за {_install_timeout(p) // 60} минут: "
-                                     f"{exc}") from exc
+                                     f"{why}") from exc
             if started and not lost:
-                _log(p, f"SSH-подключение прервалось ({exc or type(exc).__name__}), переподключаюсь")
+                _log(p, f"SSH-подключение прервалось ({why}), переподключаюсь")
             elif not started and not lost:
-                _log(p, f"SSH на сервере пока не отвечает ({exc or type(exc).__name__}), жду")
+                _log(p, f"SSH на сервере пока не отвечает ({why}), жду до {SSH_WAIT // 60} минут")
             lost = True
             await asyncio.sleep(POLL_EVERY)
     # the TLS key is on the server now; the SSH key stays for a later reinstall, but no longer opens the server
@@ -596,6 +601,16 @@ async def _install_over_ssh(p: db.Provision, fresh: bool) -> None:
         await _with_client(p, forget)
     except (hosters.HosterError, ProvisionError) as exc:
         log.warning("provision %s: setup key not removed from the account: %s", p.id, exc)
+
+
+def _ssh_reason(exc: Exception) -> str:
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return "нет ответа на порту 22"
+    if isinstance(exc, ConnectionRefusedError):
+        return "порт 22 закрыт"
+    if isinstance(exc, asyncssh.PermissionDenied):
+        return "ключ админки не принят"
+    return str(exc) or type(exc).__name__
 
 
 def _launch_script() -> str:
