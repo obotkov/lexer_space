@@ -47,7 +47,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from pydantic import BaseModel, Field, field_validator
 
-from . import connections, db, dns, hosters, nodes, site
+from . import cdn, connections, db, dns, hosters, nodes, site
 from .aggregator import overview_cache, pool
 from .xui import XUIClient, XUIError
 
@@ -68,6 +68,7 @@ INSTALL_FILE = "/root/vpn-admin-install.sh"
 INSTALL_PID = "/run/vpn-admin-install.pid"  # the install runs as its own process group, led by this pid
 
 _tasks: dict[int, asyncio.Task] = {}
+_background: set[asyncio.Task] = set()  # roll-outs nobody awaits; kept so they are not garbage-collected
 _fresh: dict[int, bool] = {}  # jobs whose install the admin asked to run again rather than follow
 
 
@@ -815,32 +816,31 @@ def _target(p: db.Provision) -> connections.Target:
 
 
 async def _cdn_names(p: db.Provision) -> None:
-    """A CDN connection gets its name before its inbound: the template's own CDN domain, or a name in the
-    server's Cloudflare zone pointed at it through Cloudflare's proxy (the node's IP stays hidden)."""
+    """A CDN connection gets its CDN before its inbound: a name in the server's Cloudflare zone, a certificate
+    and a CDN resource for it at the template's CDN account, with the node's domain as the HTTPS origin."""
     for item in p.connections:
-        if item["kind"] != "vless_xhttp_cdn" or item.get("cdn_domain") or item.get("skip") or item.get("inbound_id"):
+        if item["kind"] != "vless_xhttp_cdn" or item.get("cdn_address") or item.get("inbound_id"):
             continue
         o = item["options"]
-        if o.get("cdn_domain"):
-            item.update(cdn_domain=o["cdn_domain"], cdn_port=443)  # the CDN's own setup leads it to this port
-            continue
-        if not p.dns_account_id:  # the reason shows up when its inbound cannot be built
-            item["cdn_error"] = ("у сервера нет домена Cloudflare: закажите его с доменом Cloudflare или задайте "
-                                 "свой CDN-домен в шаблоне")
+        if not p.dns_account_id or not p.domain:  # the reason shows up when its inbound cannot be built
+            item["cdn_error"] = "у сервера нет домена Cloudflare: CDN-подключение работает только на таком сервере"
             continue
         try:
             zone = await dns.zone_name(p.dns_account_id, p.dns_zone_id)
             label = connections.fill(o.get("cdn_subdomain") or "cdn-{server}", _target(p).macros).replace(" ", "-")
             name = f"{label}.{zone}".lower()
             if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", name):
-                raise dns.DNSError(f"имя {name} не годится для DNS: в шаблоне только латиница, цифры и дефис")
-            record_id = await dns.point(p.dns_account_id, p.dns_zone_id, name, p.ip, proxied=True)
-        except dns.DNSError as exc:
-            item["cdn_error"] = f"CDN-домен не создан: {exc}"
-            continue
-        item.pop("cdn_error", None)
-        item.update(cdn_domain=name, cdn_port=item["port"], cdn_record_id=record_id)
-        _log(p, f"Cloudflare: CDN-запись {name} → {p.ip} (через прокси Cloudflare, порт {item['port']})")
+                raise cdn.CDNError(f"имя {name} не годится для DNS: в шаблоне только латиница, цифры и дефис")
+
+            async def put_record(kind: str, record: str, content: str) -> str:
+                return await dns.put_record(p.dns_account_id, p.dns_zone_id, kind, record, content,
+                                            f"vpn-admin: CDN-подключение {p.name}")
+
+            await cdn.set_up(o.get("cdn_account_id") or 0, item, name, f"{p.domain}:{item['port']}", put_record,
+                             lambda m: _log(p, m), lambda: _set(p, connections=p.connections))
+            item.pop("cdn_error", None)
+        except (cdn.CDNError, dns.DNSError) as exc:
+            item["cdn_error"] = str(exc)
     _set(p, connections=p.connections)
 
 
@@ -883,14 +883,37 @@ async def apply_connections(provision_id: int) -> dict:
     if not missing:
         raise ProvisionError("На сервере уже есть все включённые подключения")
     taken = _busy_ports(p) | {(i.get("port"), n) for i in existing for n in connections.inbound_nets(i)}
-    _set(p, connections=kept + connections.plan(missing, taken))
+    planned = connections.plan(missing, taken)
+    # a CDN connection that did not get its inbound last time keeps what its CDN already has (certificate,
+    # resource, records) and the port the resource leads to
+    earlier = {c["template_id"]: c for c in p.connections if c not in kept and c.get("cdn_cert_id")}
+    for item in planned:
+        before = earlier.get(item["template_id"])
+        if before:
+            item.update({k: v for k, v in before.items() if k.startswith("cdn_")}, port=before["port"])
+    _set(p, connections=kept + planned)
     _log(p, f"Раскатываю подключения на узел: {len(missing)} шт.")
+    if any(i["kind"] == "vless_xhttp_cdn" for i in planned):
+        # a CDN takes up to half an hour (certificate, resource): the button does not wait for it
+        _log(p, "CDN-подключение настраивается в фоне, ход — в этом журнале")
+        task = asyncio.create_task(_roll_out_logged(p))
+        _background.add(task)
+        task.add_done_callback(_background.discard)
+        return public(db.get_provision(p.id))
     try:
         await _roll_out(p)
     except (ProvisionError, nodes.NodeError) as exc:
         _log(p, f"Ошибка: {exc}")
         raise ProvisionError(str(exc)) from exc
     return public(db.get_provision(p.id))
+
+
+async def _roll_out_logged(p: db.Provision) -> None:
+    try:
+        await _roll_out(p)
+        _log(p, "Подключения раскатаны")
+    except Exception as exc:  # noqa: BLE001 - nobody waits for this task: the job's log is where it ends up
+        _log(p, f"Ошибка: {exc}")
 
 
 STEP_RUNNERS = {"create": _step_create, "rebuild": _step_rebuild, "boot": _step_boot, "install": _step_install,
@@ -1206,7 +1229,14 @@ async def delete_hosted_server(hoster: db.Hoster, server_id: str) -> dict:
     for p in jobs:
         _set(p, state="deleted")
         records = [(p.dns_record_id, f"A-запись {p.domain}")] if p.dns_record_id else []
-        records += [(c["cdn_record_id"], f"CDN-запись {c['cdn_domain']}") for c in p.connections if c.get("cdn_record_id")]
+        for c in p.connections:
+            if c.get("cdn_resource_id") or c.get("cdn_cert_id"):
+                problems = await cdn.tear_down(c)
+                _log(p, f"CDN-ресурс {c.get('cdn_domain')} не удалён: {'; '.join(problems)}" if problems
+                     else f"CDN-ресурс и сертификат {c.get('cdn_domain')} удалены")
+            records += [(r, f"запись CDN-подключения {c.get('cdn_domain')}") for r in c.get("cdn_records") or []]
+            if c.get("cdn_record_id"):  # 0.27.0: Cloudflare's own proxy
+                records.append((c["cdn_record_id"], f"CDN-запись {c['cdn_domain']}"))
         for record_id, what in records if p.dns_account_id else []:
             try:
                 await dns.remove(p.dns_account_id, p.dns_zone_id, record_id)

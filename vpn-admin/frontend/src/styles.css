@@ -408,6 +408,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .provider-digitalocean { border-color: rgba(var(--accent-rgb), 0.45); color: var(--accent); }
 .provider-ovh { border-color: rgba(var(--muted-rgb), 0.5); }
 .provider-cloudflare { border-color: rgba(var(--warn-rgb), 0.55); color: var(--warn); }
+.cdn-key { min-height: 120px; font-size: 12px; resize: vertical; }
+.provider-yandex { border-color: rgba(var(--bad-rgb), 0.5); color: var(--bad); }
 .dns-zones { display: flex; flex-wrap: wrap; gap: 6px; }
 .dns-empty { margin-bottom: 14px; }
 .toolbar h2 { margin: 0; }

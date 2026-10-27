@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import clients, connections, db, dns, hosters, netload, nodes, ping, provision, site, system, tls
+from . import cdn, clients, connections, db, dns, hosters, netload, nodes, ping, provision, site, system, tls
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -445,6 +445,46 @@ async def dns_accounts_delete(account_id: int):
     return {"ok": True}
 
 
+# ---------- CDN accounts (Yandex Cloud CDN) ----------
+
+@app.get("/api/cdn-accounts", dependencies=[Depends(require_admin)])
+async def cdn_accounts_list():
+    return {"accounts": await cdn.list_all(), "providers": cdn.PROVIDERS}
+
+
+async def _cdn_checked(provider: str, credentials: dict) -> None:
+    try:
+        await cdn.check(provider, credentials)  # never store keys the cloud rejects
+    except cdn.CDNError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/cdn-accounts", dependencies=[Depends(require_admin)])
+async def cdn_accounts_create(body: cdn.CdnAccountIn):
+    credentials = {"folder_id": body.folder_id.strip(), "key": body.key.strip()}
+    await _cdn_checked(body.provider, credentials)
+    return cdn.public(db.create_cdn_account(body.provider, body.name.strip(), credentials))
+
+
+@app.put("/api/cdn-accounts/{account_id}", dependencies=[Depends(require_admin)])
+async def cdn_accounts_update(account_id: int, body: cdn.CdnAccountIn):
+    stored = db.get_cdn_account(account_id)
+    if not stored:
+        raise HTTPException(404, "Аккаунт не найден")
+    credentials = {"folder_id": body.folder_id.strip() or stored.credentials.get("folder_id", ""),
+                   "key": body.key.strip() or stored.credentials.get("key", "")}
+    if credentials != stored.credentials:
+        await _cdn_checked(stored.provider, credentials)
+    return cdn.public(db.update_cdn_account(account_id, body.name.strip(), credentials))
+
+
+@app.delete("/api/cdn-accounts/{account_id}", dependencies=[Depends(require_admin)])
+async def cdn_accounts_delete(account_id: int):
+    if not db.delete_cdn_account(account_id):
+        raise HTTPException(404, "Аккаунт не найден")
+    return {"ok": True}
+
+
 # ---------- connection templates for new servers ----------
 
 async def _panel_emails() -> list[str]:
@@ -462,7 +502,8 @@ async def _panel_emails() -> list[str]:
 @app.get("/api/connections", dependencies=[Depends(require_admin)])
 async def connections_list():
     return {"templates": [connections.public(t) for t in connections.templates()], "kinds": connections.kinds_public(),
-            "users": connections.users(), "emails": await _panel_emails()}
+            "users": connections.users(), "emails": await _panel_emails(),
+            "cdn_accounts": [cdn.public(a) for a in db.list_cdn_accounts()]}
 
 
 def _template_fields(body: connections.TemplateIn) -> dict:

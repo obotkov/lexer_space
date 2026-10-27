@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { api, type DnsAccounts as DnsAccountsData, type HosterAccount, type HosterForm, type HosterInfo, type HosterProvider, type HosterServer, type PanelInfo, type Provision } from "../api";
+import { api, type CdnAccounts as CdnAccountsData, type DnsAccounts as DnsAccountsData, type HosterAccount, type HosterForm, type HosterInfo, type HosterProvider, type HosterServer, type PanelInfo, type Provision } from "../api";
+import { CdnAccounts } from "../components/CdnAccounts";
 import { CreateServerDialog } from "../components/CreateServerDialog";
 import { DeleteServerDialog } from "../components/DeleteServerDialog";
 import { DnsAccounts } from "../components/DnsAccounts";
@@ -46,6 +47,7 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
   const [deleting, setDeleting] = useState<{ hoster: HosterInfo; server: HosterServer } | null>(null);
   const [provisions, setProvisions] = useState<Provision[]>([]);
   const [dnsData, setDnsData] = useState<DnsAccountsData | null>(null);
+  const [cdnData, setCdnData] = useState<CdnAccountsData | null>(null);
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -61,13 +63,15 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
 
   const loadProvisions = useCallback(() => api.provisions().then(setProvisions, (e) => setError((e as Error).message)), []);
   const loadDns = useCallback(() => api.dnsAccounts().then(setDnsData, (e) => setError((e as Error).message)), []);
+  const loadCdn = useCallback(() => api.cdnAccounts().then(setCdnData, (e) => setError((e as Error).message)), []);
 
   useEffect(() => {
     api.hosterProviders().then(setProviders, (e) => setError((e as Error).message));
     load();
     loadProvisions();
     loadDns();
-  }, [load, loadProvisions, loadDns]);
+    loadCdn();
+  }, [load, loadProvisions, loadDns, loadCdn]);
 
   // follow running jobs; when one ends, the new server and node show up elsewhere too
   const running = provisions.filter((p) => p.state === "running").length;
@@ -152,6 +156,7 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
       )}
 
       {dnsData && <DnsAccounts data={dnsData} onChanged={loadDns} />}
+      {cdnData && <CdnAccounts data={cdnData} onChanged={loadCdn} />}
 
       {creating && (
         <CreateServerDialog

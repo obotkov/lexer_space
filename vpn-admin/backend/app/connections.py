@@ -28,8 +28,6 @@ from .xui import XUIClient, XUIError, v3_record_to_client
 
 PORT_RANGE = (20000, 60000)
 FINGERPRINTS = ["chrome", "firefox", "safari", "ios", "edge", "random", "randomized"]
-# HTTPS ports Cloudflare proxies; it reaches the server on the same port the client used
-CF_HTTPS_PORTS = [443, 2053, 2083, 2087, 2096, 8443]
 SNIFFING = {"enabled": True, "destOverride": ["http", "tls", "quic"], "metadataOnly": False, "routeOnly": False}
 
 # kind → what it is; "net" is what the port is opened for, "tls" means it needs the node's certificate
@@ -57,10 +55,10 @@ KINDS: dict[str, dict[str, Any]] = {
                   "remark": "AmneziaWG", "note": "WireGuard с маскировкой; приложения AmneziaVPN/AmneziaWG"},
     "mtproto": {"title": "MTProto (Telegram)", "protocol": "mtproto", "net": "tcp", "tls": False, "port": 0,
                 "remark": "MTProto", "note": "прокси только для Telegram"},
-    # "ports": the only ports it may take
-    "vless_xhttp_cdn": {"title": "VLESS XHTTP через CDN", "protocol": "vless", "net": "tcp", "tls": True, "port": 8443,
-                        "remark": "CDN", "ports": CF_HTTPS_PORTS,
-                        "note": "запасной: клиенты ходят через Cloudflare, IP сервера не виден; медленнее остальных"},
+    "vless_xhttp_cdn": {"title": "VLESS XHTTP через CDN", "protocol": "vless", "net": "tcp", "tls": True, "port": 0,
+                        "remark": "CDN",
+                        "note": "для белых списков: клиенты ходят через CDN (Yandex Cloud), IP сервера не виден; "
+                                "медленнее остальных"},
 }
 Kind = Literal["vless_reality", "vless_xhttp_reality", "vless_ws_tls", "trojan_grpc_tls", "vmess_ws_tls",
                "shadowsocks", "hysteria2", "tuic", "wireguard", "amneziawg", "mtproto", "vless_xhttp_cdn"]
@@ -82,8 +80,8 @@ OPTIONS: dict[str, dict[str, tuple[Any, list[Any] | None]]] = {
     "amneziawg": {"variant": ("classic", ["classic", "full"]), "subnet": ("10.8.1.0/24", None),
                   "dns": ("1.1.1.1", None)},
     "mtproto": {"domain": ("www.cloudflare.com", None)},
-    # cdn_domain empty: the admin makes cdn_subdomain in the server's Cloudflare zone, proxied
-    "vless_xhttp_cdn": {"cdn_subdomain": ("cdn-{server}", None), "cdn_domain": ("", None), "path": ("", None),
+    # cdn_subdomain: the connection's name in the server's Cloudflare zone, which the CDN serves
+    "vless_xhttp_cdn": {"cdn_account_id": (0, None), "cdn_subdomain": ("cdn-{server}", None), "path": ("", None),
                         "uplink": ("get-header", ["get-header", "post-body"]),
                         "fingerprint": ("firefox", FINGERPRINTS)},
 }
@@ -128,9 +126,8 @@ def _clean_options(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
         out["cdn_subdomain"] = out["cdn_subdomain"].strip(".").lower()
         if not out["cdn_subdomain"] or not all(c.isalnum() or c in "-.{}" for c in out["cdn_subdomain"]):
             raise ValueError("cdn_subdomain: латиница, цифры, дефис, точка и макросы вроде {server}")
-        out["cdn_domain"] = out["cdn_domain"].strip(".").lower()
-        if out["cdn_domain"] and not _host_ok(out["cdn_domain"]):
-            raise ValueError("cdn_domain: нужен домен, например cdn.example.com")
+        if not db.get_cdn_account(out["cdn_account_id"]):
+            raise ValueError("cdn_account_id: выберите CDN-аккаунт (подключается на странице VPN API Hoster)")
     if kind == "mtproto" and not _host_ok(out["domain"]):
         raise ValueError("domain: нужен домен, например www.cloudflare.com")
     for name in ("path", "service_name"):
@@ -169,9 +166,6 @@ class TemplateIn(BaseModel):
         return value.strip()
 
     def cleaned(self) -> dict[str, Any]:
-        allowed = KINDS[self.kind].get("ports")
-        if allowed and self.port not in allowed:
-            raise ValueError(f"порт: только {', '.join(map(str, allowed))} — их проксирует Cloudflare")
         return _clean_options(self.kind, self.options)
 
 
@@ -222,7 +216,7 @@ def public(t: db.ConnectionTemplate) -> dict[str, Any]:
 
 def kinds_public() -> list[dict[str, Any]]:
     return [{"kind": k, "title": v["title"], "protocol": v["protocol"], "net": v["net"], "tls": v["tls"],
-             "port": v["port"], "ports": v.get("ports"), "remark": v["remark"], "note": v["note"],
+             "port": v["port"], "remark": v["remark"], "note": v["note"],
              "options": {name: {"default": d, "choices": c} for name, (d, c) in OPTIONS[k].items()}}
             for k, v in KINDS.items()]
 
@@ -242,12 +236,6 @@ def plan(items: list[dict[str, Any]], taken: set[tuple[int, str]]) -> list[dict[
     for t in items:
         nets = _nets(KINDS[t["kind"]]["net"])
         port = t["port"]
-        allowed = KINDS[t["kind"]].get("ports")
-        if allowed:  # only these will do: the next free one of them, or none
-            port = next((p for p in [port, *allowed] if p and not any((p, n) in used for n in nets)), 0)
-            if not port:
-                out.append({**t, "skip": True, "error": f"порты {', '.join(map(str, allowed))} на сервере заняты"})
-                continue
         if port and any((port, n) in used for n in nets):
             port = 0  # the fixed port is busy on this server: a random one instead
         while not port:
@@ -299,7 +287,7 @@ def item_public(item: dict[str, Any], values: dict[str, str]) -> dict[str, Any]:
     return {"template_id": item.get("template_id"), "kind": item.get("kind"), "title": kind.get("title", item.get("kind")),
             "remark": fill(str(item.get("remark", "")), values), "port": item.get("port"),
             "net": kind.get("net", "tcp"), "inbound_id": item.get("inbound_id"), "error": item.get("error", ""),
-            "cdn_domain": item.get("cdn_domain", "")}
+            "cdn_domain": item.get("cdn_domain", ""), "cdn_address": item.get("cdn_address", "")}
 
 
 def ufw_rules(items: list[dict[str, Any]]) -> list[str]:
@@ -447,9 +435,9 @@ def build(item: dict[str, Any], t: Target, node_id: int) -> dict[str, Any]:
         settings = {"fakeTlsDomain": o["domain"], "clients": []}
         stream = {}
     elif kind == "vless_xhttp_cdn":
-        host = item.get("cdn_domain")
-        if not host:
-            raise TemplateError(item.get("cdn_error") or "нет CDN-домена")
+        host, address = item.get("cdn_domain"), item.get("cdn_address")
+        if not host or not address:
+            raise TemplateError(item.get("cdn_error") or "CDN-ресурс не создан")
         settings = {"clients": [], "decryption": "none"}
         xhttp: dict[str, Any] = {"path": _path(o["path"]), "host": host, "mode": "packet-up"}
         if o["uplink"] == "get-header":
@@ -461,9 +449,8 @@ def build(item: dict[str, Any], t: Target, node_id: int) -> dict[str, Any]:
         tls["serverName"] = host
         tls["settings"].pop("pinnedPeerCertSha256", None)  # clients see the CDN's certificate, not the server's
         stream = {"network": "xhttp", "security": "tls", "tlsSettings": tls, "xhttpSettings": xhttp,
-                  # links lead to the CDN name instead of the node's address
-                  "externalProxy": [{"forceTls": "same", "dest": host, "port": item.get("cdn_port") or 443,
-                                     "remark": ""}]}
+                  # links lead to the CDN's technical address, the name stays as SNI and Host
+                  "externalProxy": [{"forceTls": "same", "dest": address, "port": 443, "remark": ""}]}
     else:
         raise TemplateError(f"Неизвестный тип подключения: {kind}")
     return {"enable": True, "remark": fill(item["remark"], t.macros), "listen": "", "port": item["port"],
@@ -637,7 +624,7 @@ async def rollout(xui: XUIClient, node_id: int, items: list[dict[str, Any]], tar
     await _wait_node_ready(xui, node_id)
     items = [dict(i) for i in items]
     for item in items:
-        if item.get("inbound_id") or item.get("skip"):  # skip: no port it could take on this server
+        if item.get("inbound_id"):
             continue
         name = f"{fill(item['remark'], target.macros)} ({KINDS[item['kind']]['title']}, порт {item['port']})"
         try:

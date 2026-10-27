@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   api,
+  type CdnAccount,
   type ConnectionKind,
   type ConnectionNet,
   type ConnectionOptionValue,
@@ -37,13 +38,10 @@ const OPTION_LABELS: Record<string, { label: string; hint?: string }> = {
   variant: { label: "Параметры маскировки" },
   dns: { label: "DNS для клиентов" },
   domain: { label: "Домен FakeTLS", hint: "Под какой сайт маскируется прокси Telegram" },
+  cdn_account_id: { label: "CDN-аккаунт", hint: "Подключается на странице VPN API Hoster, блок «CDN для белых списков»" },
   cdn_subdomain: {
-    label: "Имя в Cloudflare",
-    hint: "Поддомен в домене Cloudflare сервера, с проксированием через Cloudflare. Работают макросы {server}, {region} и другие, но в имени остаются только латиница, цифры и дефис",
-  },
-  cdn_domain: {
-    label: "Свой CDN-домен",
-    hint: "Пусто: админка сама создаёт имя в Cloudflare. Укажите домен другого CDN (например, из белого списка оператора) — тогда запись и проксирование на порт подключения настраиваются в этом CDN вручную, клиенты ходят на 443",
+    label: "Имя CDN-ресурса в Cloudflare",
+    hint: "Поддомен в домене Cloudflare сервера: на него выпускается сертификат и создаётся CDN-ресурс, клиенты видят его в SNI. Работают макросы {server}, {region} и другие, но в имени остаются только латиница, цифры и дефис",
   },
   uplink: { label: "Как клиент отправляет данные" },
 };
@@ -87,7 +85,7 @@ function summary(t: ConnectionTemplate): string {
     case "mtproto":
       return String(o.domain);
     case "vless_xhttp_cdn":
-      return `${o.cdn_domain || `${o.cdn_subdomain}.<домен Cloudflare>`} · ${o.uplink === "get-header" ? "GET в заголовках" : "POST"}`;
+      return `${o.cdn_subdomain}.<домен Cloudflare> · ${o.uplink === "get-header" ? "GET в заголовках" : "POST"}`;
     default:
       return "";
   }
@@ -257,6 +255,7 @@ export function ConnectionTemplates() {
         <TemplateDialog
           template={editing === "new" ? null : editing}
           kinds={data.kinds}
+          cdnAccounts={data.cdn_accounts}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -381,11 +380,13 @@ function defaults(kind: ConnectionKind): Record<string, ConnectionOptionValue> {
 function TemplateDialog({
   template,
   kinds,
+  cdnAccounts,
   onClose,
   onSaved,
 }: {
   template: ConnectionTemplate | null;
   kinds: ConnectionKind[];
+  cdnAccounts: CdnAccount[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -394,7 +395,11 @@ function TemplateDialog({
   const [remark, setRemark] = useState(template?.remark ?? `{server} ${kind.remark}`);
   const [enabled, setEnabled] = useState(template?.enabled ?? true);
   const [port, setPort] = useState(template ? template.port : kind.port);
-  const [options, setOptions] = useState<Record<string, ConnectionOptionValue>>(template ? { ...defaults(kind), ...template.options } : defaults(kind));
+  const withAccount = (o: Record<string, ConnectionOptionValue>) =>
+    "cdn_account_id" in o && !o.cdn_account_id && cdnAccounts.length ? { ...o, cdn_account_id: cdnAccounts[0].id } : o;
+  const [options, setOptions] = useState<Record<string, ConnectionOptionValue>>(
+    template ? { ...defaults(kind), ...template.options } : withAccount(defaults(kind)),
+  );
   const [sni, setSni] = useState<Record<string, string> | null>(null);
   const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -405,7 +410,7 @@ function TemplateDialog({
     setKindId(id);
     setRemark(`{server} ${k.remark}`);
     setPort(k.port);
-    setOptions(defaults(k));
+    setOptions(withAccount(defaults(k)));
     setSni(null);
   };
 
@@ -464,16 +469,17 @@ function TemplateDialog({
           </small>
         </label>
 
-        {kind.ports && (
+        {kindId === "vless_xhttp_cdn" && (
           <div className="notice notice-info small">
-            Клиенты подключаются к CDN-домену, Cloudflare проксирует запросы на сервер, поэтому IP сервера им не виден. Нужен сервер,
-            заказанный с доменом Cloudflare: админка создаст для подключения отдельное имя в этом домене с включённым проксированием и
-            пропишет его в ссылки (External Proxy). В Cloudflare для домена режим SSL/TLS должен быть «Full» — не «Flexible» и не
-            «Full (strict)»: сервер отвечает своим сертификатом, а не сертификатом на CDN-имя.
+            Для серверов, заказанных с доменом Cloudflare. При раскатке админка создаёт в этом домене имя (по умолчанию cdn-имя сервера),
+            выпускает на него сертификат Let's Encrypt в облаке CDN (проверка домена — через запись в Cloudflare), создаёт CDN-ресурс с узлом
+            в качестве источника по HTTPS и направляет имя на CDN. В ссылки попадает технический адрес CDN, имя — в SNI и Host. Сертификат и
+            ресурс создаются до получаса.
+            {cdnAccounts.length === 0 && <div className="error-text">CDN-аккаунт ещё не подключён: сначала подключите его на странице VPN API Hoster.</div>}
           </div>
         )}
 
-        {kind.tls && !kind.ports && (
+        {kind.tls && kindId !== "vless_xhttp_cdn" && (
           <div className="notice notice-info small">
             Использует сертификат сервера, который получает установка: Let's Encrypt на домен или IP. Если сервер остался с самоподписанным
             сертификатом, в ссылки попадёт его отпечаток.
@@ -501,23 +507,6 @@ function TemplateDialog({
           </small>
         </div>
 
-        {kind.ports ? (
-          <label className="field">
-            <span>Порт</span>
-            <select className="input mono" value={port} onChange={(e) => setPort(Number(e.target.value))}>
-              {kind.ports.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-            <small className="muted">
-              Cloudflare проксирует HTTPS только на эти порты и приходит на сервер на тот же порт. 443 обычно занят REALITY и Hysteria2: если
-              порт на сервере занят, подключение возьмёт следующий свободный из списка.
-            </small>
-          </label>
-        ) : (
-        <>
         <div className="field-row">
           <label className="field">
             <span>Порт</span>
@@ -542,12 +531,28 @@ function TemplateDialog({
             ? "Если на сервере этот порт уже занят (панелью, подпиской, сайтом-заглушкой на 80 или другим подключением), подключение получит случайный."
             : "Каждому серверу свой свободный пятизначный порт."}
         </small>
-        </>
-        )}
 
         {Object.entries(kind.options).map(([name, spec]) => {
           const meta = OPTION_LABELS[name] ?? { label: name };
           const value = options[name];
+          if (name === "cdn_account_id") {
+            return (
+              <label key={name} className="field">
+                <span>{meta.label}</span>
+                <select className="input" required value={String(value || "")} onChange={(e) => set(name, Number(e.target.value))}>
+                  <option value="" disabled>
+                    {cdnAccounts.length ? "выберите" : "нет подключённых CDN-аккаунтов"}
+                  </option>
+                  {cdnAccounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.provider_title}: {a.name}
+                    </option>
+                  ))}
+                </select>
+                {meta.hint && <small className="muted">{meta.hint}</small>}
+              </label>
+            );
+          }
           if (typeof spec.default === "boolean") {
             return (
               <label key={name} className="checkbox">

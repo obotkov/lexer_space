@@ -79,6 +79,14 @@ CREATE TABLE IF NOT EXISTS dns_accounts (
     credentials_enc TEXT    NOT NULL,
     created_at      INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS cdn_accounts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider        TEXT    NOT NULL,
+    name            TEXT    NOT NULL,
+    credentials_enc TEXT    NOT NULL,
+    created_at      INTEGER NOT NULL
+);
 """
 
 # Columns added after a table first shipped: table -> [(name, definition)]
@@ -304,6 +312,41 @@ def update_dns_account(account_id: int, name: str, credentials: dict) -> DnsAcco
 def delete_dns_account(account_id: int) -> bool:
     with connect() as conn:
         cur = conn.execute("DELETE FROM dns_accounts WHERE id = ?", (account_id,))
+    return cur.rowcount > 0
+
+
+# ---------- CDN accounts (Yandex Cloud CDN; the same shape as DNS accounts) ----------
+
+def list_cdn_accounts() -> list[DnsAccount]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM cdn_accounts ORDER BY id").fetchall()
+    return [_row_to_dns_account(r) for r in rows]
+
+
+def get_cdn_account(account_id: int) -> DnsAccount | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM cdn_accounts WHERE id = ?", (account_id,)).fetchone()
+    return _row_to_dns_account(row) if row else None
+
+
+def create_cdn_account(provider: str, name: str, credentials: dict) -> DnsAccount:
+    with connect() as conn:
+        cur = conn.execute("INSERT INTO cdn_accounts (provider, name, credentials_enc, created_at) VALUES (?, ?, ?, ?)",
+                           (provider, name, encrypt(json.dumps(credentials)), int(time.time())))
+        account_id = cur.lastrowid
+    return get_cdn_account(account_id)
+
+
+def update_cdn_account(account_id: int, name: str, credentials: dict) -> DnsAccount | None:
+    with connect() as conn:
+        conn.execute("UPDATE cdn_accounts SET name=?, credentials_enc=? WHERE id=?",
+                     (name, encrypt(json.dumps(credentials)), account_id))
+    return get_cdn_account(account_id)
+
+
+def delete_cdn_account(account_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM cdn_accounts WHERE id = ?", (account_id,))
     return cur.rowcount > 0
 
 

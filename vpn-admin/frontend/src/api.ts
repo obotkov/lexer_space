@@ -562,6 +562,34 @@ export interface DnsAccount {
   zones: DnsZone[];
 }
 
+/** A CDN account (Yandex Cloud CDN): connections for whitelisted networks go through its CDN. */
+export interface CdnAccount {
+  id: number;
+  provider: string;
+  provider_title: string;
+  name: string;
+  folder_id: string;
+  created_at: number;
+}
+
+export interface CdnAccountChecked extends CdnAccount {
+  ok: boolean;
+  error: string;
+  resources: number;
+}
+
+export interface CdnProvider {
+  title: string;
+  available: boolean;
+  help?: string;
+  help_url?: string;
+}
+
+export interface CdnAccounts {
+  accounts: CdnAccountChecked[];
+  providers: Record<string, CdnProvider>;
+}
+
 export interface DnsAccounts {
   accounts: DnsAccount[];
   /** how to make a token, and where */
@@ -584,8 +612,9 @@ export interface ProvisionConnection {
   /** inbound of the main panel bound to the node; null until created */
   inbound_id: number | null;
   error: string;
-  /** a connection through a CDN: the name its clients connect to */
+  /** a connection through a CDN: its name (SNI and Host) and the CDN's address the links lead to */
   cdn_domain: string;
+  cdn_address: string;
 }
 
 export type ConnectionOptionValue = string | number | boolean;
@@ -599,8 +628,6 @@ export interface ConnectionKind {
   tls: boolean;
   /** suggested port; 0 = random */
   port: number;
-  /** the only ports it may take (Cloudflare proxies only these); null = any */
-  ports: number[] | null;
   remark: string;
   note: string;
   options: Record<string, { default: ConnectionOptionValue; choices: ConnectionOptionValue[] | null }>;
@@ -632,6 +659,8 @@ export interface ConnectionsData {
   users: ConnectionUsers;
   /** users of the v3 panels */
   emails: string[];
+  /** what a CDN connection can go through */
+  cdn_accounts: CdnAccount[];
 }
 
 export interface ConnectionTemplateForm {
@@ -755,6 +784,11 @@ export const api = {
   createHoster: (form: HosterForm) => request<Hoster>("POST", "/api/hosters", form),
   updateHoster: (id: number, form: HosterForm) => request<Hoster>("PUT", `/api/hosters/${id}`, form),
   deleteHoster: (id: number) => request("DELETE", `/api/hosters/${id}`),
+  cdnAccounts: () => request<CdnAccounts>("GET", "/api/cdn-accounts"),
+  createCdnAccount: (body: { provider: string; name: string; folder_id: string; key: string }) => request("POST", "/api/cdn-accounts", body),
+  updateCdnAccount: (id: number, body: { provider: string; name: string; folder_id: string; key: string }) =>
+    request("PUT", `/api/cdn-accounts/${id}`, body),
+  deleteCdnAccount: (id: number) => request("DELETE", `/api/cdn-accounts/${id}`),
   dnsAccounts: () => request<DnsAccounts>("GET", "/api/dns-accounts"),
   createDnsAccount: (body: { name: string; token: string }) => request("POST", "/api/dns-accounts", body),
   updateDnsAccount: (id: number, body: { name: string; token: string }) => request("PUT", `/api/dns-accounts/${id}`, body),

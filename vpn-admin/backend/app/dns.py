@@ -94,6 +94,17 @@ class Cloudflare:
             data = await self._request("POST", f"/zones/{zone_id}/dns_records", json=body)
         return data["result"]["id"]
 
+    async def upsert_record(self, zone_id: str, kind: str, name: str, content: str, comment: str) -> str:
+        """A DNS-only record of any type, replacing one of the same type and name; returns its ID."""
+        found = await self._request("GET", f"/zones/{zone_id}/dns_records", params={"type": kind, "name": name})
+        record = next(iter(found.get("result") or []), None)
+        body = {"type": kind, "name": name, "content": content, "ttl": 1, "proxied": False, "comment": comment}
+        if record:
+            data = await self._request("PATCH", f"/zones/{zone_id}/dns_records/{record['id']}", json=body)
+        else:
+            data = await self._request("POST", f"/zones/{zone_id}/dns_records", json=body)
+        return data["result"]["id"]
+
     async def delete_record(self, zone_id: str, record_id: str) -> None:
         await self._request("DELETE", f"/zones/{zone_id}/dns_records/{record_id}")
 
@@ -156,6 +167,11 @@ async def existing_a(account_id: int, zone_id: str, name: str) -> str | None:
 async def point(account_id: int, zone_id: str, name: str, ip: str, proxied: bool = False) -> str:
     return await _with_client(_account(account_id).credentials.get("token", ""),
                               lambda c: c.upsert_a(zone_id, name, ip, proxied))
+
+
+async def put_record(account_id: int, zone_id: str, kind: str, name: str, content: str, comment: str) -> str:
+    return await _with_client(_account(account_id).credentials.get("token", ""),
+                              lambda c: c.upsert_record(zone_id, kind, name, content, comment))
 
 
 async def remove(account_id: int, zone_id: str, record_id: str) -> None:
