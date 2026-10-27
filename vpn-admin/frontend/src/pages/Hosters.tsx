@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api, type DnsAccounts as DnsAccountsData, type HosterAccount, type HosterForm, type HosterInfo, type HosterProvider, type HosterServer, type PanelInfo, type Provision } from "../api";
 import { CreateServerDialog } from "../components/CreateServerDialog";
+import { DeleteServerDialog } from "../components/DeleteServerDialog";
 import { DnsAccounts } from "../components/DnsAccounts";
 import { Provisions } from "../components/Provisions";
 import { Empty, StatCard } from "../components/ui";
@@ -42,6 +43,7 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<HosterInfo | "new" | null>(null);
   const [creating, setCreating] = useState<HosterInfo | null>(null);
+  const [deleting, setDeleting] = useState<{ hoster: HosterInfo; server: HosterServer } | null>(null);
   const [provisions, setProvisions] = useState<Provision[]>([]);
   const [dnsData, setDnsData] = useState<DnsAccountsData | null>(null);
 
@@ -144,6 +146,7 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
             onCreate={() => setCreating(h)}
             onEdit={() => setEditing(h)}
             onDelete={() => remove(h)}
+            onDeleteServer={(server) => setDeleting({ hoster: h, server })}
           />
         ))
       )}
@@ -160,6 +163,21 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
           onStarted={() => {
             setCreating(null);
             loadProvisions();
+          }}
+        />
+      )}
+
+      {deleting && (
+        <DeleteServerDialog
+          hoster={deleting.hoster}
+          server={deleting.server}
+          providerTitle={providers[deleting.hoster.provider]?.title ?? deleting.hoster.provider}
+          onClose={() => setDeleting(null)}
+          onDeleted={() => {
+            setDeleting(null);
+            load(true);
+            loadProvisions();
+            onChanged();
           }}
         />
       )}
@@ -186,6 +204,7 @@ function AccountBlock({
   onCreate,
   onEdit,
   onDelete,
+  onDeleteServer,
 }: {
   hoster: HosterInfo;
   provider: HosterProvider | undefined;
@@ -193,6 +212,7 @@ function AccountBlock({
   onCreate: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onDeleteServer: (server: HosterServer) => void;
 }) {
   return (
     <section className="card hoster-card">
@@ -246,6 +266,7 @@ function AccountBlock({
                 <th>IP</th>
                 <th>Создан</th>
                 <th>В админке</th>
+                <th />
               </tr>
             </thead>
             <tbody>
@@ -273,6 +294,17 @@ function AccountBlock({
                     </td>
                     <td className="small">{s.created_at ? new Date(s.created_at).toLocaleDateString("ru-RU") : "—"}</td>
                     <td>{where ? <span className="badge badge-main">{where}</span> : <span className="muted">—</span>}</td>
+                    <td className="hoster-server-actions">
+                      {s.deletable ? (
+                        <button className="btn btn-small btn-danger" onClick={() => onDeleteServer(s)}>
+                          Удалить
+                        </button>
+                      ) : (
+                        <span className="muted small" title="VPS OVHcloud удаляется только в панели OVHcloud: расторжение подтверждается по почте">
+                          в панели хостинга
+                        </span>
+                      )}
+                    </td>
                   </tr>
                 );
               })}

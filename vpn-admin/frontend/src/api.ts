@@ -395,6 +395,21 @@ export interface HosterServer {
   created_at: string;
   /** Droplet, VPS, Public Cloud… */
   kind: string;
+  /** false: the hosting's API cannot delete it (an OVHcloud VPS) */
+  deletable: boolean;
+}
+
+/** What deleting a hosting's server takes: the nodes of main panels that run on it, with their inbounds. */
+export interface ServerDeletePlan {
+  server: HosterServer | null;
+  nodes: {
+    panel_id: number;
+    panel_name: string;
+    node_id: number;
+    name: string;
+    inbounds: { id: number; remark: string; protocol: string; port: number }[];
+  }[];
+  jobs: number[];
 }
 
 export interface Hoster {
@@ -701,6 +716,10 @@ export const api = {
   createDnsAccount: (body: { name: string; token: string }) => request("POST", "/api/dns-accounts", body),
   updateDnsAccount: (id: number, body: { name: string; token: string }) => request("PUT", `/api/dns-accounts/${id}`, body),
   deleteDnsAccount: (id: number) => request("DELETE", `/api/dns-accounts/${id}`),
+  serverDeletePlan: (hosterId: number, serverId: string) =>
+    request<ServerDeletePlan>("POST", `/api/hosters/${hosterId}/servers/delete-plan`, { server_id: serverId }),
+  deleteHostedServer: (hosterId: number, serverId: string) =>
+    request<{ server: string; nodes: string[]; inbounds: number }>("POST", `/api/hosters/${hosterId}/servers/delete`, { server_id: serverId }),
   hosterOptions: (id: number, project?: string | null) =>
     request<CreateOptions>("GET", `/api/hosters/${id}/options${project ? `?project=${encodeURIComponent(project)}` : ""}`),
   provisions: () => request<Provision[]>("GET", "/api/provisions"),

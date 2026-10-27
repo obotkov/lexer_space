@@ -141,10 +141,12 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 
 
 def _server(*, id: Any, name: str, status: str, status_label: str, region: str, plan: str, ipv4: list[str],
-            ipv6: list[str], created_at: str = "", kind: str = "", specs: str = "", price: str = "") -> dict:
+            ipv6: list[str], created_at: str = "", kind: str = "", specs: str = "", price: str = "",
+            project: str = "", deletable: bool = True) -> dict:
+    """`project`: what delete_server needs besides the id (OVHcloud's Public Cloud project)."""
     return {"id": str(id), "name": name, "status": status, "status_label": status_label, "region": region,
             "plan": plan, "specs": specs, "price": price, "ipv4": ipv4, "ipv6": ipv6, "created_at": created_at,
-            "kind": kind}
+            "kind": kind, "project": project, "deletable": deletable}
 
 
 # Systems a new server can get; the install is the same on all of them
@@ -241,7 +243,8 @@ def _http_error(resp: httpx.Response, provider: str) -> HosterError:
     if resp.status_code == 403:
         return HosterError(f"{provider}: у ключа нет прав на это действие (403){': ' + detail if detail else ''}",
                            "HTTP_403")
-    return HosterError(f"{provider}: HTTP {resp.status_code}{': ' + detail if detail else ''}")
+    return HosterError(f"{provider}: HTTP {resp.status_code}{': ' + detail if detail else ''}",
+                       "NOT_FOUND" if resp.status_code == 404 else "")
 
 
 # ---------- where a region is: hosting codes -> flag, country, city ----------
@@ -607,7 +610,7 @@ class OVHcloud:
             model = info.get("model") or {}
             state = info.get("state", "")
             return _server(
-                id=name, name=info.get("displayName") or name, kind="VPS",
+                id=name, name=info.get("displayName") or name, kind="VPS", deletable=False,
                 status={"running": "running", "stopped": "stopped"}.get(state, "pending" if state in labels else "unknown"),
                 status_label=labels.get(state, state),
                 # "Region OpenStack: os-gra7" -> GRA7
@@ -621,11 +624,11 @@ class OVHcloud:
 
         return list(await asyncio.gather(*(one(n) for n in names)))
 
-    def _instance(self, i: dict) -> dict:
+    def _instance(self, i: dict, project: str = "") -> dict:
         status = i.get("status", "")
         addrs = [a for a in i.get("ipAddresses") or [] if a.get("type") == "public"]
         return _server(
-            id=i.get("id"), name=i.get("name", ""), kind="Public Cloud",
+            id=i.get("id"), name=i.get("name", ""), kind="Public Cloud", project=project,
             status="running" if status == "ACTIVE" else "error" if status == "ERROR"
             else "stopped" if status in ("SHUTOFF", "STOPPED", "SHELVED", "SHELVED_OFFLOADED", "SUSPENDED") else "pending",
             status_label=self.instance_labels.get(status, status),
@@ -639,7 +642,7 @@ class OVHcloud:
         projects = await self._get("/cloud/project")
 
         async def project(pid: str) -> list[dict]:
-            return [self._instance(i) for i in await self._get(f"/cloud/project/{pid}/instance")]
+            return [self._instance(i, pid) for i in await self._get(f"/cloud/project/{pid}/instance")]
 
         return [s for chunk in await asyncio.gather(*(project(p) for p in projects)) for s in chunk]
 
@@ -1440,6 +1443,27 @@ def public(hoster: db.Hoster) -> dict:
 def client_for(hoster: db.Hoster):
     _check_provider(hoster.provider)
     return CLIENTS[hoster.provider](hoster.credentials)
+
+
+async def find_server(hoster: db.Hoster, server_id: str) -> dict | None:
+    client = client_for(hoster)
+    try:
+        return next((s for s in await client.servers() if s["id"] == server_id), None)
+    finally:
+        await client.close()
+
+
+async def delete_server(hoster: db.Hoster, server_id: str, project: str | None = None) -> None:
+    """Gone already (deleted in the hosting's own panel) counts as deleted."""
+    client = client_for(hoster)
+    try:
+        await client.delete_server(server_id, project)
+    except HosterError as exc:
+        if exc.code != "NOT_FOUND":
+            raise
+    finally:
+        await client.close()
+    invalidate(hoster.id)
 
 
 async def create_options(hoster: db.Hoster, project: str | None = None) -> dict:

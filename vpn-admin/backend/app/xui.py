@@ -233,6 +233,9 @@ class XUIClient:
         await self._call("POST", f"/panel/api/clients/resetTraffic/{quote(email, safe='')}")
 
 
+    async def delete_inbound(self, inbound_id: int) -> None:
+        await self._call("POST", f"/panel/api/inbounds/del/{inbound_id}")
+
     async def v3_add_inbound(self, inbound: dict) -> dict:
         return await self._call("POST", "/panel/api/inbounds/add", json=inbound) or {}
 

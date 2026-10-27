@@ -37,6 +37,7 @@ import ssl
 import string
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import asyncssh
 import httpx
@@ -47,7 +48,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from pydantic import BaseModel, Field, field_validator
 
 from . import connections, db, dns, hosters, nodes, site
-from .aggregator import overview_cache
+from .aggregator import overview_cache, pool
 from .xui import XUIClient, XUIError
 
 log = logging.getLogger("vpn-admin.provision")
@@ -1020,9 +1021,7 @@ async def restart_install(provision_id: int) -> dict:
 
 
 async def delete_server(provision_id: int) -> dict:
-    """Destroy the server at the hosting company (it costs money) and close the job. The node it ran as
-    leaves the main panel; 3x-ui refuses that while inbounds are attached to it, so such a node is only
-    disabled and the user decides what happens to those inbounds and their clients."""
+    """Delete the job's server (it costs money) with its connections and node, and close the job."""
     p = db.get_provision(provision_id)
     if not p:
         raise ProvisionError("Задание не найдено")
@@ -1033,41 +1032,123 @@ async def delete_server(provision_id: int) -> dict:
                              "прежнего задания")
     if any(other.replaces == p.id and other.state == "running" for other in db.list_provisions()):
         raise ProvisionError("Сервер сейчас переустанавливается: старый удалится сам, когда новый заработает")
+    hoster = db.get_hoster(p.hoster_id)
+    if not hoster:
+        raise ProvisionError("Аккаунт хостинга удалён из админки")
     if p.server_id:
-        try:
-            await _with_client(p, lambda c: c.delete_server(p.server_id, p.project or None))
-        except hosters.HosterError as exc:
-            if exc.code != "NOT_FOUND":  # already deleted in the hosting's own panel
-                raise
-        _log(p, f"Сервер {p.ip or p.server_id} удалён у хостинга")
-    _set(p, state="deleted")
-    hosters.invalidate(p.hoster_id)
-    if p.dns_account_id and p.dns_record_id:
-        try:
-            await dns.remove(p.dns_account_id, p.dns_zone_id, p.dns_record_id)
-            _log(p, f"Cloudflare: A-запись {p.domain} удалена")
-        except dns.DNSError as exc:  # the server is gone already; a stale record is only a leftover
-            _log(p, f"Cloudflare: A-запись {p.domain} не удалена: {exc}")
-    # the node is this server's only once the connect step is through (a reinstall borrows the old one before)
-    if p.node_id and _steps(p).index(p.step) > _steps(p).index("connect"):
-        await _drop_node(p)
-    return public(p)
+        await delete_hosted_server(hoster, p.server_id)
+    else:  # nothing was ordered
+        _set(p, state="deleted")
+    return public(db.get_provision(p.id))
 
 
-async def _drop_node(p: db.Provision) -> None:
+# ---------- deleting a server ----------
+# Connections first, then the node, then the server: nothing goes at the hosting while the main panel
+# still holds the node, and the main panel cannot drop a node that has inbounds.
+
+async def _addresses(host: str) -> set[str]:
     try:
-        node = await nodes.get(p.panel_id, p.node_id)
-        if not node:
-            return
-        if node["inbounds"]:
-            await nodes.set_enable(p.panel_id, p.node_id, False)
-            _log(p, f"Узел «{node['name']}» выключен в основной панели: к нему привязано инбаундов — "
-                    f"{node['inbounds']}. Удалите или перенесите их, затем удалите узел на странице «Узлы»")
-        else:
-            await nodes.delete(p.panel_id, p.node_id)
-            _log(p, f"Узел «{node['name']}» удалён из основной панели")
-    except nodes.NodeError as exc:  # the server is gone already; the node is a cosmetic leftover
-        _log(p, f"Узел в основной панели не изменён: {exc}")
+        return {str(ipaddress.ip_address(host))}
+    except ValueError:
+        pass
+    try:
+        infos = await asyncio.wait_for(asyncio.get_running_loop().getaddrinfo(host, None), 5)
+    except (OSError, asyncio.TimeoutError):
+        return set()
+    return {info[4][0] for info in infos}
+
+
+def _server_jobs(hoster_id: int, server_id: str) -> list[db.Provision]:
+    return [p for p in db.list_provisions()
+            if p.hoster_id == hoster_id and p.server_id == server_id and p.state != "deleted"]
+
+
+def _job_node(p: db.Provision) -> tuple[int, int] | None:
+    """The node is the job's own once its connect step is through (a reinstall borrows the old one before)."""
+    if p.node_id and p.step in _steps(p) and _steps(p).index(p.step) > _steps(p).index("connect"):
+        return p.panel_id, p.node_id
+    return None
+
+
+async def delete_plan(hoster: db.Hoster, server_id: str) -> dict:
+    """What deleting the server takes: the main panels' nodes that run on it and their inbounds. A server that
+    is a main panel itself is not deleted from here."""
+    server = await hosters.find_server(hoster, server_id)
+    jobs = _server_jobs(hoster.id, server_id)
+    if not server and not jobs:
+        raise ProvisionError("Сервер не найден у хостинга: обновите список")
+    if server and not server["deletable"]:
+        raise ProvisionError("Этот сервер через API не удалить: VPS OVHcloud удаляется в панели OVHcloud "
+                             "(расторжение подтверждается по почте)")
+    if any(p.state == "running" for p in jobs):
+        raise ProvisionError("С этим сервером сейчас идёт задание в блоке «Новые серверы»: дождитесь его окончания")
+    ips = set(server["ipv4"] + server["ipv6"]) if server else {p.ip for p in jobs if p.ip}
+    known = {n for n in map(_job_node, jobs) if n}
+    found = []
+    for panel in db.list_panels():
+        if ips & await _addresses(urlsplit(panel.url).hostname or ""):
+            raise ProvisionError(f"На этом сервере основная панель «{panel.name}»: удалите её сначала в разделе "
+                                 "«Серверы»")
+        xui = await pool.get(panel)
+        try:
+            await xui.ensure_ready()
+            if not xui.is_v3:
+                continue  # a legacy panel has no nodes
+            panel_nodes, inbounds = await asyncio.gather(xui.v3_nodes(), xui.inbounds())
+        except XUIError as exc:
+            raise ProvisionError(f"Основная панель «{panel.name}» недоступна, поэтому не проверить, узел ли "
+                                 f"этот сервер: {exc}") from exc
+        for node in panel_nodes:
+            if (panel.id, node["id"]) in known or ips & await _addresses(node.get("address") or ""):
+                found.append({
+                    "panel_id": panel.id, "panel_name": panel.name, "node_id": node["id"], "name": node.get("name", ""),
+                    "inbounds": [{"id": i["id"], "remark": i.get("remark") or i.get("tag") or "",
+                                  "protocol": i.get("protocol", ""), "port": i.get("port")}
+                                 for i in inbounds if i.get("nodeId") == node["id"]],
+                })
+    return {"server": server, "nodes": found, "jobs": [p.id for p in jobs]}
+
+
+async def delete_hosted_server(hoster: db.Hoster, server_id: str) -> dict:
+    plan = await delete_plan(hoster, server_id)
+    jobs = [db.get_provision(i) for i in plan["jobs"]]
+    name = (plan["server"] or {}).get("name") or server_id
+
+    def note(message: str) -> None:
+        log.info("delete server %s: %s", name, message)
+        for p in jobs:
+            _log(p, message)
+
+    for node in plan["nodes"]:
+        xui = await pool.get(db.get_panel(node["panel_id"]))
+        try:
+            for inbound in node["inbounds"]:
+                await xui.delete_inbound(inbound["id"])
+            if node["inbounds"]:
+                note(f"Подключения узла «{node['name']}» удалены из основной панели: {len(node['inbounds'])} шт.")
+            await xui.v3_node_delete(node["node_id"])
+        except XUIError as exc:
+            overview_cache.invalidate()
+            raise ProvisionError(f"Узел «{node['name']}» не удалён из основной панели «{node['panel_name']}», "
+                                 f"сервер не тронут: {exc}") from exc
+        note(f"Узел «{node['name']}» удалён из основной панели")
+    overview_cache.invalidate()
+
+    if plan["server"]:
+        await hosters.delete_server(hoster, server_id, plan["server"]["project"] or None)
+    else:
+        hosters.invalidate(hoster.id)
+    note(f"Сервер {name} удалён у хостинга")
+    for p in jobs:
+        _set(p, state="deleted")
+        if p.dns_account_id and p.dns_record_id:
+            try:
+                await dns.remove(p.dns_account_id, p.dns_zone_id, p.dns_record_id)
+                _log(p, f"Cloudflare: A-запись {p.domain} удалена")
+            except dns.DNSError as exc:  # the server is gone already; a stale record is only a leftover
+                _log(p, f"Cloudflare: A-запись {p.domain} не удалена: {exc}")
+    return {"server": name, "nodes": [n["name"] for n in plan["nodes"]],
+            "inbounds": sum(len(n["inbounds"]) for n in plan["nodes"])}
 
 
 def forget(provision_id: int) -> None:

@@ -348,6 +348,34 @@ async def hosters_options(hoster_id: int, project: str | None = None):
         raise HTTPException(400, str(exc)) from exc
 
 
+class HosterServerIn(BaseModel):
+    server_id: str
+
+
+def _stored_hoster(hoster_id: int) -> db.Hoster:
+    hoster = db.get_hoster(hoster_id)
+    if not hoster:
+        raise HTTPException(404, "Аккаунт не найден")
+    return hoster
+
+
+@app.post("/api/hosters/{hoster_id}/servers/delete-plan", dependencies=[Depends(require_admin)])
+async def hosters_server_delete_plan(hoster_id: int, body: HosterServerIn):
+    try:
+        return await provision.delete_plan(_stored_hoster(hoster_id), body.server_id)
+    except (provision.ProvisionError, hosters.HosterError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/hosters/{hoster_id}/servers/delete", dependencies=[Depends(require_admin)])
+async def hosters_server_delete(hoster_id: int, body: HosterServerIn):
+    """The server's connections (its node's inbounds), then the node, then the server at the hosting."""
+    try:
+        return await provision.delete_hosted_server(_stored_hoster(hoster_id), body.server_id)
+    except (provision.ProvisionError, hosters.HosterError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.delete("/api/hosters/{hoster_id}", dependencies=[Depends(require_admin)])
 async def hosters_delete(hoster_id: int):
     if not db.delete_hoster(hoster_id):
