@@ -287,7 +287,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .switch.on { background: var(--accent); }
 .switch.on span { transform: translateX(18px); }
 .switch:disabled { opacity: .5; cursor: default; }
-.inbound-switch { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.inbound-switch { width: 1%; padding-right: 0; vertical-align: middle; }
+.inbound-switch .switch { display: flex; }
 .blurred { filter: blur(5px); user-select: none; }
 .status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .status-on { color: var(--good); }

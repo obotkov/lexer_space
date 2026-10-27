@@ -55,6 +55,7 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
           <table>
             <thead>
               <tr>
+                <th aria-label="Включён"></th>
                 <th>Коннект</th>
                 <th>Сервер</th>
                 <th>Протокол</th>
@@ -64,7 +65,6 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
                 <th className="num">Онлайн</th>
                 <th>Трафик</th>
                 <th>Срок</th>
-                <th>Статус</th>
                 <th></th>
               </tr>
             </thead>
@@ -74,6 +74,14 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
                 const enabled = pending[key] ?? n.enable;
                 return (
                 <tr key={key} className={enabled ? "" : "row-muted"}>
+                  <td className="inbound-switch">
+                    <Switch
+                      checked={enabled}
+                      disabled={key in pending}
+                      onChange={(v) => toggle(n, v)}
+                      title={enabled ? "Выключить коннект: клиенты не смогут через него подключаться" : "Включить коннект"}
+                    />
+                  </td>
                   <td className="strong">{n.remark || `#${n.id}`}</td>
                   <td>{n.panel_name}</td>
                   <td>
@@ -91,17 +99,6 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
                     <TrafficBar used={n.up + n.down} total={n.total} />
                   </td>
                   <td className="small">{formatExpiry(n.expiry_time)}</td>
-                  <td>
-                    <span className="inbound-switch">
-                      <Switch
-                        checked={enabled}
-                        disabled={key in pending}
-                        onChange={(v) => toggle(n, v)}
-                        title={enabled ? "Выключить коннект: клиенты не смогут через него подключаться" : "Включить коннект"}
-                      />
-                      <span className={enabled ? "good-text small" : "muted small"}>{enabled ? "Включён" : "Выключен"}</span>
-                    </span>
-                  </td>
                   <td>
                     {SUPPORTED_PROTOCOLS.includes(n.protocol) && (
                       <button className="btn btn-small" onClick={() => setAddingTo(n)}>
