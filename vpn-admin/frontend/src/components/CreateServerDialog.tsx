@@ -62,12 +62,24 @@ export function CreateServerDialog({
   // the chosen plan if the region has it, otherwise the cheapest one there
   const planId = plans.some((p) => p.id === plan) ? plan : plans[0]?.id ?? "";
 
+  const chosen = plans.find((p) => p.id === planId);
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError("");
     try {
-      await api.startProvision({ hoster_id: hoster.id, panel_id: panelId, name, region, plan: planId, project: options?.project ?? null, ssh_keys: sshKeys });
+      await api.startProvision({
+        hoster_id: hoster.id,
+        panel_id: panelId,
+        name,
+        region,
+        plan: planId,
+        project: options?.project ?? null,
+        ssh_keys: sshKeys,
+        region_label: regions.find((r) => r.id === region)?.name ?? region,
+        plan_label: chosen?.label ?? planId,
+      });
       onStarted();
     } catch (err) {
       setError((err as Error).message);
@@ -75,7 +87,6 @@ export function CreateServerDialog({
     }
   };
 
-  const chosen = plans.find((p) => p.id === planId);
   const discovery = !!options?.projects?.find((p) => p.id === options.project)?.discovery;
 
   return (
@@ -188,6 +199,8 @@ export function CreateServerDialog({
               На сервер встанут Ubuntu 24.04, Docker и 3x-ui последней версии. Порт, путь, логин и пароль панели админка задаст сама и выпустит для неё
               TLS-сертификат, который основная панель закрепит (pin). Обычно всё занимает 5–10 минут. Хостинг начнёт брать плату за сервер сразу после
               создания.
+              {hoster.provider === "vdsina" &&
+                " У VDSina нет cloud-init: админка зайдёт на сервер по SSH одноразовым ключом, установит всё сама, добавит root выбранный SSH-ключ, а свой ключ удалит."}
             </div>
           </>
         ) : null}
@@ -243,11 +256,13 @@ function PlanNote({ plan, provider }: { plan: HostingPlan; provider: string }) {
     <small className="muted">
       {provider === "digitalocean"
         ? "Оплата почасовая, но за месяц не больше месячной цены тарифа. Платёж идёт, пока сервер существует, даже выключенный. Цены без налогов."
-        : `Почасовая оплата, месяц — 730 часов. ${
-            plan.price_month_plan != null
-              ? `С помесячной оплатой ${plan.label} стоит ${formatPrice(plan.price_month_plan, plan.currency)} в месяц: её можно включить для сервера в панели OVHcloud. `
-              : ""
-          }Цены без налогов.`}
+        : provider === "vdsina"
+          ? "Оплата посуточная с баланса аккаунта VDSina, месяц — 30 дней; цена в час — суточная, делённая на 24. Для заказа на балансе должно хватать средств на тариф."
+          : `Почасовая оплата, месяц — 730 часов. ${
+              plan.price_month_plan != null
+                ? `С помесячной оплатой ${plan.label} стоит ${formatPrice(plan.price_month_plan, plan.currency)} в месяц: её можно включить для сервера в панели OVHcloud. `
+                : ""
+            }Цены без налогов.`}
     </small>
   );
 }

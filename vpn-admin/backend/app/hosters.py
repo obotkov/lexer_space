@@ -31,6 +31,11 @@ OVH_ENDPOINTS = {
     "ovh-ca": os.getenv("OVH_CA_API_URL", "https://ca.api.ovh.com/1.0"),
     "ovh-us": os.getenv("OVH_US_API_URL", "https://api.us.ovhcloud.com/1.0"),
 }
+# VDSina keeps separate accounts on its international and Russian sites, priced in different currencies
+VDSINA_ENDPOINTS = {
+    "vdsina-com": (os.getenv("VDSINA_COM_API_URL", "https://userapi.vdsina.com/v1"), "USD"),
+    "vdsina-ru": (os.getenv("VDSINA_RU_API_URL", "https://userapi.vdsina.ru/v1"), "RUB"),
+}
 
 
 class HosterError(Exception):
@@ -86,6 +91,21 @@ PROVIDERS: dict[str, dict[str, Any]] = {
             "ovh-us": "https://api.us.ovhcloud.com/createToken/?GET=/*&POST=/*&PUT=/*&DELETE=/*",
         },
     },
+    "vdsina": {
+        "title": "VDSina",
+        "site": "https://www.vdsina.com",
+        "fields": [
+            {"key": "endpoint", "label": "Сайт аккаунта", "options": [
+                {"value": "vdsina-com", "label": "vdsina.com — цены в долларах"},
+                {"value": "vdsina-ru", "label": "vdsina.ru — цены в рублях"},
+            ], "default": "vdsina-com"},
+            {"key": "token", "label": "API-токен", "secret": True},
+        ],
+        "help": "Токен — в панели VDSina, в данных пользователя аккаунта (раздел про API). Он меняется при смене "
+                "пароля. Сайт выберите тот, где зарегистрирован аккаунт: у vdsina.com и vdsina.ru отдельные аккаунты.",
+        "help_url": "https://www.vdsina.com/tech/api",
+        "help_urls": {"vdsina-com": "https://www.vdsina.com/tech/api", "vdsina-ru": "https://www.vdsina.ru/tech/api"},
+    },
 }
 
 
@@ -135,7 +155,10 @@ def _http_error(resp: httpx.Response, provider: str) -> HosterError:
 # ---------- where a region is: hosting codes -> flag, country, city ----------
 
 COUNTRIES = {"FR": "Франция", "DE": "Германия", "GB": "Великобритания", "PL": "Польша", "IT": "Италия",
-             "NL": "Нидерланды", "CA": "Канада", "US": "США", "SG": "Сингапур", "AU": "Австралия", "IN": "Индия"}
+             "NL": "Нидерланды", "CA": "Канада", "US": "США", "SG": "Сингапур", "AU": "Австралия", "IN": "Индия",
+             "RU": "Россия", "KZ": "Казахстан", "TR": "Турция", "FI": "Финляндия", "SE": "Швеция", "CH": "Швейцария",
+             "ES": "Испания", "LV": "Латвия", "LT": "Литва", "EE": "Эстония", "BG": "Болгария", "MD": "Молдова",
+             "RS": "Сербия", "GE": "Грузия", "AM": "Армения", "AE": "ОАЭ", "HK": "Гонконг", "JP": "Япония"}
 
 # OVHcloud Public Cloud: new names (EU-WEST-PAR, AP-SOUTH-MUM-1) first, then the classic ones (GRA11, DE1)
 OVH_PLACES = [
@@ -259,7 +282,7 @@ class DigitalOcean:
         }
 
     async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
-                            project: str | None = None) -> str:
+                            project: str | None = None, admin_key: str | None = None) -> str:
         data = await self._request("POST", "/droplets", json={
             "name": name, "region": region, "size": plan, "image": self.image, "ipv6": True, "monitoring": True,
             "ssh_keys": [int(k) if k.isdigit() else k for k in ssh_keys], "user_data": user_data,
@@ -525,7 +548,7 @@ class OVHcloud:
         return catalog
 
     async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
-                            project: str | None = None) -> str:
+                            project: str | None = None, admin_key: str | None = None) -> str:
         if not project:
             raise HosterError("Не выбран проект Public Cloud OVHcloud")
         flavors, images = await asyncio.gather(
@@ -550,7 +573,198 @@ class OVHcloud:
         await self._request("DELETE", f"/cloud/project/{project}/instance/{server_id}")
 
 
-CLIENTS = {"digitalocean": DigitalOcean, "ovh": OVHcloud}
+class VDSina:
+    """VDSina user API: token in the Authorization header, answers wrapped in {"status": "ok", "data": ...}.
+    VDSina has no cloud-init, so new servers get a one-time SSH key of the admin, which installs 3x-ui over SSH."""
+    title = "VDSina"
+    setup = "ssh"
+    images = ("Ubuntu 24.04", "Ubuntu 22.04")
+    status_map = {"active": "running", "new": "pending", "block": "stopped", "notpaid": "stopped", "deleted": "stopped"}
+    status_labels = {"active": "Работает", "new": "Создаётся", "block": "Заблокирован", "notpaid": "Не оплачен",
+                     "deleted": "Удалён"}
+
+    def __init__(self, credentials: dict[str, str]):
+        endpoint = credentials.get("endpoint") or "vdsina-com"
+        if endpoint not in VDSINA_ENDPOINTS:
+            raise HosterError(f"Неизвестный сайт VDSina: {endpoint}")
+        token = credentials.get("token", "").strip()
+        if not token:
+            raise HosterError("Укажите API-токен VDSina")
+        self.endpoint = endpoint
+        self.base, self.currency = VDSINA_ENDPOINTS[endpoint]
+        self.token = token
+        self.http = httpx.AsyncClient(base_url=self.base, timeout=TIMEOUT, headers={
+            "Authorization": token, "Accept": "application/json", "User-Agent": "vpn-admin"})
+
+    async def close(self) -> None:
+        await self.http.aclose()
+
+    async def _request(self, method: str, path: str, json: dict | None = None) -> Any:
+        try:
+            resp = await self.http.request(method, path, json=json)
+        except httpx.HTTPError as exc:
+            raise HosterError(f"VDSina недоступна: {exc}") from exc
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+        if resp.status_code < 400 and data.get("status") == "ok":
+            return data.get("data")
+        detail = data.get("description") or data.get("status_msg") or resp.text[:200] or f"HTTP {resp.status_code}"
+        if resp.status_code == 401:
+            raise await self._wrong_site(HosterError(f"VDSina: токен не принят ({detail})", "INVALID_KEY"))
+        if resp.status_code == 403:
+            raise HosterError(f"VDSina: у пользователя токена нет прав на это действие ({detail})", "NOT_GRANTED_CALL")
+        raise HosterError(f"VDSina: {detail}", data.get("status_msg") or "")
+
+    async def _wrong_site(self, error: HosterError) -> HosterError:
+        """Accounts of vdsina.com and vdsina.ru are separate: a token of one is unknown to the other."""
+        for endpoint, (base, _) in VDSINA_ENDPOINTS.items():
+            if endpoint == self.endpoint:
+                continue
+            try:
+                resp = await self.http.get(f"{base}/account")
+            except httpx.HTTPError:
+                continue
+            if resp.status_code == 200:
+                label = next(o["label"] for o in PROVIDERS["vdsina"]["fields"][0]["options"] if o["value"] == endpoint)
+                return HosterError(f"VDSina: это токен аккаунта другого сайта. Выберите в поле «Сайт аккаунта» "
+                                   f"вариант «{label}»", "WRONG_ENDPOINT")
+        return error
+
+    def _money(self, value: float) -> str:
+        return f"{value:,.2f}".replace(",", " ").replace(".", ",") + (" ₽" if self.currency == "RUB" else " $")
+
+    async def account(self) -> dict:
+        acc, balance = await asyncio.gather(self._request("GET", "/account"), self._request("GET", "/account.balance"))
+        real = (balance or {}).get("real")
+        return {"login": ((acc or {}).get("account") or {}).get("name", ""), "name": "", "status": "",
+                "balance": self._money(float(real)) if real is not None else None,
+                "limits": f"средств хватит до {acc['forecast']}" if (acc or {}).get("forecast") else ""}
+
+    @staticmethod
+    def _specs(data: dict) -> str:
+        def part(key: str, unit: str) -> str:
+            item = data.get(key) or {}
+            value = item.get("total") or item.get("value")
+            return f"{value:g} {unit}" if isinstance(value, (int, float)) else ""
+        disk = data.get("disk") or {}
+        traff = data.get("traff") or {}
+        parts = [part("cpu", "vCPU"), part("ram", "GB"),
+                 f"{part('disk', 'GB')} {disk.get('title', '')}".strip() if part("disk", "GB") else "",
+                 f"{traff['value']:g} {traff.get('for', '')} трафика".strip() if isinstance(traff.get("value"), (int, float)) else ""]
+        return " · ".join(p for p in parts if p)
+
+    @staticmethod
+    def _dc_label(dc: dict) -> str:
+        country = (dc.get("country") or "").upper()
+        name = dc.get("name", "")
+        if len(country) != 2:
+            return name
+        return f"{_flag(country)} {COUNTRIES.get(country, country)}, {name}"
+
+    @staticmethod
+    def _moscow_iso(value: str) -> str:
+        # API timestamps are Europe/Moscow ("2019-07-11 20:05:49")
+        return f"{value.replace(' ', 'T')}+03:00" if value and "T" not in value else value
+
+    def _server_view(self, s: dict) -> dict:
+        status = s.get("status", "")
+        ips = s.get("ip") or []
+        return _server(
+            id=s.get("id"), name=s.get("name", ""), kind="VDS",
+            status=self.status_map.get(status, "unknown"),
+            status_label=s.get("status_text") or self.status_labels.get(status, status),
+            region=self._dc_label(s.get("datacenter") or {}), plan=(s.get("server-plan") or {}).get("name", ""),
+            specs=self._specs(s.get("data") or {}),
+            ipv4=[i["ip"] for i in ips if str(i.get("type")) == "4" and i.get("ip")],
+            ipv6=[i["ip"] for i in ips if str(i.get("type")) == "6" and i.get("ip")],
+            created_at=self._moscow_iso(s.get("created", "")),
+        )
+
+    async def servers(self) -> list[dict]:
+        try:
+            items = await self._request("GET", "/server") or []
+        except HosterError as exc:
+            if exc.code.startswith("No "):  # "No Server information": the account has none yet
+                return []
+            raise
+        return [self._server_view(s) for s in items]
+
+    def _template_for(self, templates: list[dict], plan_id: int) -> dict | None:
+        usable = [t for t in templates if t.get("active") and t.get("ssh-key") and plan_id in (t.get("server-plan") or [])]
+        return next((t for want in self.images for t in usable if (t.get("name") or "").startswith(want)), None)
+
+    def _prices(self, plan: dict) -> tuple[float | None, float | None]:
+        """(per hour, per month) from the plan's cost per period; VDSina bills by the day."""
+        cost, period = plan.get("cost"), plan.get("period")
+        if not isinstance(cost, (int, float)):
+            return None, None
+        per_hour = {"hour": cost, "day": cost / 24, "month": cost / HOURS_PER_MONTH}.get(period)
+        per_month = {"hour": cost * HOURS_PER_MONTH, "day": cost * 30, "month": cost}.get(period)
+        return (round(per_hour, 4) if per_hour is not None else None,
+                round(per_month, 2) if per_month is not None else None)
+
+    async def create_options(self, project: str | None = None) -> dict:
+        groups, datacenters, templates, keys = await asyncio.gather(
+            self._request("GET", "/server-group"), self._request("GET", "/datacenter"),
+            self._request("GET", "/template"), self._request("GET", "/ssh-key"))
+        group_plans = await asyncio.gather(*(self._request("GET", f"/server-plan/{g['id']}") for g in groups or []))
+        regions = [{"id": str(dc["id"]), "name": self._dc_label(dc)} for dc in datacenters or [] if dc.get("active")]
+        plans = []
+        for group, items in zip(groups or [], group_plans):
+            for plan in items or []:
+                # plan builders (has_params) need sizes chosen by hand; plans without Ubuntu cannot carry 3x-ui here
+                if not (plan.get("active") and plan.get("enable")) or plan.get("has_params"):
+                    continue
+                if not self._template_for(templates or [], plan["id"]):
+                    continue
+                hour, month = self._prices(plan)
+                plans.append({"id": str(plan["id"]), "label": f"{plan.get('name', plan['id'])}",
+                              "specs": " · ".join(x for x in (group.get("name", ""), self._specs(plan.get("data") or {})) if x),
+                              "price_hour": hour, "price_month": month, "price_month_plan": None,
+                              "currency": self.currency, "regions": [r["id"] for r in regions]})
+        plans.sort(key=lambda p: (p["price_hour"] is None, p["price_hour"] or 0, p["label"]))
+        return {"projects": None, "project": None, "ssh_multiple": False,
+                "regions": sorted(regions, key=lambda r: r["name"]), "plans": plans,
+                "ssh_keys": [{"id": str(k["id"]), "name": k.get("name") or str(k["id"])} for k in keys or []]}
+
+    async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
+                            project: str | None = None, admin_key: str | None = None) -> str:
+        if not admin_key:
+            raise HosterError("VDSina: нет SSH-ключа админки для установки 3x-ui")
+        template = self._template_for(await self._request("GET", "/template") or [], int(plan))
+        if not template:
+            raise HosterError(f"VDSina: для тарифа {plan} нет шаблона Ubuntu 24.04 / 22.04")
+        key = await self._request("POST", "/ssh-key", {"name": f"vpn-admin {name}", "data": admin_key})
+        try:
+            server = await self._request("POST", "/server", {
+                "datacenter": int(region), "server-plan": int(plan), "template": template["id"],
+                "ssh-key": int(key["id"]), "name": name, "autoprolong": 1})
+        except HosterError:
+            await self.forget_setup_key(name)
+            raise
+        return str(server["id"])
+
+    async def get_server(self, server_id: str, project: str | None = None) -> dict:
+        return self._server_view(await self._request("GET", f"/server/{server_id}") or {})
+
+    async def delete_server(self, server_id: str, project: str | None = None) -> None:
+        await self._request("DELETE", f"/server/{server_id}")
+
+    async def public_keys(self, key_ids: list[str]) -> list[str]:
+        """Public keys of the account's SSH keys chosen for the server: the admin adds them for root."""
+        keys = await asyncio.gather(*(self._request("GET", f"/ssh-key/{k}") for k in key_ids))
+        return [k["data"].strip() for k in keys if k and k.get("data")]
+
+    async def forget_setup_key(self, name: str) -> None:
+        """Remove the one-time admin key from the account once the server no longer needs it."""
+        for key in await self._request("GET", "/ssh-key") or []:
+            if key.get("name") == f"vpn-admin {name}":
+                await self._request("DELETE", f"/ssh-key/{key['id']}")
+
+
+CLIENTS = {"digitalocean": DigitalOcean, "ovh": OVHcloud, "vdsina": VDSina}
 
 
 # ---------- accounts ----------

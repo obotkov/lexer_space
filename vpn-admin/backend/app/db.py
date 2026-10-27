@@ -2,7 +2,7 @@ import json
 import sqlite3
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .config import settings
 from .security import decrypt, encrypt
@@ -57,10 +57,11 @@ CREATE TABLE IF NOT EXISTS hosters (
 );
 """
 
-# Columns added after the first release: (name, definition)
-MIGRATIONS = [
-    ("api_token_enc", "TEXT NOT NULL DEFAULT ''"),
-]
+# Columns added after a table first shipped: table -> [(name, definition)]
+MIGRATIONS = {
+    "panels": [("api_token_enc", "TEXT NOT NULL DEFAULT ''")],
+    "provisions": [("labels", "TEXT NOT NULL DEFAULT '{}'")],
+}
 
 
 @dataclass
@@ -107,10 +108,11 @@ def init_db() -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
-        existing = {row["name"] for row in conn.execute("PRAGMA table_info(panels)")}
-        for name, definition in MIGRATIONS:
-            if name not in existing:
-                conn.execute(f"ALTER TABLE panels ADD COLUMN {name} {definition}")
+        for table, columns in MIGRATIONS.items():
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for name, definition in columns:
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 def _row_to_panel(row: sqlite3.Row) -> Panel:
@@ -254,9 +256,10 @@ class Provision:
     log: list
     created_at: int
     updated_at: int
+    labels: dict = field(default_factory=dict)  # readable region and plan, e.g. a country instead of an ID
 
 
-_JSON_FIELDS = {"ssh_keys", "log"}
+_JSON_FIELDS = {"ssh_keys", "log", "labels"}
 
 
 def _row_to_provision(row: sqlite3.Row) -> Provision:

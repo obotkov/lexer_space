@@ -460,6 +460,9 @@ export interface ProvisionForm {
   plan: string;
   project: string | null;
   ssh_keys: string[];
+  /** what the form showed, kept on the job: some hostings use bare IDs for regions and plans */
+  region_label: string;
+  plan_label: string;
 }
 
 export type ProvisionStep = "create" | "boot" | "install" | "connect" | "done";

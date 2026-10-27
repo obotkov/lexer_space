@@ -20,15 +20,17 @@ import ipaddress
 import logging
 import re
 import secrets
+import shlex
 import ssl
 import string
 import time
 from typing import Any
 
+import asyncssh
 import httpx
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from pydantic import BaseModel, Field, field_validator
 
@@ -39,6 +41,7 @@ from .xui import XUIClient, XUIError
 log = logging.getLogger("vpn-admin.provision")
 
 XUI_IMAGE = "ghcr.io/mhsanaei/3x-ui:latest"
+SSH_KEY_COMMENT = "vpn-admin-setup"
 STEPS = ["create", "boot", "install", "connect", "done"]
 BOOT_TIMEOUT = 10 * 60
 INSTALL_TIMEOUT = 25 * 60
@@ -59,6 +62,9 @@ class ProvisionIn(BaseModel):
     plan: str = Field(min_length=1)
     project: str | None = None
     ssh_keys: list[str] = []
+    # what the form showed: some hostings use bare IDs for regions and plans
+    region_label: str = ""
+    plan_label: str = ""
 
     @field_validator("name")
     @classmethod
@@ -99,8 +105,28 @@ def make_certificate() -> tuple[str, str, str]:
     return cert_pem, key_pem, base64.b64encode(hashlib.sha256(der).digest()).decode()
 
 
-def user_data(p: db.Provision) -> str:
-    """cloud-init script: Docker + 3x-ui with the generated port, path, login and certificate."""
+def make_ssh_key() -> tuple[str, str]:
+    """One-time key for hostings without cloud-init: (private key in OpenSSH format, public key line)."""
+    key = ed25519.Ed25519PrivateKey.generate()
+    private = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH,
+                                serialization.NoEncryption()).decode()
+    public = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH).decode()
+    return private, f"{public} {SSH_KEY_COMMENT}"
+
+
+def _authorized_keys_script(user_keys: list[str]) -> str:
+    """Give root the user's keys chosen in the form, then drop the admin's one-time key."""
+    lines = ["mkdir -p /root/.ssh && chmod 700 /root/.ssh && touch /root/.ssh/authorized_keys"]
+    for key in user_keys:
+        quoted = shlex.quote(key)
+        lines.append(f"grep -qxF {quoted} /root/.ssh/authorized_keys || echo {quoted} >> /root/.ssh/authorized_keys")
+    lines.append(f"sed -i '/ {SSH_KEY_COMMENT}$/d' /root/.ssh/authorized_keys")
+    return "\n".join(lines) + "\n"
+
+
+def user_data(p: db.Provision, extra: str = "") -> str:
+    """cloud-init script: Docker + 3x-ui with the generated port, path, login and certificate.
+    Hostings without cloud-init get the same script over SSH, with `extra` steps at the end."""
     return f"""#!/bin/bash
 # vpn-admin: 3x-ui node "{p.name}"
 set -u
@@ -137,7 +163,7 @@ docker run -d --name 3x-ui --restart unless-stopped --network host --cap-add NET
   -e XRAY_VMESS_AEAD_FORCED=false -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/cert:/root/cert {XUI_IMAGE}
 
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then ufw allow {p.port}/tcp; fi
-echo "vpn-admin: done"
+{extra}echo "vpn-admin: done"
 """
 
 
@@ -180,12 +206,21 @@ async def _with_client(p: db.Provision, action):
 
 
 async def _step_create(p: db.Provision) -> None:
-    _log(p, f"Заказываю сервер {p.plan} в {p.region}")
-    server_id = await _with_client(p, lambda c: c.create_server(
-        name=p.name, region=p.region, plan=p.plan, ssh_keys=p.ssh_keys, user_data=user_data(p),
-        project=p.project or None))
-    # the key reached the server; the admin trusts the node by the certificate alone
-    _set(p, server_id=server_id, secrets={"password": p.secrets["password"]})
+    _log(p, f"Заказываю сервер {p.labels.get('plan') or p.plan}: {p.labels.get('region') or p.region}")
+
+    def order(client):
+        admin_key = None
+        if getattr(client, "setup", "") == "ssh":  # no cloud-init: the admin will log in and install itself
+            private, admin_key = make_ssh_key()
+            _set(p, secrets={**p.secrets, "ssh_key": private})
+        return client.create_server(name=p.name, region=p.region, plan=p.plan, ssh_keys=p.ssh_keys,
+                                    user_data=user_data(p), project=p.project or None, admin_key=admin_key)
+
+    server_id = await _with_client(p, order)
+    if "ssh_key" in p.secrets:  # the TLS key goes to the server over SSH later
+        _set(p, server_id=server_id)
+    else:  # the key reached the server; the admin trusts the node by the certificate alone
+        _set(p, server_id=server_id, secrets={"password": p.secrets["password"]})
     _log(p, f"Сервер создан у хостинга (id {server_id})")
 
 
@@ -204,8 +239,43 @@ async def _step_boot(p: db.Provision) -> None:
         await asyncio.sleep(POLL_EVERY)
 
 
+async def _install_over_ssh(p: db.Provision) -> None:
+    """Run the setup script as root over SSH with the one-time key. The host key cannot be known in
+    advance; what matters is checked after: the panel must answer with the certificate generated here."""
+    _log(p, "У хостинга нет cloud-init: подключаюсь к серверу по SSH и устанавливаю Docker и 3x-ui")
+    user_keys = await _with_client(p, lambda c: c.public_keys(p.ssh_keys)) if p.ssh_keys else []
+    script = user_data(p, _authorized_keys_script(user_keys))
+    key = asyncssh.import_private_key(p.secrets["ssh_key"])
+    deadline = time.time() + INSTALL_TIMEOUT
+    while True:
+        try:
+            async with asyncssh.connect(p.ip, username="root", client_keys=[key], known_hosts=None,
+                                        connect_timeout=15) as conn:
+                result = await conn.run("bash -s", input=script, check=False, timeout=INSTALL_TIMEOUT)
+                if result.exit_status != 0:
+                    tail = (await conn.run("tail -n 15 /var/log/vpn-admin-node.log", check=False)).stdout
+                    raise ProvisionError(f"Установка на сервере завершилась с ошибкой (код {result.exit_status}). "
+                                         f"Конец журнала /var/log/vpn-admin-node.log: {str(tail).strip()[-1500:]}")
+            break
+        except (OSError, asyncssh.Error) as exc:  # the OS is still being installed or sshd is not up yet
+            if time.time() > deadline:
+                raise ProvisionError(f"Не удалось выполнить установку по SSH за {INSTALL_TIMEOUT // 60} минут: "
+                                     f"{exc}") from exc
+            await asyncio.sleep(POLL_EVERY)
+    _set(p, secrets={"password": p.secrets["password"]})
+    _log(p, "Установка по SSH завершена, одноразовый ключ админки удалён с сервера")
+    try:
+        await _with_client(p, lambda c: c.forget_setup_key(p.name))
+    except (hosters.HosterError, ProvisionError) as exc:
+        log.warning("provision %s: setup key not removed from the account: %s", p.id, exc)
+
+
 async def _step_install(p: db.Provision) -> None:
-    _log(p, "Жду установку Docker и 3x-ui (обычно 3–7 минут)")
+    if "ssh_key" in p.secrets:
+        await _install_over_ssh(p)
+        _log(p, "Жду ответа панели 3x-ui")
+    else:
+        _log(p, "Жду установку Docker и 3x-ui (обычно 3–7 минут)")
     deadline = time.time() + INSTALL_TIMEOUT
     async with httpx.AsyncClient(verify=_pinned_context(p.cert_pem), timeout=10) as http:
         while True:
@@ -301,6 +371,7 @@ async def start(body: ProvisionIn) -> dict:
         base_path=f"/{_random(14, string.ascii_lowercase + string.digits)}/", username=f"adm_{_random(6, string.ascii_lowercase + string.digits)}",
         secrets={"password": _random(20), "key_pem": key_pem}, cert_pem=cert_pem, cert_pin=pin,
         step="create", state="running",
+        labels={"region": body.region_label.strip()[:100], "plan": body.plan_label.strip()[:100]},
     )
     _log(p, "Задание создано")
     _spawn(p.id)
@@ -345,8 +416,9 @@ def forget(provision_id: int) -> None:
 
 def public(p: db.Provision) -> dict[str, Any]:
     return {
-        "id": p.id, "hoster_id": p.hoster_id, "panel_id": p.panel_id, "name": p.name, "region": p.region,
-        "plan": p.plan, "server_id": p.server_id, "ip": p.ip, "node_id": p.node_id, "step": p.step,
+        "id": p.id, "hoster_id": p.hoster_id, "panel_id": p.panel_id, "name": p.name,
+        "region": p.labels.get("region") or p.region, "plan": p.labels.get("plan") or p.plan,
+        "server_id": p.server_id, "ip": p.ip, "node_id": p.node_id, "step": p.step,
         "state": p.state, "error": p.error, "log": p.log[-15:], "created_at": p.created_at,
         "updated_at": p.updated_at, "panel_url": _node_url(p) if p.ip else "", "username": p.username,
     }
