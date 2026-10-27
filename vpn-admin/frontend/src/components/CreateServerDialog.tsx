@@ -76,6 +76,7 @@ export function CreateServerDialog({
   };
 
   const chosen = plans.find((p) => p.id === planId);
+  const discovery = !!options?.projects?.find((p) => p.id === options.project)?.discovery;
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && !busy && onClose()}>
@@ -99,10 +100,16 @@ export function CreateServerDialog({
             <select className="input" value={options.project ?? ""} onChange={(e) => setProject(e.target.value)} disabled={loading}>
               {options.projects.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name}
+                  {p.discovery ? `${p.name} — Discovery, не активирован` : p.name}
                 </option>
               ))}
             </select>
+            {discovery && (
+              <div className="notice notice-bad small">
+                Проект в режиме Discovery: это пробный проект без способа оплаты, OVHcloud не даст создать в нём сервер. Активируйте его в панели
+                OVHcloud: Public Cloud → этот проект → «Activate project» (понадобится способ оплаты), затем откройте эту форму снова.
+              </div>
+            )}
           </label>
         )}
 
@@ -192,7 +199,7 @@ export function CreateServerDialog({
           <button type="button" className="btn" onClick={onClose} disabled={busy}>
             Отмена
           </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || loading || !options || !planId || !region || mainPanels.length === 0}>
+          <button type="submit" className="btn btn-primary" disabled={busy || loading || !options || !planId || !region || mainPanels.length === 0 || discovery}>
             {busy ? "Создаю…" : "Создать сервер"}
           </button>
         </div>

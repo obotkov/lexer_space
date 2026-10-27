@@ -106,7 +106,14 @@ OVH_ERROR_HINTS = [
     ("has not been granted", "NOT_GRANTED_CALL", "у Consumer Key нет прав на этот запрос. Создайте новый ключ по "
      "ссылке «Получить ключ»: она запрашивает права GET/POST/PUT/DELETE на /*"),
     ("query out of time", "QUERY_TIME_OUT", "время на сервере админки сильно расходится с OVHcloud"),
+    ("project discovery forbidden", "DISCOVERY_PROJECT", None),  # text: OVH_DISCOVERY_HINT
 ]
+
+
+OVH_DISCOVERY_HINT = (
+    "проект Public Cloud в режиме Discovery (пробный, без способа оплаты): в нём нельзя создавать серверы. "
+    "Активируйте проект в панели OVHcloud: Public Cloud → проект → «Activate project» (понадобится способ оплаты), "
+    "затем нажмите «Повторить»")
 
 
 def _http_error(resp: httpx.Response, provider: str) -> HosterError:
@@ -115,7 +122,7 @@ def _http_error(resp: httpx.Response, provider: str) -> HosterError:
         detail = data.get("message") or data.get("error") or data.get("id") or ""
         for needle, code, hint in OVH_ERROR_HINTS:
             if needle in detail.lower() or data.get("errorCode") == code:
-                return HosterError(f"{provider}: {hint} ({detail})", code)
+                return HosterError(f"{provider}: {hint or OVH_DISCOVERY_HINT} ({detail})", code)
     except (ValueError, AttributeError):
         detail = resp.text[:200]
     if resp.status_code == 401:
@@ -451,8 +458,11 @@ class OVHcloud:
             raise HosterError("В аккаунте OVHcloud нет проектов Public Cloud: создайте проект в панели OVHcloud "
                               "(Public Cloud → Create project), серверы создаются в нём")
         infos = await asyncio.gather(*(self._get(f"/cloud/project/{p}") for p in ids))
-        projects = [{"id": p, "name": info.get("description") or p} for p, info in zip(ids, infos)]
-        project = project if project in ids else ids[0]
+        # a new project starts in Discovery mode ("project.discovery"): no servers until it is activated
+        projects = [{"id": p, "name": info.get("description") or p, "discovery": "discovery" in (info.get("planCode") or "")}
+                    for p, info in zip(ids, infos)]
+        if project not in ids:  # by default an activated project, servers cannot be created in a Discovery one
+            project = next((p["id"] for p in projects if not p["discovery"]), ids[0])
         regions, flavors, keys = await asyncio.gather(
             self._get(f"/cloud/project/{project}/region"), self._get(f"/cloud/project/{project}/flavor"),
             self._get(f"/cloud/project/{project}/sshkey"))

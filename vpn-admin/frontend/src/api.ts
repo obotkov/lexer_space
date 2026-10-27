@@ -442,7 +442,8 @@ export interface HostingPlan {
 
 export interface CreateOptions {
   /** OVHcloud: Public Cloud projects; null when the provider has none */
-  projects: { id: string; name: string }[] | null;
+  /** discovery: a new OVHcloud project that cannot create servers until it is activated */
+  projects: { id: string; name: string; discovery?: boolean }[] | null;
   project: string | null;
   /** false: the provider takes a single SSH key per server */
   ssh_multiple: boolean;
