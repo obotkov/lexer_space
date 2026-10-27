@@ -175,25 +175,29 @@ class YandexCloud:
     async def certificate(self, cert_id: str) -> dict:
         return await self._request("GET", f"{YC_CM_URL}/certificates/{cert_id}", params={"view": "FULL"})
 
-    async def create_resource(self, domain: str, origin: str, cert_id: str) -> str:
-        """XHTTP must not be cached: the cache is off, every method the transport uses is let through and the
-        name the client asked for goes on to the node (its inbound checks Host)."""
+    async def create_resource(self, domain: str, origin: str, cert_id: str, allow_post: bool) -> str:
+        """XHTTP must not be cached: the cache is off and the name the client asked for goes on to the node (its
+        inbound checks Host). GET, HEAD and OPTIONS pass by default, which is all the GET uploads need; POST
+        uploads need POST, which Yandex refuses at creation, so it is allowed once the resource exists."""
         op = await self._request("POST", f"{YC_CDN_URL}/resources", json_body={
             "folderId": self.folder, "cname": domain, "origin": {"originSource": origin}, "originProtocol": "HTTPS",
             "active": True,
             "options": {
                 "disableCache": {"enabled": True, "value": True},
                 "hostOptions": {"forwardHostHeader": {"enabled": True, "value": True}},
-                "allowedHttpMethods": {"enabled": True, "value": ["GET", "POST", "HEAD", "OPTIONS"]},
             },
             "sslCertificate": {"type": "CM", "data": {"cm": {"id": cert_id}}},
             "labels": {"vpn-admin": "cdn"},
         })
         resource_id = (op.get("metadata") or {}).get("resourceId")
-        if not resource_id:
-            resource_id = (await self._operation(op, RESOURCE_TIMEOUT)).get("id")
+        if not resource_id or allow_post:
+            resource_id = resource_id or (await self._operation(op, RESOURCE_TIMEOUT)).get("id")
         if not resource_id:
             raise CDNError("Yandex Cloud не вернул ID CDN-ресурса")
+        if allow_post:
+            await self._operation(await self._request("PATCH", f"{YC_CDN_URL}/resources/{resource_id}", json_body={
+                "options": {"allowedHttpMethods": {"enabled": True, "value": ["GET", "POST", "HEAD", "OPTIONS"]}},
+                "updateMask": "options.allowedHttpMethods"}), RESOURCE_TIMEOUT)
         return resource_id
 
     async def resource(self, resource_id: str) -> dict:
@@ -304,7 +308,8 @@ async def set_up(account_id: int, item: dict, domain: str, origin: str, put_reco
             await asyncio.sleep(POLL_EVERY)
         if not item.get("cdn_resource_id"):
             log(f"{title}: сертификат выпущен, создаю CDN-ресурс {domain} → {origin} (до 15 минут)")
-            item["cdn_resource_id"] = await client.create_resource(domain, origin, item["cdn_cert_id"])
+            item["cdn_resource_id"] = await client.create_resource(
+                domain, origin, item["cdn_cert_id"], allow_post=item["options"].get("uplink") == "post-body")
             save()
         resource = await client.resource(item["cdn_resource_id"])
         address = (resource.get("providerCname") or resource.get("provider_cname") or "").rstrip(".")
