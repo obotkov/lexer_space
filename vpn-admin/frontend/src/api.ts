@@ -696,6 +696,7 @@ export const api = {
   createConnection: (form: ConnectionTemplateForm) => request<ConnectionTemplate>("POST", "/api/connections", form),
   updateConnection: (id: number, form: ConnectionTemplateForm) => request<ConnectionTemplate>("PUT", `/api/connections/${id}`, form),
   enableConnection: (id: number, enabled: boolean) => request<ConnectionTemplate>("POST", `/api/connections/${id}/enabled`, { enabled }),
+  enableAllConnections: (enabled: boolean) => request("POST", "/api/connections-enabled", { enabled }),
   orderConnections: (ids: number[]) => request("POST", "/api/connections/order", { ids }),
   deleteConnection: (id: number) => request("DELETE", `/api/connections/${id}`),
   setConnectionUsers: (users: ConnectionUsers) => request<ConnectionUsers>("PUT", "/api/connections-users", users),

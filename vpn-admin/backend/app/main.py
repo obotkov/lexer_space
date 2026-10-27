@@ -444,6 +444,14 @@ async def connections_set_enabled(template_id: int, body: EnabledIn):
     return connections.public(db.update_connection_template(template_id, enabled=body.enabled))
 
 
+@app.post("/api/connections-enabled", dependencies=[Depends(require_admin)])
+async def connections_set_all_enabled(body: EnabledIn):
+    for t in db.list_connection_templates():
+        if t.enabled != body.enabled:
+            db.update_connection_template(t.id, enabled=body.enabled)
+    return {"ok": True}
+
+
 class OrderIn(BaseModel):
     ids: list[int]
 

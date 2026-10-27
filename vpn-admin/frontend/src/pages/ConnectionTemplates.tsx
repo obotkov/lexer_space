@@ -155,6 +155,11 @@ export function ConnectionTemplates() {
         <button className="btn btn-small btn-primary" onClick={() => setEditing("new")}>
           + Добавить подключение
         </button>
+        {data.templates.length > 0 && (
+          <button className="btn btn-small" onClick={() => run(() => api.enableAllConnections(enabled.length < data.templates.length))}>
+            {enabled.length < data.templates.length ? "Включить все" : "Выключить все"}
+          </button>
+        )}
       </div>
 
       {data.templates.length === 0 ? (
