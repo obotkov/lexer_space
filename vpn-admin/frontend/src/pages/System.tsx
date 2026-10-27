@@ -134,7 +134,7 @@ export function System({ check, onCheck }: { check: UpdateCheck | null; onCheck:
           {check && <div className="muted small">Проверено {formatDateTime(check.checked_at * 1000)}</div>}
           <div className="card-actions">
             <button className="btn" onClick={runCheck} disabled={checking || active}>
-              {checking ? "Проверяю…" : "Проверить обновления"}
+              {checking ? "Проверяю…" : "Проверить"}
             </button>
             {check?.update_available && version?.updater && (
               <button className="btn btn-primary" onClick={startUpdate} disabled={active}>
