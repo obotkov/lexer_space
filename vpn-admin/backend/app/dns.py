@@ -2,7 +2,8 @@
 
 The A record is created as soon as the server has its IP, without Cloudflare's proxy (VPN traffic and
 Let's Encrypt's HTTP check must reach the server itself), follows the node to a new server on reinstall
-and goes away with the server. Tokens are stored encrypted like hosting keys.
+and goes away with the server. A connection through the CDN gets a second name of its own, proxied by
+Cloudflare, so its clients never see the server's IP. Tokens are stored encrypted like hosting keys.
 """
 
 import asyncio
@@ -82,11 +83,11 @@ class Cloudflare:
         data = await self._request("GET", f"/zones/{zone_id}/dns_records", params={"type": "A", "name": name})
         return next(iter(data.get("result") or []), None)
 
-    async def upsert_a(self, zone_id: str, name: str, ip: str) -> str:
-        """Point `name` at `ip` (DNS only, automatic TTL); returns the record ID."""
+    async def upsert_a(self, zone_id: str, name: str, ip: str, proxied: bool = False) -> str:
+        """Point `name` at `ip` (automatic TTL), DNS only or through Cloudflare's proxy; returns the record ID."""
         record = await self.find_a(zone_id, name)
-        body = {"type": "A", "name": name, "content": ip, "ttl": 1, "proxied": False,
-                "comment": "vpn-admin: узел 3x-ui"}
+        body = {"type": "A", "name": name, "content": ip, "ttl": 1, "proxied": proxied,
+                "comment": "vpn-admin: CDN-подключение узла" if proxied else "vpn-admin: узел 3x-ui"}
         if record:
             data = await self._request("PATCH", f"/zones/{zone_id}/dns_records/{record['id']}", json=body)
         else:
@@ -152,9 +153,9 @@ async def existing_a(account_id: int, zone_id: str, name: str) -> str | None:
     return record.get("content") if record else None
 
 
-async def point(account_id: int, zone_id: str, name: str, ip: str) -> str:
+async def point(account_id: int, zone_id: str, name: str, ip: str, proxied: bool = False) -> str:
     return await _with_client(_account(account_id).credentials.get("token", ""),
-                              lambda c: c.upsert_a(zone_id, name, ip))
+                              lambda c: c.upsert_a(zone_id, name, ip, proxied))
 
 
 async def remove(account_id: int, zone_id: str, record_id: str) -> None:

@@ -512,6 +512,13 @@ async def _step_boot(p: db.Provision) -> None:
                     raise ProvisionError(f"Не удалось создать A-запись {p.domain}: {exc}") from exc
                 _set(p, dns_record_id=record_id)
                 _log(p, f"Cloudflare: A-запись {p.domain} → {p.ip} (без проксирования)")
+                for item in p.connections:  # a reinstall onto a new server: its CDN names follow the node
+                    if item.get("cdn_record_id"):
+                        try:
+                            await dns.point(p.dns_account_id, p.dns_zone_id, item["cdn_domain"], p.ip, proxied=True)
+                            _log(p, f"Cloudflare: CDN-запись {item['cdn_domain']} → {p.ip}")
+                        except dns.DNSError as exc:
+                            _log(p, f"Cloudflare: CDN-запись {item['cdn_domain']} не переведена на {p.ip}: {exc}")
             elif p.domain and not p.in_place:
                 _log(p, f"Создайте у регистратора домена A-запись {p.domain} → {p.ip}: установка ждёт её до "
                         f"{DNS_WAIT // 60} минут, иначе возьмёт сертификат Let's Encrypt на IP")
@@ -807,7 +814,38 @@ def _target(p: db.Provision) -> connections.Target:
                               region=p.labels.get("region") or p.region)
 
 
+async def _cdn_names(p: db.Provision) -> None:
+    """A CDN connection gets its name before its inbound: the template's own CDN domain, or a name in the
+    server's Cloudflare zone pointed at it through Cloudflare's proxy (the node's IP stays hidden)."""
+    for item in p.connections:
+        if item["kind"] != "vless_xhttp_cdn" or item.get("cdn_domain") or item.get("skip") or item.get("inbound_id"):
+            continue
+        o = item["options"]
+        if o.get("cdn_domain"):
+            item.update(cdn_domain=o["cdn_domain"], cdn_port=443)  # the CDN's own setup leads it to this port
+            continue
+        if not p.dns_account_id:  # the reason shows up when its inbound cannot be built
+            item["cdn_error"] = ("у сервера нет домена Cloudflare: закажите его с доменом Cloudflare или задайте "
+                                 "свой CDN-домен в шаблоне")
+            continue
+        try:
+            zone = await dns.zone_name(p.dns_account_id, p.dns_zone_id)
+            label = connections.fill(o.get("cdn_subdomain") or "cdn-{server}", _target(p).macros).replace(" ", "-")
+            name = f"{label}.{zone}".lower()
+            if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", name):
+                raise dns.DNSError(f"имя {name} не годится для DNS: в шаблоне только латиница, цифры и дефис")
+            record_id = await dns.point(p.dns_account_id, p.dns_zone_id, name, p.ip, proxied=True)
+        except dns.DNSError as exc:
+            item["cdn_error"] = f"CDN-домен не создан: {exc}"
+            continue
+        item.pop("cdn_error", None)
+        item.update(cdn_domain=name, cdn_port=item["port"], cdn_record_id=record_id)
+        _log(p, f"Cloudflare: CDN-запись {name} → {p.ip} (через прокси Cloudflare, порт {item['port']})")
+    _set(p, connections=p.connections)
+
+
 async def _roll_out(p: db.Provision) -> None:
+    await _cdn_names(p)
     _, xui = await nodes.main_panel(p.panel_id)
     try:
         await connections.rollout(xui, p.node_id, p.connections, _target(p), lambda m: _log(p, m),
@@ -1167,12 +1205,14 @@ async def delete_hosted_server(hoster: db.Hoster, server_id: str) -> dict:
     note(f"Сервер {name} удалён у хостинга")
     for p in jobs:
         _set(p, state="deleted")
-        if p.dns_account_id and p.dns_record_id:
+        records = [(p.dns_record_id, f"A-запись {p.domain}")] if p.dns_record_id else []
+        records += [(c["cdn_record_id"], f"CDN-запись {c['cdn_domain']}") for c in p.connections if c.get("cdn_record_id")]
+        for record_id, what in records if p.dns_account_id else []:
             try:
-                await dns.remove(p.dns_account_id, p.dns_zone_id, p.dns_record_id)
-                _log(p, f"Cloudflare: A-запись {p.domain} удалена")
+                await dns.remove(p.dns_account_id, p.dns_zone_id, record_id)
+                _log(p, f"Cloudflare: {what} удалена")
             except dns.DNSError as exc:  # the server is gone already; a stale record is only a leftover
-                _log(p, f"Cloudflare: A-запись {p.domain} не удалена: {exc}")
+                _log(p, f"Cloudflare: {what} не удалена: {exc}")
     return {"server": name, "nodes": [n["name"] for n in plan["nodes"]],
             "inbounds": sum(len(n["inbounds"]) for n in plan["nodes"])}
 

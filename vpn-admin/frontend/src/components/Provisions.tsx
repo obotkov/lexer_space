@@ -206,7 +206,7 @@ export function Provisions({
                     <span
                       key={i}
                       className={`badge ${c.inbound_id ? "badge-active" : c.error ? "badge-expired" : "badge-disabled"}`}
-                      title={c.error || `${c.title}, порт ${c.port}${c.net === "tcp" ? "" : `/${c.net === "both" ? "tcp+udp" : c.net}`}`}
+                      title={c.error || `${c.title}${c.cdn_domain ? `, через ${c.cdn_domain}` : ""}, порт ${c.port}${c.net === "tcp" ? "" : `/${c.net === "both" ? "tcp+udp" : c.net}`}`}
                     >
                       {c.remark || c.title} :{c.port}
                       {c.net === "udp" ? "/udp" : ""}

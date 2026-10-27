@@ -37,12 +37,25 @@ const OPTION_LABELS: Record<string, { label: string; hint?: string }> = {
   variant: { label: "Параметры маскировки" },
   dns: { label: "DNS для клиентов" },
   domain: { label: "Домен FakeTLS", hint: "Под какой сайт маскируется прокси Telegram" },
+  cdn_subdomain: {
+    label: "Имя в Cloudflare",
+    hint: "Поддомен в домене Cloudflare сервера, с проксированием через Cloudflare. Работают макросы {server}, {region} и другие, но в имени остаются только латиница, цифры и дефис",
+  },
+  cdn_domain: {
+    label: "Свой CDN-домен",
+    hint: "Пусто: админка сама создаёт имя в Cloudflare. Укажите домен другого CDN (например, из белого списка оператора) — тогда запись и проксирование на порт подключения настраиваются в этом CDN вручную, клиенты ходят на 443",
+  },
+  uplink: { label: "Как клиент отправляет данные" },
 };
 
 const CHOICE_LABELS: Record<string, Record<string, string>> = {
   flow: { "xtls-rprx-vision": "xtls-rprx-vision", "": "без flow" },
   variant: { classic: "Классические: AmneziaVPN, Mihomo, роутеры Keenetic", full: "AmneziaWG 3.1: только приложения AmneziaVPN/AmneziaWG" },
   mode: { auto: "auto", "packet-up": "packet-up", "stream-up": "stream-up", "stream-one": "stream-one" },
+  uplink: {
+    "get-header": "GET-запросами, данные в заголовках по 6000 байт: проходит через фильтры, но медленнее",
+    "post-body": "POST-запросами (обычный packet-up): быстрее",
+  },
 };
 
 function portText(t: { port: number; net: ConnectionNet }) {
@@ -73,6 +86,8 @@ function summary(t: ConnectionTemplate): string {
       return `${o.subnet} · ${o.variant === "full" ? "AmneziaWG 3.1" : "классические параметры"}`;
     case "mtproto":
       return String(o.domain);
+    case "vless_xhttp_cdn":
+      return `${o.cdn_domain || `${o.cdn_subdomain}.<домен Cloudflare>`} · ${o.uplink === "get-header" ? "GET в заголовках" : "POST"}`;
     default:
       return "";
   }
@@ -449,7 +464,16 @@ function TemplateDialog({
           </small>
         </label>
 
-        {kind.tls && (
+        {kind.ports && (
+          <div className="notice notice-info small">
+            Клиенты подключаются к CDN-домену, Cloudflare проксирует запросы на сервер, поэтому IP сервера им не виден. Нужен сервер,
+            заказанный с доменом Cloudflare: админка создаст для подключения отдельное имя в этом домене с включённым проксированием и
+            пропишет его в ссылки (External Proxy). В Cloudflare для домена режим SSL/TLS должен быть «Full» — не «Flexible» и не
+            «Full (strict)»: сервер отвечает своим сертификатом, а не сертификатом на CDN-имя.
+          </div>
+        )}
+
+        {kind.tls && !kind.ports && (
           <div className="notice notice-info small">
             Использует сертификат сервера, который получает установка: Let's Encrypt на домен или IP. Если сервер остался с самоподписанным
             сертификатом, в ссылки попадёт его отпечаток.
@@ -477,6 +501,23 @@ function TemplateDialog({
           </small>
         </div>
 
+        {kind.ports ? (
+          <label className="field">
+            <span>Порт</span>
+            <select className="input mono" value={port} onChange={(e) => setPort(Number(e.target.value))}>
+              {kind.ports.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+            <small className="muted">
+              Cloudflare проксирует HTTPS только на эти порты и приходит на сервер на тот же порт. 443 обычно занят REALITY и Hysteria2: если
+              порт на сервере занят, подключение возьмёт следующий свободный из списка.
+            </small>
+          </label>
+        ) : (
+        <>
         <div className="field-row">
           <label className="field">
             <span>Порт</span>
@@ -501,6 +542,8 @@ function TemplateDialog({
             ? "Если на сервере этот порт уже занят (панелью, подпиской, сайтом-заглушкой на 80 или другим подключением), подключение получит случайный."
             : "Каждому серверу свой свободный пятизначный порт."}
         </small>
+        </>
+        )}
 
         {Object.entries(kind.options).map(([name, spec]) => {
           const meta = OPTION_LABELS[name] ?? { label: name };

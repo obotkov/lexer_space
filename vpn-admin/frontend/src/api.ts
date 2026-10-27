@@ -584,6 +584,8 @@ export interface ProvisionConnection {
   /** inbound of the main panel bound to the node; null until created */
   inbound_id: number | null;
   error: string;
+  /** a connection through a CDN: the name its clients connect to */
+  cdn_domain: string;
 }
 
 export type ConnectionOptionValue = string | number | boolean;
@@ -597,6 +599,8 @@ export interface ConnectionKind {
   tls: boolean;
   /** suggested port; 0 = random */
   port: number;
+  /** the only ports it may take (Cloudflare proxies only these); null = any */
+  ports: number[] | null;
   remark: string;
   note: string;
   options: Record<string, { default: ConnectionOptionValue; choices: ConnectionOptionValue[] | null }>;
