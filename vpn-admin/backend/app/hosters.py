@@ -167,9 +167,26 @@ OVH_DISCOVERY_HINT = (
     "затем нажмите «Повторить»")
 
 
+def _quota_error(data: dict, provider: str) -> HosterError:
+    """Scaleway: {"type": "quotas_exceeded", "details": [{"resource": "instances_stardust1_s", "quota": 0, "current": 0}]}"""
+    details = [d for d in data.get("details") or [] if isinstance(d, dict)]
+    what = "; ".join(f"{d.get('resource', '?')} — лимит {d.get('quota', '?')}, занято {d.get('current', '?')}"
+                     for d in details)
+    if any(d.get("quota") == 0 for d in details):
+        hint = ("ресурс недоступен организации, пока не подтверждены способ оплаты и личность: в консоли Scaleway "
+                "добавьте карту (Billing → Payment methods) и пройдите Verify identity (Organization → Settings), "
+                "либо выберите другой тариф")
+    else:
+        hint = ("удалите ненужные серверы или IP этого типа или выберите другой тариф. У STARDUST1 лимит 1 сервер "
+                "на организацию; остальные лимиты — Organization → Quotas, поднять их можно через поддержку Scaleway")
+    return HosterError(f"{provider}: исчерпана квота организации{' (' + what + ')' if what else ''}: {hint}", "QUOTA")
+
+
 def _http_error(resp: httpx.Response, provider: str) -> HosterError:
     try:
         data = resp.json()
+        if data.get("type") == "quotas_exceeded":
+            return _quota_error(data, provider)
         detail = data.get("message") or data.get("error") or data.get("id") or ""
         for needle, code, hint in OVH_ERROR_HINTS:
             if needle in detail.lower() or data.get("errorCode") == code:
@@ -1072,7 +1089,8 @@ class Scaleway:
                 plan = plans.setdefault(name, {
                     "id": name, "label": name, "regions": [], "currency": "EUR",
                     "specs": f"{t.get('ncpus')} vCPU · {round((t.get('ram') or 0) / 1024 ** 3, 1):g} GB"
-                             + (f" · {t['arch']}" if t.get("arch") and t["arch"] != "x86_64" else ""),
+                             + (f" · {t['arch']}" if t.get("arch") and t["arch"] != "x86_64" else "")
+                             + (" · не больше 1 на организацию" if name.startswith("STARDUST") else ""),
                     "price_hour": t.get("hourly_price"), "price_month": t.get("monthly_price"), "price_month_plan": None})
                 plan["regions"].append(z)
         ordered = sorted(plans.values(), key=lambda p: (p["price_hour"] is None, p["price_hour"] or 0, p["id"]))
