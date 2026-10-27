@@ -1032,13 +1032,27 @@ class UpCloud:
         return [self._view(s, by_server.get(s.get("uuid"), []))
                 for s in ((servers or {}).get("servers") or {}).get("server") or []]
 
+    async def _templates(self) -> list[dict]:
+        """Ubuntu cloud-init templates, preferred first (24.04, then 22.04; newest of each first)."""
+        data = await self._request("GET", "/storage/template")
+        found = [t for t in ((data or {}).get("storages") or {}).get("storage") or []
+                 if t.get("template_type", "cloud-init") == "cloud-init"]
+        return [t for want in self.images for t in sorted(found, key=lambda t: t.get("title") or "", reverse=True)
+                if (t.get("title") or "").startswith(want)]
+
+    @staticmethod
+    def _fitting(templates: list[dict], disk_gb: int) -> dict | None:
+        """The disk of a plan cannot be smaller than the template it is cloned from."""
+        return next((t for t in templates if (t.get("size") or 0) <= disk_gb), None)
+
     async def create_options(self, project: str | None = None) -> dict:
-        zones, plans, prices, details = await asyncio.gather(
+        zones, plans, prices, details, templates = await asyncio.gather(
             self._request("GET", "/zone"), self._request("GET", "/plan"), self._request("GET", "/price"),
-            self._request("GET", "/account/details"), return_exceptions=True)
+            self._request("GET", "/account/details"), self._templates(), return_exceptions=True)
         for result in (zones, plans, prices):
             if isinstance(result, Exception):
                 raise result
+        templates = templates if isinstance(templates, list) else []
         # prices come in the account's currency
         currency = ((details or {}).get("account") or {}).get("currency", "EUR") if isinstance(details, dict) else "EUR"
         public = [z for z in ((zones or {}).get("zones") or {}).get("zone") or [] if z.get("public") == "yes"]
@@ -1048,6 +1062,8 @@ class UpCloud:
             name = plan.get("name", "")
             if "GPU" in name.upper():
                 continue
+            if templates and not self._fitting(templates, plan.get("storage_size") or 0):
+                continue  # e.g. a 10 GB plan when the Ubuntu images are larger
             key = f"server_plan_{name}"
             regions = [z["id"] for z in public if key in price_by_zone.get(z["id"], {})]
             if not regions:
@@ -1071,13 +1087,16 @@ class UpCloud:
 
     async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
                             project: str | None = None, admin_key: str | None = None) -> str:
-        templates, plans = await asyncio.gather(self._request("GET", "/storage/template"), self._request("GET", "/plan"))
-        candidates = [t for t in ((templates or {}).get("storages") or {}).get("storage") or []
-                      if t.get("template_type", "cloud-init") == "cloud-init"]
-        template = next((t for want in self.images for t in candidates if (t.get("title") or "").startswith(want)), None)
-        if not template:
+        templates, plans = await asyncio.gather(self._templates(), self._request("GET", "/plan"))
+        if not templates:
             raise HosterError("UpCloud: нет шаблона Ubuntu 24.04 / 22.04 с cloud-init")
         spec = next((p for p in ((plans or {}).get("plans") or {}).get("plan") or [] if p.get("name") == plan), {})
+        disk = spec.get("storage_size") or 25
+        template = self._fitting(templates, disk)
+        if not template:
+            smallest = min(t.get("size") or 0 for t in templates)
+            raise HosterError(f"UpCloud: образ Ubuntu занимает {smallest} ГБ, а диск тарифа {plan} — {disk} ГБ. "
+                              f"Выберите тариф с диском от {smallest} ГБ", "SIZE_INVALID")
         keys = [k for k in (admin_key, self.user_key) if k]
         body = {"server": {
             "zone": region, "title": name, "hostname": name, "plan": plan, "metadata": "yes", "user_data": user_data,
@@ -1085,7 +1104,7 @@ class UpCloud:
             "login_user": {"username": "root", "ssh_keys": {"ssh_key": keys}},
             "storage_devices": {"storage_device": [{
                 "action": "clone", "storage": template["uuid"], "title": f"{name}-disk",
-                "size": spec.get("storage_size") or 25, "tier": spec.get("storage_tier") or "maxiops"}]},
+                "size": disk, "tier": spec.get("storage_tier") or "maxiops"}]},
             "networking": {"interfaces": {"interface": [
                 {"index": 1, "type": "public", "ip_addresses": {"ip_address": [{"family": "IPv4"}]}},
                 {"index": 2, "type": "public", "ip_addresses": {"ip_address": [{"family": "IPv6"}]}},
