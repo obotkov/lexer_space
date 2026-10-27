@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { api, type HosterInfo, type HosterServer, type ServerDeletePlan } from "../api";
 
 /** Delete a hosting's server: first the connections of the node it runs (inbounds in the main panel), then the
- * node, then the server itself. The name has to be typed, the server goes with all its data. */
+ * node, then the server itself. */
 export function DeleteServerDialog({
   hoster,
   server,
@@ -17,7 +17,6 @@ export function DeleteServerDialog({
   onDeleted: () => void;
 }) {
   const [plan, setPlan] = useState<ServerDeletePlan | null>(null);
-  const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -90,22 +89,13 @@ export function DeleteServerDialog({
           <div className="muted small">Узлом основной панели этот сервер не подключён: удалится только сам сервер.</div>
         )}
 
-        {plan && (
-          <label className="field">
-            <span>
-              Для подтверждения введите имя сервера: <b>{server.name}</b>
-            </span>
-            <input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus autoComplete="off" disabled={busy} />
-          </label>
-        )}
-
         {error && <div className="notice notice-bad small">{error}</div>}
 
         <div className="modal-actions">
           <button type="button" className="btn" onClick={onClose} disabled={busy}>
             Отмена
           </button>
-          <button className="btn btn-danger" disabled={!plan || busy || typed.trim() !== server.name}>
+          <button className="btn btn-danger" disabled={!plan || busy}>
             {busy ? (inbounds ? "Удаляю подключения, узел и сервер…" : "Удаляю…") : "Удалить сервер"}
           </button>
         </div>
