@@ -1,13 +1,9 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, type CreateOptions, type HosterInfo, type HostingPlan, type PanelInfo } from "../api";
 import { formatPrice } from "../format";
 
 const randomSuffix = () => Math.random().toString(36).slice(2, 6);
 
-const shortPrice = (p: HostingPlan) =>
-  [p.price_hour != null && `${formatPrice(p.price_hour, p.currency)}/ч`, p.price_month != null && `≈${formatPrice(p.price_month, p.currency)}/мес`]
-    .filter(Boolean)
-    .join(" · ");
 
 /** Order a server at a hosting account; the admin installs 3x-ui on it and attaches it as a node. */
 export function CreateServerDialog({
@@ -131,19 +127,15 @@ export function CreateServerDialog({
               </label>
             </div>
 
-            <label className="field">
-              <span>Тариф</span>
-              <select className="input" required value={planId} onChange={(e) => setPlan(e.target.value)}>
-                {plans.length === 0 && <option value="">В этом регионе нет доступных тарифов</option>}
-                {plans.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {[p.label, p.specs, shortPrice(p)].filter(Boolean).join(" — ")}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            {chosen && <PlanPrice plan={chosen} provider={hoster.provider} />}
+            <div className="field">
+              <span id="plan-label">Тариф</span>
+              {plans.length === 0 ? (
+                <small className="muted">В этом регионе нет доступных тарифов</small>
+              ) : (
+                <PlanList plans={plans} value={planId} onChange={setPlan} />
+              )}
+              {chosen && <PlanNote plan={chosen} provider={hoster.provider} />}
+            </div>
 
             <div className="field">
               <span>SSH-ключ для входа на сервер</span>
@@ -209,27 +201,46 @@ export function CreateServerDialog({
   );
 }
 
-function PlanPrice({ plan, provider }: { plan: HostingPlan; provider: string }) {
-  if (plan.price_hour == null && plan.price_month == null)
-    return <div className="muted small">Цена тарифа {plan.label} не найдена в прайс-листе хостинга: посмотрите её в панели хостинга.</div>;
-  const money = (v: number) => formatPrice(v, plan.currency);
+/** Plans as radio rows: name and resources on the left, price per month and per hour on the right. */
+function PlanList({ plans, value, onChange }: { plans: HostingPlan[]; value: string; onChange: (id: string) => void }) {
+  const selected = useRef<HTMLLabelElement>(null);
+
+  // keep the chosen plan in sight when the list changes (another region or project)
+  useEffect(() => {
+    selected.current?.scrollIntoView({ block: "nearest" });
+  }, [plans]);
+
   return (
-    <div className="price-box">
-      <div className="price-item">
-        <span className="muted small">В час</span>
-        <span className="price-value">{plan.price_hour != null ? money(plan.price_hour) : "—"}</span>
-      </div>
-      <div className="price-item">
-        <span className="muted small">В месяц</span>
-        <span className="price-value">{plan.price_month != null ? `≈ ${money(plan.price_month)}` : "—"}</span>
-      </div>
-      <div className="muted small price-note">
-        {provider === "digitalocean"
-          ? "Оплата почасовая, но за месяц не больше месячной цены тарифа. Платёж идёт, пока сервер существует, даже выключенный. Цены без налогов."
-          : `Почасовая оплата, месяц — 730 часов. ${
-              plan.price_month_plan != null ? `С помесячной оплатой этот тариф стоит ${money(plan.price_month_plan)} в месяц: её можно включить для сервера в панели OVHcloud. ` : ""
-            }Цены без налогов.`}
-      </div>
+    <div className="plan-list" role="radiogroup" aria-labelledby="plan-label">
+      {plans.map((p) => (
+        <label key={p.id} ref={p.id === value ? selected : undefined} className={`plan-row ${p.id === value ? "selected" : ""}`}>
+          <input type="radio" name="plan" value={p.id} checked={p.id === value} onChange={() => onChange(p.id)} />
+          <span className="plan-info">
+            <span className="strong">{p.label}</span>
+            <span className="muted small">{p.specs}</span>
+          </span>
+          <span className="plan-price">
+            {p.price_month != null ? <span className="strong">≈ {formatPrice(p.price_month, p.currency)}/мес</span> : <span className="muted">цена неизвестна</span>}
+            {p.price_hour != null && <span className="muted small">{formatPrice(p.price_hour, p.currency)}/ч</span>}
+          </span>
+        </label>
+      ))}
     </div>
+  );
+}
+
+function PlanNote({ plan, provider }: { plan: HostingPlan; provider: string }) {
+  if (plan.price_hour == null && plan.price_month == null)
+    return <small className="muted">Цена тарифа {plan.label} не найдена в прайс-листе хостинга: посмотрите её в панели хостинга.</small>;
+  return (
+    <small className="muted">
+      {provider === "digitalocean"
+        ? "Оплата почасовая, но за месяц не больше месячной цены тарифа. Платёж идёт, пока сервер существует, даже выключенный. Цены без налогов."
+        : `Почасовая оплата, месяц — 730 часов. ${
+            plan.price_month_plan != null
+              ? `С помесячной оплатой ${plan.label} стоит ${formatPrice(plan.price_month_plan, plan.currency)} в месяц: её можно включить для сервера в панели OVHcloud. `
+              : ""
+          }Цены без налогов.`}
+    </small>
   );
 }
