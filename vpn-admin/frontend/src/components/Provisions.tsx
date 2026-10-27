@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, type HosterInfo, type Provision, type ProvisionCredentials, type ProvisionStep } from "../api";
+import { api, type HosterInfo, type HosterProvider, type Provision, type ProvisionCredentials, type ProvisionStep } from "../api";
 
 const STEPS: { id: ProvisionStep; title: string }[] = [
   { id: "create", title: "Заказ сервера" },
@@ -21,10 +21,12 @@ const time = (ts: number) => new Date(ts * 1000).toLocaleTimeString("ru-RU", { h
 export function Provisions({
   items,
   accounts,
+  providers,
   onChanged,
 }: {
   items: Provision[];
   accounts: HosterInfo[];
+  providers: Record<string, HosterProvider>;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState<number | null>(null);
@@ -77,9 +79,19 @@ export function Provisions({
               <div className="card-head">
                 <div>
                   <div className="strong">{p.name}</div>
-                  <div className="muted small">
-                    {[account?.name ?? "аккаунт удалён", p.region, p.plan, p.ip].filter(Boolean).join(" · ")}
+                  <div className="provision-source small">
+                    {account ? (
+                      <>
+                        <span className={`provider-badge provider-badge-small provider-${account.provider}`}>
+                          {providers[account.provider]?.title ?? account.provider}
+                        </span>
+                        <span>{account.name}</span>
+                      </>
+                    ) : (
+                      <span className="muted">аккаунт удалён</span>
+                    )}
                   </div>
+                  <div className="muted small">{[p.region, p.plan, p.ip].filter(Boolean).join(" · ")}</div>
                 </div>
                 <span className={`badge ${badgeClass}`}>{badgeText}</span>
               </div>

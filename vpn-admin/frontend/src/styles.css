@@ -353,6 +353,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* new servers (provisioning jobs) */
 .provisions { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }
 .provision { gap: 12px; }
+.provision-source { display: flex; align-items: center; gap: 8px; margin: 4px 0 2px; min-width: 0; }
+.provider-badge-small { padding: 1px 7px; font-size: 11px; }
 .provision .card-actions { flex-wrap: wrap; }
 .steps { display: flex; gap: 6px; margin: 0; padding: 0; list-style: none; flex-wrap: wrap; }
 .step { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding: 4px 10px 4px 4px;

@@ -116,6 +116,7 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
         <Provisions
           items={provisions}
           accounts={accounts}
+          providers={providers}
           onChanged={() => {
             loadProvisions();
             load(true);
