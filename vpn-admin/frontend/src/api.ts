@@ -450,6 +450,8 @@ export interface CreateOptions {
   regions: { id: string; name: string }[];
   plans: HostingPlan[];
   ssh_keys: { id: string; name: string }[];
+  /** shown instead of the key list when the hosting adds SSH keys by itself */
+  ssh_note?: string;
 }
 
 export interface ProvisionForm {

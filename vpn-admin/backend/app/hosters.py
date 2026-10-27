@@ -31,6 +31,9 @@ OVH_ENDPOINTS = {
     "ovh-ca": os.getenv("OVH_CA_API_URL", "https://ca.api.ovh.com/1.0"),
     "ovh-us": os.getenv("OVH_US_API_URL", "https://api.us.ovhcloud.com/1.0"),
 }
+SCW_API_URL = os.getenv("SCW_API_URL", "https://api.scaleway.com")
+SCW_ZONES = ["fr-par-1", "fr-par-2", "fr-par-3", "nl-ams-1", "nl-ams-2", "nl-ams-3",
+             "pl-waw-1", "pl-waw-2", "pl-waw-3", "it-mil-1"]
 # VDSina keeps separate accounts on its international and Russian sites, priced in different currencies
 VDSINA_ENDPOINTS = {
     "vdsina-com": (os.getenv("VDSINA_COM_API_URL", "https://userapi.vdsina.com/v1"), "USD"),
@@ -91,6 +94,18 @@ PROVIDERS: dict[str, dict[str, Any]] = {
             "ovh-us": "https://api.us.ovhcloud.com/createToken/?GET=/*&POST=/*&PUT=/*&DELETE=/*",
         },
     },
+    "scaleway": {
+        "title": "Scaleway",
+        "site": "https://www.scaleway.com",
+        "fields": [
+            {"key": "project_id", "label": "Project ID", "secret": False, "placeholder": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"},
+            {"key": "secret_key", "label": "Secret Key", "secret": True},
+        ],
+        "help": "Console → IAM → API keys → Generate API key: Secret Key показывается один раз. У ключа нужны права "
+                "на Instances и Block Storage (например, InstancesFullAccess и BlockStorageFullAccess). "
+                "Project ID — в Console → Project settings.",
+        "help_url": "https://console.scaleway.com/iam/api-keys",
+    },
     "vdsina": {
         "title": "VDSina",
         "site": "https://www.vdsina.com",
@@ -146,9 +161,10 @@ def _http_error(resp: httpx.Response, provider: str) -> HosterError:
     except (ValueError, AttributeError):
         detail = resp.text[:200]
     if resp.status_code == 401:
-        return HosterError(f"{provider}: ключ не принят (401){': ' + detail if detail else ''}")
+        return HosterError(f"{provider}: ключ не принят (401){': ' + detail if detail else ''}", "HTTP_401")
     if resp.status_code == 403:
-        return HosterError(f"{provider}: у ключа нет прав на это действие (403){': ' + detail if detail else ''}")
+        return HosterError(f"{provider}: у ключа нет прав на это действие (403){': ' + detail if detail else ''}",
+                           "HTTP_403")
     return HosterError(f"{provider}: HTTP {resp.status_code}{': ' + detail if detail else ''}")
 
 
@@ -173,6 +189,10 @@ OVH_PLACES = [
     ("ERI", "GB", "Лондон"), ("PAR", "FR", "Париж"), ("MIL", "IT", "Милан"), ("VIN", "US", "Вирджиния"),
     ("HIL", "US", "Орегон"),
 ]
+
+# Scaleway zones: fr-par-1, nl-ams-2…
+SCW_PLACES = [("fr-par", "FR", "Париж"), ("nl-ams", "NL", "Амстердам"), ("pl-waw", "PL", "Варшава"),
+              ("it-mil", "IT", "Милан")]
 
 # DigitalOcean slugs: fra1, nyc3…
 DO_PLACES = [
@@ -764,7 +784,184 @@ class VDSina:
                 await self._request("DELETE", f"/ssh-key/{key['id']}")
 
 
-CLIENTS = {"digitalocean": DigitalOcean, "ovh": OVHcloud, "vdsina": VDSina}
+class Scaleway:
+    """Scaleway Instance API v1 (zonal): secret key in X-Auth-Token, servers live in a project.
+    A server is created stopped with a routed IPv4, gets the cloud-init script and is then powered on;
+    the IDs kept by the admin are "zone/uuid". Project SSH keys are added to new servers by Scaleway itself."""
+    title = "Scaleway"
+    images = ("ubuntu_noble", "ubuntu_jammy")
+    state_map = {"running": "running", "starting": "pending", "stopping": "stopped", "stopped": "stopped",
+                 "stopped in place": "stopped", "locked": "error"}
+    state_labels = {"running": "Работает", "starting": "Запускается", "stopping": "Останавливается",
+                    "stopped": "Выключен", "stopped in place": "Выключен", "locked": "Заблокирован"}
+
+    def __init__(self, credentials: dict[str, str]):
+        self.project = credentials.get("project_id", "").strip()
+        secret = credentials.get("secret_key", "").strip()
+        if not (self.project and secret):
+            raise HosterError("Укажите Project ID и Secret Key Scaleway")
+        self.http = httpx.AsyncClient(base_url=SCW_API_URL, timeout=TIMEOUT,
+                                      headers={"X-Auth-Token": secret, "User-Agent": "vpn-admin"})
+
+    async def close(self) -> None:
+        await self.http.aclose()
+
+    async def _request(self, method: str, path: str, params: dict | None = None, json: dict | None = None,
+                       content: str | None = None) -> Any:
+        headers = {"Content-Type": "text/plain"} if content is not None else None
+        try:
+            resp = await self.http.request(method, path, params=params, json=json, content=content, headers=headers)
+        except httpx.HTTPError as exc:
+            raise HosterError(f"Scaleway недоступен: {exc}") from exc
+        if resp.status_code == 404:
+            raise HosterError("Scaleway: не найдено", "NOT_FOUND")
+        if resp.status_code >= 400:
+            raise _http_error(resp, self.title)
+        return resp.json() if resp.content and "json" in resp.headers.get("content-type", "") else None
+
+    async def account(self) -> dict:
+        try:
+            project = await self._request("GET", f"/account/v3/projects/{self.project}")
+        except HosterError as exc:
+            if exc.code == "NOT_FOUND":
+                raise HosterError("Scaleway: проект с таким Project ID не найден") from exc
+            if exc.code != "HTTP_403":
+                raise
+            # a key limited to Instances cannot read the project: checking access to servers is enough
+            await self._request("GET", f"/instance/v1/zones/{SCW_ZONES[0]}/servers",
+                                params={"project": self.project, "per_page": 1})
+            project = {}
+        return {"login": project.get("name") or self.project, "name": "", "status": "", "balance": None,
+                "limits": f"организация {project['organization_id'][:8]}…" if project.get("organization_id") else ""}
+
+    def _view(self, s: dict) -> dict:
+        state = s.get("state", "")
+        ips = s.get("public_ips") or ([s["public_ip"]] if s.get("public_ip") else [])
+        v6 = [i["address"] for i in ips if i.get("family") == "inet6" and i.get("address")]
+        if (s.get("ipv6") or {}).get("address"):
+            v6.append(s["ipv6"]["address"])
+        return _server(
+            id=f"{s.get('zone')}/{s.get('id')}", name=s.get("name", ""), kind="Instance",
+            status=self.state_map.get(state, "unknown"), status_label=self.state_labels.get(state, state),
+            region=region_label(s.get("zone", ""), SCW_PLACES, with_code=False), plan=s.get("commercial_type", ""),
+            ipv4=[i["address"] for i in ips if i.get("family", "inet") == "inet" and i.get("address")], ipv6=v6,
+            created_at=s.get("creation_date", ""),
+        )
+
+    async def servers(self) -> list[dict]:
+        async def zone(z: str) -> list[dict]:
+            data = await self._request("GET", f"/instance/v1/zones/{z}/servers",
+                                       params={"project": self.project, "per_page": 100})
+            return [self._view(s) for s in (data or {}).get("servers") or []]
+
+        chunks = await asyncio.gather(*(zone(z) for z in SCW_ZONES), return_exceptions=True)
+        if all(isinstance(c, Exception) for c in chunks):
+            raise chunks[0]
+        return [s for c in chunks if isinstance(c, list) for s in c]
+
+    async def create_options(self, project: str | None = None) -> dict:
+        async def zone(z: str):
+            products, availability = await asyncio.gather(
+                self._request("GET", f"/instance/v1/zones/{z}/products/servers", params={"per_page": 100}),
+                self._request("GET", f"/instance/v1/zones/{z}/products/servers/availability", params={"per_page": 100}))
+            return z, (products or {}).get("servers") or {}, (availability or {}).get("servers") or {}
+
+        zones = [z for z in await asyncio.gather(*(zone(z) for z in SCW_ZONES), return_exceptions=True)
+                 if not isinstance(z, Exception)]
+        if not zones:
+            raise HosterError("Scaleway: не удалось получить тарифы ни в одной зоне")
+        plans: dict[str, dict] = {}
+        for z, products, availability in zones:
+            for name, t in products.items():
+                # no GPU or Windows types, nothing being retired, nothing out of stock in this zone
+                if t.get("end_of_service") or t.get("gpu") or "WIN" in name.upper():
+                    continue
+                if (availability.get(name) or {}).get("availability") == "shortage":
+                    continue
+                plan = plans.setdefault(name, {
+                    "id": name, "label": name, "regions": [], "currency": "EUR",
+                    "specs": f"{t.get('ncpus')} vCPU · {round((t.get('ram') or 0) / 1024 ** 3, 1):g} GB"
+                             + (f" · {t['arch']}" if t.get("arch") and t["arch"] != "x86_64" else ""),
+                    "price_hour": t.get("hourly_price"), "price_month": t.get("monthly_price"), "price_month_plan": None})
+                plan["regions"].append(z)
+        ordered = sorted(plans.values(), key=lambda p: (p["price_hour"] is None, p["price_hour"] or 0, p["id"]))
+        return {"projects": None, "project": None, "ssh_multiple": False, "ssh_keys": [],
+                "ssh_note": "SSH-ключи проекта Scaleway (Console → IAM → SSH keys) Scaleway сам добавит на сервер.",
+                "regions": sorted(({"id": z, "name": region_label(z, SCW_PLACES)} for z, _, _ in zones),
+                                  key=lambda r: r["name"]),
+                "plans": ordered}
+
+    async def _image(self, zone: str, plan: str) -> str:
+        for label in self.images:
+            data = await self._request("GET", "/marketplace/v2/local-images",
+                                       params={"image_label": label, "zone": zone, "type": "instance_sbs"})
+            for image in (data or {}).get("local_images") or []:
+                if plan in (image.get("compatible_commercial_types") or []):
+                    return image["id"]
+        raise HosterError(f"Scaleway: в зоне {zone} нет образа Ubuntu 24.04 / 22.04 для {plan}")
+
+    async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
+                            project: str | None = None, admin_key: str | None = None) -> str:
+        zone = region
+        image = await self._image(zone, plan)
+        ip = (await self._request("POST", f"/instance/v1/zones/{zone}/ips",
+                                  json={"project": self.project, "type": "routed_ipv4"}))["ip"]
+        try:
+            server = (await self._request("POST", f"/instance/v1/zones/{zone}/servers", json={
+                "name": name, "commercial_type": plan, "image": image, "project": self.project,
+                "public_ips": [ip["id"]], "dynamic_ip_required": False, "tags": ["vpn-admin"]}))["server"]
+        except HosterError:
+            await self._request("DELETE", f"/instance/v1/zones/{zone}/ips/{ip['id']}")
+            raise
+        # created stopped: the script must be in place before the first boot
+        await self._request("PATCH", f"/instance/v1/zones/{zone}/servers/{server['id']}/user_data/cloud-init",
+                            content=user_data)
+        await self._request("POST", f"/instance/v1/zones/{zone}/servers/{server['id']}/action",
+                            json={"action": "poweron"})
+        return f"{zone}/{server['id']}"
+
+    async def get_server(self, server_id: str, project: str | None = None) -> dict:
+        zone, sid = server_id.split("/", 1)
+        return self._view((await self._request("GET", f"/instance/v1/zones/{zone}/servers/{sid}"))["server"])
+
+    async def delete_server(self, server_id: str, project: str | None = None) -> None:
+        """terminate removes the server and local disks; its block volume and IP would keep costing, so they go too."""
+        zone, sid = server_id.split("/", 1)
+        try:
+            server = (await self._request("GET", f"/instance/v1/zones/{zone}/servers/{sid}"))["server"]
+        except HosterError as exc:
+            if exc.code == "NOT_FOUND":
+                return
+            raise
+        volumes = [v["id"] for v in (server.get("volumes") or {}).values() if v.get("volume_type") == "sbs_volume"]
+        ips = [i["id"] for i in server.get("public_ips") or [] if i.get("id") and not i.get("dynamic")]
+        await self._request("POST", f"/instance/v1/zones/{zone}/servers/{sid}/action", json={"action": "terminate"})
+        for _ in range(60):  # until the server is gone and its volume detached
+            try:
+                await self._request("GET", f"/instance/v1/zones/{zone}/servers/{sid}")
+            except HosterError as exc:
+                if exc.code == "NOT_FOUND":
+                    break
+                raise
+            await asyncio.sleep(3)
+        for volume in volumes:
+            for _ in range(20):
+                try:
+                    await self._request("DELETE", f"/block/v1alpha1/zones/{zone}/volumes/{volume}")
+                    break
+                except HosterError as exc:
+                    if exc.code == "NOT_FOUND":
+                        break
+                    await asyncio.sleep(3)  # still detaching
+        for ip in ips:
+            try:
+                await self._request("DELETE", f"/instance/v1/zones/{zone}/ips/{ip}")
+            except HosterError as exc:
+                if exc.code != "NOT_FOUND":
+                    raise
+
+
+CLIENTS = {"digitalocean": DigitalOcean, "ovh": OVHcloud, "vdsina": VDSina, "scaleway": Scaleway}
 
 
 # ---------- accounts ----------

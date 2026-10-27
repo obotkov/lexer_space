@@ -157,7 +157,9 @@ export function CreateServerDialog({
 
             <div className="field">
               <span>SSH-ключ для входа на сервер</span>
-              {options.ssh_keys.length === 0 ? (
+              {options.ssh_note ? (
+                <small className="muted">{options.ssh_note}</small>
+              ) : options.ssh_keys.length === 0 ? (
                 <small className="muted">В аккаунте нет SSH-ключей: сервер будет работать, но войти на него по SSH не получится. Ключ можно добавить в панели хостинга.</small>
               ) : options.ssh_multiple ? (
                 <div className="node-picker">
@@ -249,20 +251,26 @@ function PlanList({ plans, value, onChange }: { plans: HostingPlan[]; value: str
   );
 }
 
+/** How each hosting bills; OVHcloud's note depends on the plan and is built in PlanNote. */
+const BILLING_NOTES: Record<string, string> = {
+  digitalocean: "Оплата почасовая, но за месяц не больше месячной цены тарифа. Платёж идёт, пока сервер существует, даже выключенный. Цены без налогов.",
+  scaleway:
+    "Почасовая оплата, месяц — по прайсу Scaleway. Публичный IPv4 и диск сервера оплачиваются отдельно, обычно это ещё несколько евро в месяц. Цены без НДС.",
+  vdsina:
+    "Оплата посуточная с баланса аккаунта VDSina, месяц — 30 дней; цена в час — суточная, делённая на 24. Для заказа на балансе должно хватать средств на тариф.",
+};
+
 function PlanNote({ plan, provider }: { plan: HostingPlan; provider: string }) {
   if (plan.price_hour == null && plan.price_month == null)
     return <small className="muted">Цена тарифа {plan.label} не найдена в прайс-листе хостинга: посмотрите её в панели хостинга.</small>;
   return (
     <small className="muted">
-      {provider === "digitalocean"
-        ? "Оплата почасовая, но за месяц не больше месячной цены тарифа. Платёж идёт, пока сервер существует, даже выключенный. Цены без налогов."
-        : provider === "vdsina"
-          ? "Оплата посуточная с баланса аккаунта VDSina, месяц — 30 дней; цена в час — суточная, делённая на 24. Для заказа на балансе должно хватать средств на тариф."
-          : `Почасовая оплата, месяц — 730 часов. ${
-              plan.price_month_plan != null
-                ? `С помесячной оплатой ${plan.label} стоит ${formatPrice(plan.price_month_plan, plan.currency)} в месяц: её можно включить для сервера в панели OVHcloud. `
-                : ""
-            }Цены без налогов.`}
+      {BILLING_NOTES[provider] ??
+        `Почасовая оплата, месяц — 730 часов. ${
+          plan.price_month_plan != null
+            ? `С помесячной оплатой ${plan.label} стоит ${formatPrice(plan.price_month_plan, plan.currency)} в месяц: её можно включить для сервера в панели OVHcloud. `
+            : ""
+        }Цены без налогов.`}
     </small>
   );
 }
