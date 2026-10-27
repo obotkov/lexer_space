@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, type CreateOptions, type DnsAccount, type HosterInfo, type HostingPlan, type PanelInfo } from "../api";
 import { formatPrice } from "../format";
+import { StubTemplateSelect } from "./StubTemplateSelect";
 
 const randomSuffix = () => Math.random().toString(36).slice(2, 6);
 
@@ -36,6 +37,7 @@ export function CreateServerDialog({
   const [domain, setDomain] = useState("");
   const [zoneKey, setZoneKey] = useState(dnsAccounts[0] ? `${dnsAccounts[0].id}:${dnsAccounts[0].zones[0].id}` : "");
   const [subdomain, setSubdomain] = useState<string | null>(null); // null = follow the server name
+  const [siteTemplate, setSiteTemplate] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -95,6 +97,7 @@ export function CreateServerDialog({
         domain: address === "domain" ? domain.trim() : address === "cloudflare" ? cloudflareName : "",
         dns_account_id: address === "cloudflare" ? Number(dnsAccountId) : 0,
         dns_zone_id: address === "cloudflare" ? zoneId : "",
+        site_template: siteTemplate ?? "",
       });
       onStarted();
     } catch (err) {
@@ -264,6 +267,8 @@ export function CreateServerDialog({
               </small>
             </div>
 
+            <StubTemplateSelect value={siteTemplate} onChange={setSiteTemplate} />
+
             <label className="field">
               <span>Подключить узлом к основной панели</span>
               <select className="input" value={panelId} onChange={(e) => setPanelId(Number(e.target.value))} disabled={mainPanels.length === 0}>
@@ -276,11 +281,9 @@ export function CreateServerDialog({
             </label>
 
             <div className="notice notice-info small">
-              На сервер встанут Ubuntu 24.04, Docker и 3x-ui последней версии. Порт, путь, логин и пароль панели админка задаст сама, сертификат
-              выпустит Let's Encrypt (для этого откроется порт 80). Обычно всё занимает 5–10 минут. Хостинг начнёт брать плату за сервер сразу после
-              создания.
-              {hoster.provider === "vdsina" &&
-                " У VDSina нет cloud-init: админка зайдёт на сервер по SSH одноразовым ключом, установит всё сама, добавит root выбранный SSH-ключ, а свой ключ удалит."}
+              На сервер встанут Ubuntu 24.04, Docker, 3x-ui последней версии и сайт-заглушка. Админка зайдёт на сервер по SSH своим ключом и
+              установит всё сама: порт, путь, логин и пароль панели задаст сама, сертификат выпустит Let's Encrypt. В конце установки ключ админки
+              удаляется с сервера. Обычно всё занимает 5–10 минут. Хостинг начнёт брать плату за сервер сразу после создания.
             </div>
           </>
         ) : null}

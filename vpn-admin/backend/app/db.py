@@ -71,7 +71,8 @@ MIGRATIONS = {
     "provisions": [("labels", "TEXT NOT NULL DEFAULT '{}'"), ("domain", "TEXT NOT NULL DEFAULT ''"),
                    ("cert_mode", "TEXT NOT NULL DEFAULT ''"), ("replaces", "INTEGER NOT NULL DEFAULT 0"),
                    ("in_place", "INTEGER NOT NULL DEFAULT 0"), ("dns_account_id", "INTEGER NOT NULL DEFAULT 0"),
-                   ("dns_zone_id", "TEXT NOT NULL DEFAULT ''"), ("dns_record_id", "TEXT NOT NULL DEFAULT ''")],
+                   ("dns_zone_id", "TEXT NOT NULL DEFAULT ''"), ("dns_record_id", "TEXT NOT NULL DEFAULT ''"),
+                   ("site_template", "TEXT NOT NULL DEFAULT ''")],
 }
 
 
@@ -306,7 +307,7 @@ class Provision:
     port: int
     base_path: str
     username: str
-    secrets: dict  # password of the node panel, TLS key until the server is created
+    secrets: dict  # node panel password, the admin's SSH key for this server, the TLS key until installed
     cert_pem: str
     cert_pin: str
     node_id: int | None
@@ -324,6 +325,7 @@ class Provision:
     dns_account_id: int = 0  # Cloudflare account that keeps the domain's A record; 0 = the user does it
     dns_zone_id: str = ""
     dns_record_id: str = ""
+    site_template: str = ""  # decoy page nginx shows on port 80 of the node; "" = none
 
 
 _JSON_FIELDS = {"ssh_keys", "log", "labels"}

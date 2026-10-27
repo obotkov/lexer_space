@@ -476,6 +476,8 @@ export interface ProvisionForm {
   /** the admin creates the domain's A record in this Cloudflare account and zone; 0 = the user does */
   dns_account_id: number;
   dns_zone_id: string;
+  /** decoy page on port 80 of the node: a site template id, "custom" or "" for none */
+  site_template: string;
 }
 
 export interface DnsZone {
@@ -534,6 +536,9 @@ export interface Provision {
   in_place: boolean;
   /** "cloudflare" when the admin keeps the domain's A record */
   dns: "" | "cloudflare";
+  site_template: string;
+  /** made before the admin kept its own SSH key: an OS reinstall re-runs the old cloud-init install */
+  legacy_install: boolean;
 }
 
 export interface ProvisionCredentials {
@@ -611,7 +616,7 @@ export const api = {
   provisions: () => request<Provision[]>("GET", "/api/provisions"),
   startProvision: (form: ProvisionForm) => request<Provision>("POST", "/api/provisions", form),
   retryProvision: (id: number) => request<Provision>("POST", `/api/provisions/${id}/retry`),
-  reinstallProvision: (id: number, body: { in_place: boolean; plan: string; plan_label: string }) =>
+  reinstallProvision: (id: number, body: { in_place: boolean; plan: string; plan_label: string; site_template: string }) =>
     request<Provision>("POST", `/api/provisions/${id}/reinstall`, body),
   deleteProvisionServer: (id: number) => request<Provision>("POST", `/api/provisions/${id}/delete-server`),
   provisionCredentials: (id: number) => request<ProvisionCredentials>("GET", `/api/provisions/${id}/credentials`),

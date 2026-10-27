@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, type CreateOptions, type Provision } from "../api";
 import { PlanList, PlanNote } from "./CreateServerDialog";
+import { StubTemplateSelect } from "./StubTemplateSelect";
 
 /** Reinstall from zero: on the same server where the hosting can do it (the IP stays), or a new server in
  * the same region with a plan of choice; either way the node of the main panel switches over. */
@@ -21,6 +22,10 @@ export function ReinstallDialog({
   onStarted: () => void;
 }) {
   const [inPlace, setInPlace] = useState(rebuild);
+  // older servers had no decoy page: offer the admin's current one
+  const [siteTemplate, setSiteTemplate] = useState<string | null>(job.legacy_install ? null : job.site_template);
+  // servers made by an older version re-run their old cloud-init install after an OS reinstall (VDSina excepted)
+  const legacy = inPlace && job.legacy_install && provider !== "vdsina";
   const [options, setOptions] = useState<CreateOptions | null>(null);
   const [plan, setPlan] = useState(job.plan_id);
   const [busy, setBusy] = useState(false);
@@ -50,7 +55,12 @@ export function ReinstallDialog({
     setBusy(true);
     setError("");
     try {
-      await api.reinstallProvision(job.id, { in_place: inPlace, plan: planId, plan_label: chosen?.label ?? planId });
+      await api.reinstallProvision(job.id, {
+        in_place: inPlace,
+        plan: planId,
+        plan_label: chosen?.label ?? planId,
+        site_template: siteTemplate ?? "",
+      });
       onStarted();
     } catch (err) {
       setError((err as Error).message);
@@ -80,13 +90,22 @@ export function ReinstallDialog({
         )}
 
         {inPlace ? (
-          <div className="notice notice-info small">
-            {providerTitle} переустановит систему на этом же сервере: диск будет стёрт, IP {job.ip} и тариф останутся прежними. Админка поставит
-            3x-ui заново и переключит на него узел основной панели: инбаунды и клиенты сохранятся. Пока идёт переустановка (обычно 5–10 минут),
-            VPN на этом сервере не работает.
-            {provider !== "vdsina" &&
-              ` Установку запускает ${providerTitle} тем же скриптом, с которым сервер создавался: логин и пароль панели узла останутся прежними.`}
-          </div>
+          legacy ? (
+            <div className="notice notice-warn small">
+              Этот сервер создан прежней версией админки. После переустановки ОС {providerTitle} запустит тот скрипт, с которым сервер
+              создавался: 3x-ui встанет с прежними логином и паролем, но без сайта-заглушки. Чтобы получить штатную установку целиком, выберите
+              «Новый сервер».
+            </div>
+          ) : (
+            <div className="notice notice-info small">
+              1. {providerTitle} переустановит ОС на этом же сервере: диск будет стёрт, IP {job.ip} и тариф останутся прежними.
+              <br />
+              2. Админка выполнит штатную установку, как у нового сервера: Docker, 3x-ui с новыми логином и паролем, сайт-заглушка и сертификат
+              Let's Encrypt, — и переключит на неё узел основной панели: инбаунды и клиенты сохранятся.
+              <br />
+              Пока идёт переустановка (обычно 5–10 минут), VPN на этом сервере не работает.
+            </div>
+          )
         ) : (
           <>
             <div className="notice notice-info small">
@@ -122,6 +141,8 @@ export function ReinstallDialog({
             )}
           </>
         )}
+
+        {!legacy && <StubTemplateSelect value={siteTemplate} onChange={setSiteTemplate} />}
 
         {error && <div className="notice notice-bad small">{error}</div>}
 

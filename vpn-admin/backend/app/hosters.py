@@ -668,7 +668,7 @@ class OVHcloud:
 
 class VDSina:
     """VDSina user API: token in the Authorization header, answers wrapped in {"status": "ok", "data": ...}.
-    VDSina has no cloud-init, so new servers get a one-time SSH key of the admin, which installs 3x-ui over SSH."""
+    VDSina has no cloud-init, so the admin's SSH key is registered in the account and passed with the order."""
     title = "VDSina"
     setup = "ssh"
     rebuild = True
@@ -876,10 +876,9 @@ class VDSina:
 
 class UpCloud:
     """UpCloud API 1.3 with an API token (Bearer ucat_…). Cloud-init templates only allow SSH-key logins, so a
-    server always gets a login key: the admin's throwaway one (removed by the setup script) plus the account's
-    own key when set. Prices come in cents per hour; a month is capped at 28 days (672 hours)."""
+    server always gets login keys: the admin's one (removed by the install) plus the account's own key when set.
+    Prices come in cents per hour; a month is capped at 28 days (672 hours)."""
     title = "UpCloud"
-    login_key_required = True
     images = ("Ubuntu Server 24.04", "Ubuntu Server 22.04")
     hours_cap = 672
     state_map = {"started": "running", "maintenance": "pending", "stopped": "stopped", "error": "error"}

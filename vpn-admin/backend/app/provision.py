@@ -2,13 +2,17 @@
 attach it as a node of a main 3x-ui v3 panel.
 
 The admin generates everything the node needs up front (panel port, path, login,
-password and a self-signed TLS certificate) and passes it to the server as
-cloud-init user data. The script installs Docker and the official 3x-ui image,
-asks Let's Encrypt for a certificate for the chosen domain or the server's IP and
-configures the panel with `x-ui setting`. The admin then waits for the panel,
-checks which certificate it serves, logs in, mints an API token for the main
-panel and adds the node there: verified by the CA for a Let's Encrypt
-certificate, pinned for the self-signed fallback.
+password, a self-signed TLS certificate and an SSH key of its own for this server).
+The hosting gets only a tiny cloud-init script (VDSina: the key itself) that lets
+that key in as root; the admin then logs in over SSH and runs the install: Docker,
+the official 3x-ui image, the decoy page on port 80, a Let's Encrypt certificate
+for the chosen domain or the server's IP, `x-ui setting`. The install removes the
+key again. The admin waits for the panel, checks which certificate it serves,
+mints an API token for the main panel and adds the node there: verified by the CA
+for a Let's Encrypt certificate, pinned for the self-signed fallback.
+
+Because the cloud-init script runs again whenever the hosting reinstalls the OS,
+the admin can always log in afterwards and run the current install from zero.
 
 A reinstall is a new job that takes over an existing one. Where the hosting can
 reinstall the OS (DigitalOcean, OVHcloud, VDSina) it does so on the same server
@@ -41,13 +45,14 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from pydantic import BaseModel, Field, field_validator
 
-from . import db, dns, hosters, nodes
+from . import db, dns, hosters, nodes, site
 from .aggregator import overview_cache
 from .xui import XUIClient, XUIError
 
 log = logging.getLogger("vpn-admin.provision")
 
 XUI_IMAGE = "ghcr.io/mhsanaei/3x-ui:latest"
+STUB_IMAGE = "nginx:alpine"
 SSH_KEY_COMMENT = "vpn-admin-setup"
 STEPS = ["create", "boot", "install", "connect", "retire", "done"]
 IN_PLACE_STEPS = ["rebuild", "boot", "install", "connect", "retire", "done"]
@@ -61,6 +66,12 @@ _tasks: dict[int, asyncio.Task] = {}
 
 class ProvisionError(Exception):
     pass
+
+
+def _site_template(value: str) -> str:
+    if value and value not in site.TEMPLATE_IDS | {"custom"}:
+        raise ValueError("Нет такого шаблона заглушки")
+    return value
 
 
 class ProvisionIn(BaseModel):
@@ -78,6 +89,12 @@ class ProvisionIn(BaseModel):
     # the admin keeps the domain's A record in this Cloudflare account and zone; 0 = the user creates it
     dns_account_id: int = 0
     dns_zone_id: str = ""
+    site_template: str = ""  # decoy page on port 80: a template of the admin's site, "custom" or "" for none
+
+    @field_validator("site_template")
+    @classmethod
+    def known_template(cls, value: str) -> str:
+        return _site_template(value)
 
     @field_validator("domain")
     @classmethod
@@ -100,6 +117,12 @@ class ReinstallIn(BaseModel):
     in_place: bool = True  # only where the hosting can reinstall the OS; otherwise a new server
     plan: str = ""  # new server only; empty = the plan of the server being replaced
     plan_label: str = ""
+    site_template: str | None = None  # decoy page; None = as before
+
+    @field_validator("site_template")
+    @classmethod
+    def known_template(cls, value: str | None) -> str | None:
+        return value if value is None else _site_template(value)
 
 
 # ---------- what the new server gets ----------
@@ -132,28 +155,93 @@ def make_certificate() -> tuple[str, str, str]:
     return cert_pem, key_pem, base64.b64encode(hashlib.sha256(der).digest()).decode()
 
 
-def make_ssh_key() -> tuple[str, str]:
-    """One-time key for hostings without cloud-init: (private key in OpenSSH format, public key line)."""
+def make_ssh_key() -> str:
+    """The admin's SSH key for one server, private part in OpenSSH format."""
     key = ed25519.Ed25519PrivateKey.generate()
-    private = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH,
-                                serialization.NoEncryption()).decode()
+    return key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH,
+                             serialization.NoEncryption()).decode()
+
+
+def ssh_public_line(private: str) -> str:
+    """authorized_keys line of the admin's key, with the comment the install removes it by."""
+    key = serialization.load_ssh_private_key(private.encode(), password=None)
     public = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH).decode()
-    return private, f"{public} {SSH_KEY_COMMENT}"
+    return f"{public} {SSH_KEY_COMMENT}"
+
+
+def bootstrap_user_data(p: db.Provision) -> str:
+    """cloud-init script: only lets the admin's key in as root, the install comes over SSH. Hostings run it
+    again after reinstalling the OS, so the admin can always get back in. Root logs in by key only, which is
+    Ubuntu's default; some images forbid root, so it is said explicitly."""
+    return f"""#!/bin/bash
+# vpn-admin: 3x-ui node "{p.name}", installed by the admin over SSH
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+echo {shlex.quote(ssh_public_line(p.secrets["service_key"]))} >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+if [ -d /etc/ssh/sshd_config.d ]; then
+  echo "PermitRootLogin prohibit-password" > /etc/ssh/sshd_config.d/00-vpn-admin.conf
+  systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+fi
+"""
 
 
 def _drop_setup_key_script() -> str:
-    """Remove the admin's one-time key from root and every user it may have been given to."""
+    """Remove the admin's key from root and every user it may have been given to."""
     return (f"for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do "
             f"[ -f \"$f\" ] && sed -i '/ {SSH_KEY_COMMENT}$/d' \"$f\"; done\n")
 
 
 def _authorized_keys_script(user_keys: list[str]) -> str:
-    """Give root the user's keys chosen in the form, then drop the admin's one-time key."""
+    """Give root the user's keys chosen in the form (hostings without cloud-init), then drop the admin's key."""
     lines = ["mkdir -p /root/.ssh && chmod 700 /root/.ssh && touch /root/.ssh/authorized_keys"]
     for key in user_keys:
         quoted = shlex.quote(key)
         lines.append(f"grep -qxF {quoted} /root/.ssh/authorized_keys || echo {quoted} >> /root/.ssh/authorized_keys")
     return "\n".join(lines) + "\n" + _drop_setup_key_script()
+
+
+def _stub_html(p: db.Provision) -> str:
+    if p.site_template == "custom":
+        html = site.CUSTOM_FILE.read_text() if site.CUSTOM_FILE.exists() else ""
+    else:
+        html = site.template_html(p.site_template) if p.site_template in site.TEMPLATE_IDS else ""
+    return html.replace("{{domain}}", p.domain or "example.com").replace("{{year}}", time.strftime("%Y"))
+
+
+def _stub_script(p: db.Provision) -> str:
+    """Decoy page on port 80 (nginx in Docker), like the admin's own site. Port 443 stays for VPN inbounds.
+    The same nginx answers Let's Encrypt's checks, so certificates renew without stopping it."""
+    html = _stub_html(p) if p.site_template else ""
+    if not html.strip():
+        return 'ACME_MODE="--standalone --httpport 80"\n'
+    return f"""
+# decoy page on port 80; Let's Encrypt checks are answered from /opt/vpn-stub/acme
+mkdir -p /opt/vpn-stub/html /opt/vpn-stub/acme
+cat > /opt/vpn-stub/html/index.html <<'VPN_ADMIN_STUB_HTML'
+{html.strip()}
+VPN_ADMIN_STUB_HTML
+cat > /opt/vpn-stub/default.conf <<'NGINX'
+server {{
+    listen 80 default_server;
+    server_name _;
+    server_tokens off;
+    location /.well-known/acme-challenge/ {{ root /var/www/acme; }}
+    location / {{ root /usr/share/nginx/html; try_files $uri /index.html; }}
+}}
+NGINX
+docker rm -f vpn-stub >/dev/null 2>&1 || true
+if retry docker pull {STUB_IMAGE}; then
+  docker run -d --name vpn-stub --restart unless-stopped --network host \\
+    -v /opt/vpn-stub/html:/usr/share/nginx/html:ro -v /opt/vpn-stub/acme:/var/www/acme:ro \\
+    -v /opt/vpn-stub/default.conf:/etc/nginx/conf.d/default.conf:ro {STUB_IMAGE}
+  if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then ufw allow 80/tcp; fi
+fi
+if docker ps --format '{{{{.Names}}}}' | grep -qx vpn-stub; then
+  ACME_MODE="--webroot /opt/vpn-stub/acme"
+else
+  echo "vpn-admin: decoy page not started"; ACME_MODE="--standalone --httpport 80"
+fi
+"""
 
 
 def _certificate_script(p: db.Provision) -> str:
@@ -167,7 +255,7 @@ IP=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \\([0-9.]*\\).*/\\1/
 ACME=/root/.acme.sh/acme.sh
 le_issue() {{  # $1: domain or IP, the rest: extra acme.sh options
   local name="$1"; shift
-  if ! "$ACME" --issue -d "$name" --standalone --httpport 80 --server letsencrypt --force "$@"; then
+  if ! "$ACME" --issue -d "$name" $ACME_MODE --server letsencrypt --force "$@"; then
     rm -rf "/root/.acme.sh/$name" "/root/.acme.sh/${{name}}_ecc"; return 1
   fi
   # the reload fails while the panel is not running yet: the installed files are what counts
@@ -198,9 +286,9 @@ echo "vpn-admin: certificate $CERT"
 """
 
 
-def user_data(p: db.Provision, extra: str = "") -> str:
-    """cloud-init script: Docker + 3x-ui with the generated port, path, login and certificate.
-    Hostings without cloud-init get the same script over SSH, with `extra` steps at the end."""
+def install_script(p: db.Provision, extra: str = "") -> str:
+    """The install the admin runs over SSH: Docker, the decoy page, a certificate and 3x-ui with the generated
+    port, path, login and password; `extra` steps (keys) at the end."""
     return f"""#!/bin/bash
 # vpn-admin: 3x-ui node "{p.name}"
 set -u
@@ -230,7 +318,7 @@ systemctl enable --now docker
 retry docker pull {XUI_IMAGE} || exit 1
 
 docker rm -f 3x-ui >/dev/null 2>&1 || true
-{_certificate_script(p)}
+{_stub_script(p)}{_certificate_script(p)}
 docker run --rm --entrypoint /app/x-ui -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/cert:/root/cert {XUI_IMAGE} \\
   setting -port {p.port} -username {p.username} -password {p.secrets["password"]} -webBasePath {p.base_path} \\
   -webCert "$CERT" -webCertKey "$KEY"
@@ -287,23 +375,11 @@ async def _with_client(p: db.Provision, action):
 async def _step_create(p: db.Provision) -> None:
     _log(p, f"Заказываю сервер {p.labels.get('plan') or p.plan}: {p.labels.get('region') or p.region}")
 
-    def order(client):
-        admin_key, script = None, user_data(p)
-        if getattr(client, "setup", "") == "ssh":  # no cloud-init: the admin will log in and install itself
-            private, admin_key = make_ssh_key()
-            _set(p, secrets={**p.secrets, "ssh_key": private})
-        elif getattr(client, "login_key_required", False):
-            # the hosting refuses servers without a login key: give a throwaway one, the script deletes it
-            _, admin_key = make_ssh_key()
-            script = user_data(p, _drop_setup_key_script())
-        return client.create_server(name=p.name, region=p.region, plan=p.plan, ssh_keys=p.ssh_keys,
-                                    user_data=script, project=p.project or None, admin_key=admin_key)
-
-    server_id = await _with_client(p, order)
-    if "ssh_key" in p.secrets:  # the TLS key goes to the server over SSH later
-        _set(p, server_id=server_id)
-    else:  # the key reached the server; the admin trusts the node by the certificate alone
-        _set(p, server_id=server_id, secrets={"password": p.secrets["password"]})
+    # VDSina has no cloud-init and takes the key itself; UpCloud wants a login key for cloud-init servers
+    server_id = await _with_client(p, lambda client: client.create_server(
+        name=p.name, region=p.region, plan=p.plan, ssh_keys=p.ssh_keys, user_data=bootstrap_user_data(p),
+        project=p.project or None, admin_key=ssh_public_line(p.secrets["service_key"])))
+    _set(p, server_id=server_id)
     _log(p, f"Сервер создан у хостинга (id {server_id})")
 
 
@@ -320,20 +396,13 @@ async def _panel_answers(p: db.Provision) -> bool:
 
 
 async def _step_rebuild(p: db.Provision) -> None:
-    """The hosting reinstalls the OS on the same server. DigitalOcean and OVHcloud then run the script the
-    server was created with, so this job carries the old panel credentials; VDSina gets a one-time key
-    and the admin installs over SSH, as for a new server."""
+    """The hosting reinstalls the OS on the same server. Its cloud-init script (VDSina: the key passed again)
+    lets the admin's key in, and the install runs as for a new server. Servers made before the admin had its
+    own key re-run their old cloud-init install instead, so such a job carries the old panel credentials."""
     _log(p, f"Переустанавливаю систему на сервере {p.ip}: IP сохранится")
-
-    def rebuild(client):
-        admin_key = None
-        if getattr(client, "setup", "") == "ssh":
-            private, admin_key = make_ssh_key()
-            _set(p, secrets={**p.secrets, "ssh_key": private})
-        return client.rebuild_server(p.server_id, plan=p.plan, name=p.name, project=p.project or None,
-                                     admin_key=admin_key)
-
-    await _with_client(p, rebuild)
+    admin_key = ssh_public_line(p.secrets["service_key"]) if "service_key" in p.secrets else None
+    await _with_client(p, lambda client: client.rebuild_server(
+        p.server_id, plan=p.plan, name=p.name, project=p.project or None, admin_key=admin_key))
     _log(p, "Хостинг принял переустановку, жду, пока старая система остановится")
     # the old panel must be gone before the install is awaited, or the admin would talk to the old one
     deadline, misses = time.time() + BOOT_TIMEOUT, 0
@@ -375,17 +444,26 @@ async def _step_boot(p: db.Provision) -> None:
 
 
 async def _install_over_ssh(p: db.Provision) -> None:
-    """Run the setup script as root over SSH with the one-time key. The host key cannot be known in
-    advance; what matters is checked after: the panel must answer with the certificate generated here."""
-    _log(p, "У хостинга нет cloud-init: подключаюсь к серверу по SSH и устанавливаю Docker и 3x-ui")
-    user_keys = await _with_client(p, lambda c: c.public_keys(p.ssh_keys)) if p.ssh_keys else []
-    script = user_data(p, _authorized_keys_script(user_keys))
-    key = asyncssh.import_private_key(p.secrets["ssh_key"])
+    """Run the install as root over SSH with the admin's key. The host key cannot be known in advance;
+    what matters is checked after: the panel must answer with the certificate generated here."""
+    _log(p, "Подключаюсь к серверу по SSH и устанавливаю Docker, 3x-ui"
+            + (", сайт-заглушку" if p.site_template else "") + " и сертификат")
+
+    async def user_keys(client) -> list[str]:  # cloud-init hostings put the chosen keys in place themselves
+        if getattr(client, "setup", "") == "ssh" and p.ssh_keys:
+            return await client.public_keys(p.ssh_keys)
+        return []
+
+    script = install_script(p, _authorized_keys_script(await _with_client(p, user_keys)))
+    key = asyncssh.import_private_key(p.secrets.get("service_key") or p.secrets["ssh_key"])
     deadline = time.time() + _install_timeout(p)
     while True:
         try:
             async with asyncssh.connect(p.ip, username="root", client_keys=[key], known_hosts=None,
                                         connect_timeout=15) as conn:
+                # the hosting's cloud-init may still be running (apt locks, the key itself): let it finish
+                await conn.run("command -v cloud-init >/dev/null && cloud-init status --wait >/dev/null 2>&1; true",
+                               check=False, timeout=BOOT_TIMEOUT)
                 result = await conn.run("bash -s", input=script, check=False, timeout=_install_timeout(p))
                 if result.exit_status != 0:
                     tail = (await conn.run("tail -n 15 /var/log/vpn-admin-node.log", check=False)).stdout
@@ -397,10 +475,16 @@ async def _install_over_ssh(p: db.Provision) -> None:
                 raise ProvisionError(f"Не удалось выполнить установку по SSH за {_install_timeout(p) // 60} минут: "
                                      f"{exc}") from exc
             await asyncio.sleep(POLL_EVERY)
-    _set(p, secrets={"password": p.secrets["password"]})
-    _log(p, "Установка по SSH завершена, одноразовый ключ админки удалён с сервера")
+    # the TLS key is on the server now; the SSH key stays for a later reinstall, but no longer opens the server
+    _set(p, secrets={k: v for k, v in p.secrets.items() if k in ("password", "service_key")})
+    _log(p, "Установка по SSH завершена, ключ админки удалён с сервера")
+
+    async def forget(client):
+        if hasattr(client, "forget_setup_key"):
+            await client.forget_setup_key(p.name)
+
     try:
-        await _with_client(p, lambda c: c.forget_setup_key(p.name))
+        await _with_client(p, forget)
     except (hosters.HosterError, ProvisionError) as exc:
         log.warning("provision %s: setup key not removed from the account: %s", p.id, exc)
 
@@ -451,10 +535,10 @@ async def _trust_node(p: db.Provision) -> ssl.SSLContext:
 
 
 async def _step_install(p: db.Provision) -> None:
-    if "ssh_key" in p.secrets:
+    if "service_key" in p.secrets or "ssh_key" in p.secrets:  # ssh_key: VDSina jobs of older versions
         await _install_over_ssh(p)
         _log(p, "Жду ответа панели 3x-ui")
-    else:
+    else:  # a server made by an older version re-runs its cloud-init install after an OS reinstall
         _log(p, f"Жду установку Docker, 3x-ui и сертификата (обычно 3–7 минут{', плюс ожидание DNS' if p.domain else ''})")
     deadline = time.time() + _install_timeout(p)
     async with httpx.AsyncClient(verify=False, timeout=10) as http:  # noqa: S501 - the certificate is checked next
@@ -588,6 +672,7 @@ async def start(body: ProvisionIn) -> dict:
         await _check_dns_name(body)
     p = _new_job(hoster_id=hoster.id, panel_id=body.panel_id, name=body.name, region=body.region, plan=body.plan,
                  project=body.project or "", ssh_keys=body.ssh_keys, domain=body.domain,
+                 site_template=body.site_template,
                  dns_account_id=body.dns_account_id if body.domain else 0, dns_zone_id=body.dns_zone_id,
                  labels={"region": body.region_label.strip()[:100], "plan": body.plan_label.strip()[:100]})
     _log(p, "Задание создано")
@@ -610,13 +695,15 @@ async def _check_dns_name(body: ProvisionIn) -> None:
         raise ProvisionError(f"В Cloudflare уже есть A-запись {body.domain} → {taken}: выберите другое имя")
 
 
-def _new_job(**fields) -> db.Provision:
-    """A job with fresh panel credentials and certificate for a server that is yet to be set up."""
+def _new_job(service_key: str = "", **fields) -> db.Provision:
+    """A job with fresh panel credentials and certificate for a server that is yet to be set up; the admin's
+    SSH key is new too unless the server already trusts one (an OS reinstall)."""
     lower = string.ascii_lowercase + string.digits
     cert_pem, key_pem, pin = make_certificate()
     return db.create_provision(**{
         "port": secrets.randbelow(40000) + 20000, "base_path": f"/{_random(14, lower)}/",
-        "username": f"adm_{_random(6, lower)}", "secrets": {"password": _random(20), "key_pem": key_pem},
+        "username": f"adm_{_random(6, lower)}",
+        "secrets": {"password": _random(20), "key_pem": key_pem, "service_key": service_key or make_ssh_key()},
         "cert_pem": cert_pem, "cert_pin": pin, "step": "create", "state": "running", **fields,
     })
 
@@ -646,6 +733,8 @@ async def reinstall(provision_id: int, body: ReinstallIn) -> dict:
     except nodes.NodeError as exc:
         raise ProvisionError(f"Основная панель: {exc}") from exc
     client_class = hosters.CLIENTS[hoster.provider]
+    if body.site_template is not None:
+        old.site_template = body.site_template  # what the reinstall installs; the old job goes away with it
     if body.in_place and getattr(client_class, "rebuild", False):
         p = _in_place_job(old, ssh_install=getattr(client_class, "setup", "") == "ssh")
         _log(p, f"Переустановка системы на том же сервере {old.ip}: узел основной панели переключится на новую "
@@ -656,7 +745,7 @@ async def reinstall(provision_id: int, body: ReinstallIn) -> dict:
     labels = {**old.labels, "plan": body.plan_label.strip()[:100]} if plan != old.plan else old.labels
     p = _new_job(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=plan,
                  project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=labels,
-                 node_id=old.node_id, replaces=old.id, **_dns_fields(old))
+                 node_id=old.node_id, replaces=old.id, site_template=old.site_template, **_dns_fields(old))
     _log(p, f"Переустановка: новый сервер заменит {old.ip or old.server_id}, узел основной панели переключится на "
             "него, старый сервер будет удалён")
     _spawn(p.id)
@@ -672,10 +761,12 @@ def _in_place_job(old: db.Provision, ssh_install: bool) -> db.Provision:
     same = dict(hoster_id=old.hoster_id, panel_id=old.panel_id, name=old.name, region=old.region, plan=old.plan,
                 project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=old.labels,
                 node_id=old.node_id, replaces=old.id, in_place=1, server_id=old.server_id, ip=old.ip,
-                step="rebuild", **_dns_fields(old))
-    if ssh_install:  # the admin runs the script itself, so it may as well be a fresh one
+                site_template=old.site_template, step="rebuild", **_dns_fields(old))
+    if "service_key" in old.secrets:  # its cloud-init lets the same key in again: the usual install from zero
+        return _new_job(service_key=old.secrets["service_key"], **same)
+    if ssh_install:  # VDSina takes a key with the reinstall
         return _new_job(**same)
-    # DigitalOcean and OVHcloud run the script from the server's creation again: its panel settings stay
+    # made by an older version: DigitalOcean and OVHcloud re-run its cloud-init install, panel settings stay
     return db.create_provision(**same, port=old.port, base_path=old.base_path, username=old.username,
                                secrets={"password": old.secrets["password"]}, cert_pem=old.cert_pem,
                                cert_pin=old.cert_pin, state="running")
@@ -763,6 +854,9 @@ def public(p: db.Provision) -> dict[str, Any]:
         "domain": p.domain, "cert_mode": p.cert_mode, "replaces": p.replaces,
         "region_id": p.region, "plan_id": p.plan, "project": p.project, "in_place": bool(p.in_place),
         "dns": "cloudflare" if p.dns_account_id else "",
+        "site_template": p.site_template,
+        # made before the admin kept its own SSH key: an OS reinstall re-runs the old cloud-init install
+        "legacy_install": "service_key" not in p.secrets and p.state == "done",
     }
 
 
