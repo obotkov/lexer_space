@@ -433,6 +433,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* connection templates */
 .provision-connections { display: flex; flex-wrap: wrap; gap: 6px; }
 .provision-connections .badge { font-weight: 500; }
+.conn-macros { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .conn-table td { vertical-align: middle; }
 .conn-table .conn-options { max-width: 340px; }
 .conn-move { display: inline-flex; gap: 2px; }

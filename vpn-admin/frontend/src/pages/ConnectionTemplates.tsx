@@ -94,6 +94,15 @@ function portClashes(templates: ConnectionTemplate[]): Set<number> {
 }
 
 /** Connections every new server gets: inbounds of the main panel bound to the new node. */
+// what a remark can hold; the backend fills them in (connections.macros)
+const REMARK_MACROS: [string, string][] = [
+  ["{server}", "имя сервера"],
+  ["{region}", "регион: 🇩🇪 Германия, Франкфурт"],
+  ["{flag}", "флаг страны 🇩🇪"],
+  ["{country}", "страна"],
+  ["{city}", "город"],
+];
+
 export function ConnectionTemplates() {
   const [data, setData] = useState<ConnectionsData | null>(null);
   const [error, setError] = useState("");
@@ -447,11 +456,26 @@ function TemplateDialog({
           </div>
         )}
 
-        <label className="field">
-          <span>Название</span>
-          <input className="input" required maxLength={100} value={remark} onChange={(e) => setRemark(e.target.value)} />
-          <small className="muted">{"{server}"} заменяется именем сервера: так в приложениях видно, какой это сервер</small>
-        </label>
+        <div className="field">
+          <span id="conn-remark">Название</span>
+          <input aria-labelledby="conn-remark" className="input" required maxLength={100} value={remark} onChange={(e) => setRemark(e.target.value)} />
+          <div className="conn-macros">
+            {REMARK_MACROS.map(([macro, hint]) => (
+              <button
+                key={macro}
+                type="button"
+                className="btn btn-small mono"
+                title={`${hint} — добавить в конец названия`}
+                onClick={() => setRemark((r) => `${r.trimEnd()} ${macro}`.trimStart())}
+              >
+                {macro}
+              </button>
+            ))}
+          </div>
+          <small className="muted">
+            Макросы заменяются данными сервера при раскатке, так в приложениях видно, какой это сервер: {REMARK_MACROS.map(([m, h]) => `${m} — ${h}`).join(", ")}
+          </small>
+        </div>
 
         <div className="field-row">
           <label className="field">

@@ -793,7 +793,8 @@ def _target(p: db.Provision) -> connections.Target:
     else:
         cert = key = pin = ""
     return connections.Target(server=p.name, tls_name=p.domain if p.cert_mode == "domain" else "",
-                              cert_file=cert, key_file=key, pin_hex=pin, stub_html=_stub_html(p) if p.site_template else "")
+                              cert_file=cert, key_file=key, pin_hex=pin, stub_html=_stub_html(p) if p.site_template else "",
+                              region=p.labels.get("region") or p.region)
 
 
 async def _roll_out(p: db.Provision) -> None:
@@ -1188,7 +1189,8 @@ def public(p: db.Provision) -> dict[str, Any]:
         "site_template": p.site_template,
         "sub_port": p.sub_port,
         "os": p.os, "os_label": hosters.OS_LABELS.get(p.os, p.os),
-        "connections": [connections.item_public(c, p.name) for c in p.connections],
+        "connections": [connections.item_public(c, connections.macros(p.name, p.labels.get("region") or p.region))
+                        for c in p.connections],
         # made before the admin kept its own SSH key: an OS reinstall re-runs the old cloud-init install
         "legacy_install": "service_key" not in p.secrets and p.state == "done",
     }

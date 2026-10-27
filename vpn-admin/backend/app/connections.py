@@ -248,10 +248,30 @@ def inbound_nets(inbound: dict[str, Any]) -> list[str]:
     return ["tcp"]
 
 
-def item_public(item: dict[str, Any], server: str) -> dict[str, Any]:
+def macros(server: str, region: str = "") -> dict[str, str]:
+    """What the macros of a remark stand for. `region` is the label the form showed, e.g.
+    "🇩🇪 Германия, Франкфурт — fra1" or VDSina's "🇳🇱 Нидерланды, Amsterdam 1, Netherlands"."""
+    label = region.split(" — ")[0].strip()
+    flag = ""
+    while label and 0x1F1E6 <= ord(label[0]) <= 0x1F1FF:  # regional indicator letters make the flag
+        flag, label = flag + label[0], label[1:]
+    label = label.strip()
+    country, _, rest = label.partition(", ")
+    city = rest.split(", ")[0] or country
+    return {"{server}": server, "{flag}": flag, "{country}": country, "{city}": city,
+            "{region}": " ".join(filter(None, [flag, f"{country}, {city}" if rest else country]))}
+
+
+def fill(text: str, values: dict[str, str]) -> str:
+    for macro, value in values.items():
+        text = text.replace(macro, value)
+    return " ".join(text.split())  # an empty macro leaves no double space
+
+
+def item_public(item: dict[str, Any], values: dict[str, str]) -> dict[str, Any]:
     kind = KINDS.get(item.get("kind", ""), {})
     return {"template_id": item.get("template_id"), "kind": item.get("kind"), "title": kind.get("title", item.get("kind")),
-            "remark": str(item.get("remark", "")).replace("{server}", server), "port": item.get("port"),
+            "remark": fill(str(item.get("remark", "")), values), "port": item.get("port"),
             "net": kind.get("net", "tcp"), "inbound_id": item.get("inbound_id"), "error": item.get("error", "")}
 
 
@@ -270,6 +290,11 @@ class Target:
     key_file: str
     pin_hex: str         # sha256 of a self-signed certificate (clients trust exactly it), else ""
     stub_html: str = ""  # decoy page for Hysteria2 masquerade
+    region: str = ""     # region label, for {region}, {flag}, {country} and {city} in remarks
+
+    @property
+    def macros(self) -> dict[str, str]:
+        return macros(self.server, self.region)
 
 
 def _rand(n: int) -> str:
@@ -396,7 +421,7 @@ def build(item: dict[str, Any], t: Target, node_id: int) -> dict[str, Any]:
         stream = {}
     else:
         raise TemplateError(f"Неизвестный тип подключения: {kind}")
-    return {"enable": True, "remark": item["remark"].replace("{server}", t.server), "listen": "", "port": item["port"],
+    return {"enable": True, "remark": fill(item["remark"], t.macros), "listen": "", "port": item["port"],
             "protocol": KINDS[kind]["protocol"], "settings": json.dumps(settings), "streamSettings": json.dumps(stream),
             "sniffing": json.dumps(SNIFFING), "expiryTime": 0, "total": 0, "nodeId": node_id}
 
@@ -569,7 +594,7 @@ async def rollout(xui: XUIClient, node_id: int, items: list[dict[str, Any]], tar
     for item in items:
         if item.get("inbound_id"):
             continue
-        name = f"{item['remark'].replace('{server}', target.server)} ({KINDS[item['kind']]['title']}, порт {item['port']})"
+        name = f"{fill(item['remark'], target.macros)} ({KINDS[item['kind']]['title']}, порт {item['port']})"
         try:
             created = await xui.v3_add_inbound(build(item, target, node_id))
             item.update(inbound_id=created.get("id"), error="")
@@ -584,7 +609,7 @@ async def rollout(xui: XUIClient, node_id: int, items: list[dict[str, Any]], tar
     try:
         records = chosen_clients(await xui.v3_clients(), users())
         if records:
-            await _attach(xui, [{**i, "remark": i["remark"].replace("{server}", target.server)} for i in fresh], records, log)
+            await _attach(xui, [{**i, "remark": fill(i["remark"], target.macros)} for i in fresh], records, log)
         else:
             log("Пользователей для подключений не выбрано: подключения созданы пустыми")
     except XUIError as exc:
