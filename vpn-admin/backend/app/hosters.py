@@ -125,6 +125,46 @@ def _http_error(resp: httpx.Response, provider: str) -> HosterError:
     return HosterError(f"{provider}: HTTP {resp.status_code}{': ' + detail if detail else ''}")
 
 
+# ---------- where a region is: hosting codes -> flag, country, city ----------
+
+COUNTRIES = {"FR": "Франция", "DE": "Германия", "GB": "Великобритания", "PL": "Польша", "IT": "Италия",
+             "NL": "Нидерланды", "CA": "Канада", "US": "США", "SG": "Сингапур", "AU": "Австралия", "IN": "Индия"}
+
+# OVHcloud Public Cloud: new names (EU-WEST-PAR, AP-SOUTH-MUM-1) first, then the classic ones (GRA11, DE1)
+OVH_PLACES = [
+    ("EU-WEST-PAR", "FR", "Париж"), ("EU-WEST-GRA", "FR", "Гравлин"), ("EU-WEST-SBG", "FR", "Страсбург"),
+    ("EU-WEST-RBX", "FR", "Рубе"), ("EU-WEST-LIM", "DE", "Лимбург"), ("EU-WEST-ERI", "GB", "Лондон"),
+    ("EU-CENTRAL-WAW", "PL", "Варшава"), ("EU-SOUTH-MIL", "IT", "Милан"), ("AP-SOUTH-MUM", "IN", "Мумбаи"),
+    ("AP-SOUTHEAST-SGP", "SG", "Сингапур"), ("AP-SOUTHEAST-SYD", "AU", "Сидней"), ("CA-EAST-TOR", "CA", "Торонто"),
+    ("CA-EAST-BHS", "CA", "Боарнуа"), ("US-EAST-VA", "US", "Вирджиния"), ("US-WEST-OR", "US", "Орегон"),
+    ("BHS", "CA", "Боарнуа"), ("GRA", "FR", "Гравлин"), ("SBG", "FR", "Страсбург"), ("RBX", "FR", "Рубе"),
+    ("DE", "DE", "Франкфурт"), ("UK", "GB", "Лондон"), ("WAW", "PL", "Варшава"), ("SGP", "SG", "Сингапур"),
+    ("SYD", "AU", "Сидней"), ("MUM", "IN", "Мумбаи"), ("TOR", "CA", "Торонто"), ("LIM", "DE", "Лимбург"),
+    ("ERI", "GB", "Лондон"), ("PAR", "FR", "Париж"), ("MIL", "IT", "Милан"), ("VIN", "US", "Вирджиния"),
+    ("HIL", "US", "Орегон"),
+]
+
+# DigitalOcean slugs: fra1, nyc3…
+DO_PLACES = [
+    ("nyc", "US", "Нью-Йорк"), ("sfo", "US", "Сан-Франциско"), ("atl", "US", "Атланта"), ("ams", "NL", "Амстердам"),
+    ("lon", "GB", "Лондон"), ("fra", "DE", "Франкфурт"), ("tor", "CA", "Торонто"), ("sgp", "SG", "Сингапур"),
+    ("blr", "IN", "Бангалор"), ("syd", "AU", "Сидней"),
+]
+
+
+def _flag(country: str) -> str:
+    return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in country)
+
+
+def region_label(code: str, places: list[tuple[str, str, str]], with_code: bool = True) -> str:
+    """"DE1" -> "🇩🇪 Германия, Франкфурт — DE1"; an unknown code stays as it is."""
+    for prefix, country, city in places:
+        if code.upper().startswith(prefix.upper()):
+            label = f"{_flag(country)} {COUNTRIES.get(country, country)}, {city}"
+            return f"{label} — {code}" if with_code else label
+    return code
+
+
 class DigitalOcean:
     title = "DigitalOcean"
     image = "ubuntu-24-04-x64"
@@ -172,7 +212,7 @@ class DigitalOcean:
         return _server(
             id=d.get("id"), name=d.get("name", ""), kind="Droplet",
             status=status_map.get(d.get("status"), "unknown"), status_label=labels.get(d.get("status"), d.get("status", "")),
-            region=(d.get("region") or {}).get("name") or (d.get("region") or {}).get("slug", ""),
+            region=region_label((d.get("region") or {}).get("slug", ""), DO_PLACES, with_code=False),
             plan=d.get("size_slug", ""),
             specs=f"{d.get('vcpus', '?')} vCPU · {round((d.get('memory') or 0) / 1024, 1):g} GB · {d.get('disk', '?')} GB",
             price=f"${size['price_monthly']}/мес" if size.get("price_monthly") else "",
@@ -199,8 +239,8 @@ class DigitalOcean:
         plans = sorted((s for s in sizes if s.get("available")), key=lambda s: (s.get("price_monthly") or 0, s["slug"]))
         return {
             "projects": None, "project": None, "ssh_multiple": True,
-            "regions": [{"id": r["slug"], "name": f"{r.get('name', r['slug'])} ({r['slug']})"}
-                        for r in regions if r.get("available")],
+            "regions": sorted(({"id": r["slug"], "name": region_label(r["slug"], DO_PLACES)}
+                               for r in regions if r.get("available")), key=lambda r: r["name"]),
             # hourly billing, capped at the monthly price
             "plans": [{"id": s["slug"], "label": s["slug"],
                        "specs": f"{s.get('vcpus')} vCPU · {round((s.get('memory') or 0) / 1024, 1):g} GB · {s.get('disk')} GB"
@@ -371,7 +411,10 @@ class OVHcloud:
             return _server(
                 id=name, name=info.get("displayName") or name, kind="VPS",
                 status={"running": "running", "stopped": "stopped"}.get(state, "pending" if state in labels else "unknown"),
-                status_label=labels.get(state, state), region=info.get("zone", ""),
+                status_label=labels.get(state, state),
+                # "Region OpenStack: os-gra7" -> GRA7
+                region=region_label(info.get("zone", "").rsplit("os-", 1)[-1].upper(), OVH_PLACES, with_code=False)
+                if "os-" in info.get("zone", "") else info.get("zone", ""),
                 plan=model.get("name") or model.get("offer", ""),
                 specs=f"{info.get('vcore') or model.get('vcore', '?')} vCPU · {round((info.get('memoryLimit') or model.get('memory') or 0) / 1024, 1):g} GB"
                       f" · {model.get('disk', '?')} GB",
@@ -387,7 +430,8 @@ class OVHcloud:
             id=i.get("id"), name=i.get("name", ""), kind="Public Cloud",
             status="running" if status == "ACTIVE" else "error" if status == "ERROR"
             else "stopped" if status in ("SHUTOFF", "STOPPED", "SHELVED", "SHELVED_OFFLOADED", "SUSPENDED") else "pending",
-            status_label=self.instance_labels.get(status, status), region=i.get("region", ""),
+            status_label=self.instance_labels.get(status, status),
+            region=region_label(i.get("region", ""), OVH_PLACES, with_code=False),
             plan=(i.get("planCode") or "").split(".")[0], created_at=i.get("created", ""),
             ipv4=[a["ip"] for a in addrs if a.get("version") == 4],
             ipv6=[a["ip"] for a in addrs if a.get("version") == 6],
@@ -434,7 +478,7 @@ class OVHcloud:
             del plan["_size"]
         return {
             "projects": projects, "project": project, "ssh_multiple": False,
-            "regions": [{"id": r, "name": r} for r in sorted(regions)],
+            "regions": sorted(({"id": r, "name": region_label(r, OVH_PLACES)} for r in regions), key=lambda r: r["name"]),
             "plans": ordered,
             "ssh_keys": [{"id": k["id"], "name": k.get("name") or k["id"]} for k in keys],
         }
