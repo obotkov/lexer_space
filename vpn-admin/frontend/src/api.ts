@@ -687,10 +687,32 @@ export interface CdnAccountForm {
   password?: string;
 }
 
+/** A CDN resource of an account, whoever made it. */
+export interface CdnResource {
+  id: string;
+  /** Beget: the service's name */
+  name: string;
+  /** the name it serves (Beget: its technical name) */
+  domain: string;
+  domains: string[];
+  /** where clients connect: the CDN's technical name */
+  address: string;
+  origin: string;
+  status: string;
+  status_label: string;
+  /** null: unknown */
+  https: boolean | null;
+  https_note: string;
+  created_at: string;
+  /** the created server whose connection it serves */
+  owner: { provision_id: number; server: string } | null;
+}
+
 export interface CdnAccountChecked extends CdnAccount {
   ok: boolean;
   error: string;
   resources: number;
+  items: CdnResource[];
 }
 
 export interface CdnProvider {

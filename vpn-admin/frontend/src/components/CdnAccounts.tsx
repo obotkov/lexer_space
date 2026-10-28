@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { api, type CdnAccountChecked, type CdnAccountForm, type CdnAccounts as CdnAccountsData } from "../api";
+import { api, type CdnAccountChecked, type CdnAccountForm, type CdnAccounts as CdnAccountsData, type CdnResource } from "../api";
 
 const BUTTONS: Record<string, string> = { yandex: "Yandex Cloud", vk: "VK Cloud", beget: "Beget" };
 // accounts that sign in with a login and password rather than a key
@@ -85,6 +85,8 @@ export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChan
               </div>
             </div>
             {!a.ok && <div className="error-text small hoster-error">{a.error}</div>}
+            {a.ok && a.items.length === 0 && <div className="muted small">CDN-ресурсов пока нет.</div>}
+            {a.items.length > 0 && <CdnResources items={a.items} />}
           </section>
         ))
       )}
@@ -104,6 +106,50 @@ export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChan
         />
       )}
     </>
+  );
+}
+
+const RESOURCE_DOT: Record<string, string> = { active: "dot-on", processed: "dot-warn", off: "dot-off", suspended: "dot-off" };
+
+function CdnResources({ items }: { items: CdnResource[] }) {
+  return (
+    <div className="table-wrap">
+      <table className="cdn-resources">
+        <thead>
+          <tr>
+            <th>Домен</th>
+            <th>Адрес CDN</th>
+            <th>Источник</th>
+            <th>Статус</th>
+            <th>HTTPS</th>
+            <th>Сервер админки</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((r) => (
+            <tr key={r.id}>
+              <td>
+                <div className="strong mono">{r.domain || "—"}</div>
+                {r.name && <div className="muted small">{r.name}</div>}
+                {r.domains.length > 0 && <div className="muted small mono">{r.domains.join(", ")}</div>}
+              </td>
+              <td className="mono small">{r.address || "—"}</td>
+              <td className="mono small">{r.origin || "—"}</td>
+              <td>
+                <span className="status">
+                  <span className={`dot ${RESOURCE_DOT[r.status] ?? "dot-off"}`} /> {r.status_label || "—"}
+                </span>
+              </td>
+              <td className="small">
+                {r.https === null ? "—" : r.https ? "есть" : <span className="muted">нет</span>}
+                {r.https_note && <div className="muted small">{r.https_note}</div>}
+              </td>
+              <td>{r.owner ? <span className="badge badge-main">{r.owner.server}</span> : <span className="muted small">создан не админкой</span>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

@@ -546,4 +546,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .btn-update:hover:not(:disabled) { background: rgba(var(--warn-rgb), 0.25); }
 .node-update-note { max-width: 220px; margin-top: 4px; }
 
-.toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.cdn-resources td { vertical-align: top; }
+.cdn-resources .mono { overflow-wrap: anywhere; }

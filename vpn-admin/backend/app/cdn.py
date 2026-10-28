@@ -199,9 +199,28 @@ class YandexCloud:
         return op.get("response") or {}
 
     async def check(self) -> dict:
-        resources = await self._request("GET", f"{YC_CDN_URL}/resources", params={"folderId": self.folder})
+        items = await self.resources()
         await self._request("GET", f"{YC_CM_URL}/certificates", params={"folderId": self.folder})
-        return {"folder_id": self.folder, "resources": len(resources.get("resources") or [])}
+        return {"folder_id": self.folder, "resources": len(items), "items": items}
+
+    async def resources(self) -> list[dict]:
+        data = await self._request("GET", f"{YC_CDN_URL}/resources", params={"folderId": self.folder, "pageSize": 1000})
+        try:
+            groups = await self._request("GET", f"{YC_CDN_URL}/originGroups", params={"folderId": self.folder, "pageSize": 1000})
+        except CDNError:
+            groups = {}
+        sources = {str(g.get("id")): [o.get("source", "") for o in g.get("origins") or []]
+                   for g in groups.get("originGroups") or []}
+        out = []
+        for r in data.get("resources") or []:
+            cert = r.get("sslCertificate") or {}
+            out.append(resource_view(
+                id=r.get("id"), domain=r.get("cname"), domains=r.get("secondaryHostnames"),
+                address=r.get("providerCname"),
+                origin=", ".join(sources.get(str(r.get("originGroupId")), [])) or r.get("originGroupName"),
+                status="active" if r.get("active") else "off", https=cert.get("type") not in (None, "", "DONT_USE"),
+                https_note=cert.get("status", ""), created_at=r.get("createdAt")))
+        return out
 
     async def request_certificate(self, domain: str) -> str:
         name = re.sub(r"[^a-z0-9-]", "-", f"vpn-{domain}".lower())[:63].rstrip("-")
@@ -342,9 +361,24 @@ class VKCloud:
 
     async def check(self) -> dict:
         address = await self.address()
-        resources = await self._request("GET", "/resources")
-        return {"project_id": self.project, "address": address,
-                "resources": len(resources) if isinstance(resources, list) else len(resources.get("results") or [])}
+        items = await self.resources(address)
+        return {"project_id": self.project, "address": address, "resources": len(items), "items": items}
+
+    async def resources(self, address: str = "") -> list[dict]:
+        data = await self._request("GET", "/resources")
+        rows = data if isinstance(data, list) else (data or {}).get("results") or []
+        try:
+            groups = await self._request("GET", "/originGroups")
+            groups = groups if isinstance(groups, list) else (groups or {}).get("results") or []
+        except CDNError:
+            groups = []
+        sources = {str(g.get("id")): [o.get("source", "") for o in g.get("origins") or [] if isinstance(o, dict)]
+                   for g in groups if isinstance(g, dict)}
+        return [resource_view(
+            id=r.get("id"), domain=r.get("cname"), domains=r.get("secondaryHostnames"), address=address,
+            origin=", ".join(sources.get(str(r.get("originGroup")), [])) or r.get("originGroup_name"),
+            status={"active": "active" if r.get("active", True) else "off"}.get(r.get("status"), r.get("status") or ""),
+            https=bool(r.get("sslEnabled")), created_at=r.get("created")) for r in rows if isinstance(r, dict)]
 
     async def address(self) -> str:
         """The account's own CDN name, the one every resource's domain points at (cl-….cdn.msk.vkcs.cloud)."""
@@ -486,7 +520,27 @@ class Beget:
 
     async def check(self) -> dict:
         await self._configuration()
-        return {"resources": len(await self._services())}
+        items = await self.resources()
+        return {"resources": len(items), "items": items}
+
+    async def resources(self) -> list[dict]:
+        out = []
+        for service in await self._services():
+            info = service.get("cdn") or {}
+            domains = [d for d in info.get("resource_domain") or [] if isinstance(d, dict)]
+            technical = next((d for d in domains if d.get("is_technical")), {})
+            source = info.get("source_domain") or {}
+            out.append(resource_view(
+                id=service.get("id"), name=service.get("display_name"), domain=technical.get("domain"),
+                domains=[d.get("domain") for d in domains if not d.get("is_technical")], address=technical.get("domain"),
+                origin=f"{(source.get('source_protocol') or '').lower() + '://' if source.get('source_protocol') else ''}"
+                       f"{source.get('domain') or ''}",
+                status={"RUNNING": "active", "CREATING": "processed", "RECONFIGURING": "processed",
+                        "RESTARTING": "processed", "STOPPED": "off", "SUSPENDED": "suspended"}.get(service.get("status"), ""),
+                https=technical.get("status") == "WORKING" if technical else None,
+                https_note={"CONFIGURING": "настраивается", "WORKING_NO_SSL": "без SSL"}.get(technical.get("status"), ""),
+                created_at=service.get("created_at")))
+        return out
 
     async def _configuration(self) -> str:
         data = await self._request("GET", "/v1/cloud/configuration")
@@ -575,6 +629,36 @@ def public(a: db.DnsAccount) -> dict:
             "created_at": a.created_at}
 
 
+STATUS_LABELS = {"active": "работает", "processed": "настраивается", "off": "выключен", "suspended": "приостановлен"}
+
+
+def resource_view(*, id: Any, domain: Any, address: Any, origin: Any, status: str, https: bool | None,
+                  domains: Any = None, name: Any = "", https_note: str = "", created_at: Any = "") -> dict:
+    """One CDN resource of any provider, as the account card lists it."""
+    return {"id": str(id or ""), "name": str(name or ""), "domain": str(domain or "").rstrip("."),
+            "domains": [str(d).rstrip(".") for d in domains or [] if d],
+            "address": str(address or "").rstrip("."), "origin": str(origin or ""), "status": status,
+            "status_label": STATUS_LABELS.get(status, status), "https": https, "https_note": str(https_note or ""),
+            "created_at": str(created_at or "")}
+
+
+def _owners(account_id: int) -> dict[str, dict]:
+    """Resource id -> the created server whose connection has it."""
+    out = {}
+    for p in db.list_provisions():
+        if p.state == "deleted":
+            continue
+        for c in p.connections:
+            acc = c.get("cdn_account_id") or (c.get("options") or {}).get("cdn_account_id")
+            if c.get("cdn_resource_id") and acc == account_id:
+                out[str(c["cdn_resource_id"])] = {"provision_id": p.id, "server": labels_title(p)}
+    return out
+
+
+def labels_title(p: db.Provision) -> str:
+    return (p.labels or {}).get("title") or p.name
+
+
 async def check(provider: str, credentials: dict) -> dict:
     client = CLIENTS[provider](credentials)
     try:
@@ -585,9 +669,12 @@ async def check(provider: str, credentials: dict) -> dict:
 
 async def list_all() -> list[dict]:
     async def one(a: db.DnsAccount) -> dict:
-        out = {**public(a), "ok": False, "error": "", "resources": 0}
+        out = {**public(a), "ok": False, "error": "", "resources": 0, "items": []}
         try:
-            out["resources"] = (await _with(a, lambda c: c.check()))["resources"]
+            checked = await _with(a, lambda c: c.check())
+            owners = _owners(a.id)
+            out["items"] = [{**r, "owner": owners.get(r["id"])} for r in checked.get("items") or []]
+            out["resources"] = checked["resources"]
             out["ok"] = True
         except CDNError as exc:
             out["error"] = str(exc)
