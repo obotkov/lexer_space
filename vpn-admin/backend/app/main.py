@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import cdn, clients, connections, db, dns, hosters, netload, nodes, ping, probe, provision, site, system, tls
+from . import backup, cdn, clients, connections, db, dns, hosters, netload, nodes, ping, probe, provision, site, system, tls
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -607,6 +607,54 @@ async def system_update(user: str = Depends(require_admin)):
         return system.request_update(user)
     except system.UpdateError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+# ---------- backup ----------
+
+class BackupExportIn(BaseModel):
+    password: str
+    sections: list[str] = []
+
+
+class BackupImportIn(BaseModel):
+    backup: dict
+    password: str
+    sections: list[str] = []
+
+
+@app.get("/api/backup/sections", dependencies=[Depends(require_admin)])
+async def backup_sections():
+    return [{"key": k, "title": v["title"], "needs": v.get("needs", [])} for k, v in backup.SECTIONS.items()]
+
+
+@app.post("/api/backup/export", dependencies=[Depends(require_admin)])
+async def backup_export(body: BackupExportIn):
+    try:
+        return await asyncio.to_thread(backup.export, body.password, body.sections)  # the page saves it as a file
+    except backup.BackupError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/backup/preview", dependencies=[Depends(require_admin)])
+async def backup_preview(body: BackupImportIn):
+    try:
+        return await asyncio.to_thread(backup.preview, body.backup, body.password)
+    except backup.BackupError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/backup/import", dependencies=[Depends(require_admin)])
+async def backup_import(body: BackupImportIn):
+    try:
+        result = await asyncio.to_thread(backup.restore, body.backup, body.password, body.sections)
+    except backup.BackupError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    # every cached view of the replaced data goes
+    await pool.close_all()
+    overview_cache.invalidate()
+    hosters.invalidate()
+    probe.kick()
+    return result
 
 
 # ---------- HTTPS for the admin (Let's Encrypt) ----------

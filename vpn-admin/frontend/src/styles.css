@@ -514,3 +514,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .sni-results { display: flex; flex-direction: column; gap: 2px; }
 .conn-table td.actions { white-space: nowrap; text-align: right; }
 .good-text { color: var(--good); }
+
+/* backup */
+.backup-cards { grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr)); align-items: start; }
+.backup-sections { display: grid; gap: 8px; }
+.backup-passwords { flex-wrap: wrap; }
+.backup-passwords .field { min-width: 160px; }
+.backup-preview { display: grid; gap: 10px; }
+.backup-preview-row { align-items: flex-start; color: var(--text); }
+.backup-preview-row input { margin-top: 3px; }
+.backup-items { display: block; margin-top: 2px; word-break: break-word; }

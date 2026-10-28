@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Overview as OverviewData, type UpdateCheck } from "./api";
+import { Backup } from "./pages/Backup";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { VersionBadge } from "./components/VersionBadge";
 import { Login, Shield } from "./pages/Login";
@@ -22,6 +23,7 @@ const TABS = [
   { id: "servers", title: "Серверы 3x-ui" },
   { id: "hosters", title: "VPN API Hoster" },
   { id: "templates", title: "Подключения" },
+  { id: "backup", title: "Бекап" },
   { id: "system", title: "Система" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
@@ -128,7 +130,7 @@ export function App() {
             <h1>{TABS.find((t) => t.id === tab)?.title}</h1>
             {tab === "overview" && <VersionBadge check={updateCheck} onUpdate={() => go("system")} />}
           </div>
-          <div className="topbar-right" hidden={tab === "system" || tab === "hosters" || tab === "templates"}>
+          <div className="topbar-right" hidden={tab === "system" || tab === "hosters" || tab === "templates" || tab === "backup"}>
             {data && <span className="muted small">обновлено {new Date(data.generated_at * 1000).toLocaleTimeString("ru-RU")}</span>}
             <button className="btn" onClick={() => load(true)} disabled={loading}>
               {loading ? "Обновление…" : "Обновить"}
@@ -138,6 +140,8 @@ export function App() {
 
         {tab === "system" ? (
           <System check={updateCheck} onCheck={setUpdateCheck} />
+        ) : tab === "backup" ? (
+          <Backup onRestored={refreshOverview} />
         ) : tab === "templates" ? (
           <ConnectionTemplates />
         ) : error && !data ? (

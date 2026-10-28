@@ -766,6 +766,36 @@ export interface ProvisionCredentials {
   cert_pin: string;
 }
 
+export interface BackupSection {
+  key: string;
+  title: string;
+  /** sections it is restored together with (created servers refer to the panels and hostings) */
+  needs: string[];
+}
+
+export interface BackupFile {
+  format: string;
+  version: number;
+  app_version: string;
+  created_at: number;
+  /** what the file holds and how many of each, readable without the password */
+  sections: Record<string, number>;
+  kdf: Record<string, unknown>;
+  payload: string;
+}
+
+export interface BackupPreview {
+  app_version: string;
+  created_at: number;
+  sections: (BackupSection & { items: string[]; current: number })[];
+}
+
+export interface BackupRestored {
+  restored: { key: string; title: string; count: number }[];
+  /** copy of the database before the import, next to it in the data folder */
+  snapshot: string;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -878,6 +908,11 @@ export const api = {
   siteTemplate: (id: string) => request<{ id: string; html: string }>("GET", `/api/site/templates/${id}`),
   siteApply: (template: string) => request<SiteStatus>("POST", "/api/site/apply", { template }),
   siteCustom: (html: string) => request<SiteStatus>("POST", "/api/site/custom", { html }),
+  backupSections: () => request<BackupSection[]>("GET", "/api/backup/sections"),
+  backupExport: (password: string, sections: string[]) => request<BackupFile>("POST", "/api/backup/export", { password, sections }),
+  backupPreview: (backup: BackupFile, password: string) => request<BackupPreview>("POST", "/api/backup/preview", { backup, password }),
+  backupImport: (backup: BackupFile, password: string, sections: string[]) =>
+    request<BackupRestored>("POST", "/api/backup/import", { backup, password, sections }),
   tls: () => request<TlsStatus>("GET", "/api/tls"),
   tlsCheckDomain: (domain: string) => request<DomainCheck>("GET", `/api/tls/check-domain?domain=${encodeURIComponent(domain)}`),
   tlsIssue: (domain: string, email: string, staging: boolean) =>
