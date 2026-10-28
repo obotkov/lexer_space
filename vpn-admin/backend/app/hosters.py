@@ -1431,6 +1431,9 @@ class Scaleway:
                     raise
 
 
+REBUILD_START_POLLS, REBUILD_START_EVERY = 18, 10  # up to 3 minutes for NetGrid to show the reinstall
+
+
 class NetGrid:
     """NetGrid external API (BILLmanager behind it): Bearer key limited to allowed IPs, errors as {"detail": ...}.
     There is no cloud-init and no SSH keys: the order returns a root password, which the admin logs in with
@@ -1643,10 +1646,21 @@ class NetGrid:
         return str((await self._request("GET", f"/vps/{server_id}") or {}).get("root_password") or "")
 
     async def rebuild_server(self, server_id: str, *, plan: str, name: str, project: str | None = None,
-                             admin_key: str | None = None, os: str = DEFAULT_OS) -> None:
-        """Reinstall the OS; NetGrid sets a new root password, which the install logs in with."""
+                             admin_key: str | None = None, os: str = DEFAULT_OS,
+                             root_password: str | None = None) -> None:
+        """Reinstall the OS with the root password the install logs in with; returns once NetGrid shows the
+        server busy with it (or after a while, if its state never says so), so the old system is not taken
+        for the new one."""
         _, image = await self._image(os)
-        await self._request("POST", f"/vps/{server_id}/reinstall", json={"os_id": image})
+        body = {"os_id": image, **({"password": root_password} if root_password else {})}
+        await self._request("POST", f"/vps/{server_id}/reinstall", json=body)
+        for _ in range(REBUILD_START_POLLS):
+            await asyncio.sleep(REBUILD_START_EVERY)
+            try:
+                if (await self.get_server(server_id))["status"] != "running":
+                    return
+            except HosterError:
+                return  # gone from the API for a moment: busy with the reinstall
 
     async def delete_server(self, server_id: str, project: str | None = None) -> None:
         raise HosterError(self.delete_hint, "NO_DELETE")

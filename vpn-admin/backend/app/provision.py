@@ -205,6 +205,14 @@ def _random(length: int, alphabet: str = string.ascii_letters + string.digits) -
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
+def _root_password() -> str:
+    """Letters of both cases and digits, as password rules of hostings want."""
+    while True:
+        value = _random(24)
+        if any(c.islower() for c in value) and any(c.isupper() for c in value) and any(c.isdigit() for c in value):
+            return value
+
+
 def make_certificate() -> tuple[str, str, str]:
     """Self-signed certificate for the node panel: (cert PEM, key PEM, pin).
     The pin is what 3x-ui compares in "pin" TLS mode: base64 of SHA-256 over the DER certificate."""
@@ -537,8 +545,18 @@ async def _step_rebuild(p: db.Provision) -> None:
     own key re-run their old cloud-init install instead, so such a job carries the old panel credentials."""
     _log(p, f"Переустанавливаю систему на сервере {p.ip}: IP сохранится")
     admin_key = ssh_public_line(p.secrets["service_key"]) if "service_key" in p.secrets else None
-    await _with_client(p, lambda client: client.rebuild_server(
-        p.server_id, plan=p.plan, name=p.name, project=p.project or None, admin_key=admin_key, os=p.os))
+
+    async def rebuild(client) -> None:
+        extra = {}
+        if getattr(client, "setup", "") == "password":
+            # NetGrid: the admin sets the new root password itself rather than trust the one the API shows
+            # (it may still be the old system's), and logs in with it
+            _set(p, secrets={**p.secrets, "root_password": _root_password()})
+            extra["root_password"] = p.secrets["root_password"]
+        await client.rebuild_server(p.server_id, plan=p.plan, name=p.name, project=p.project or None,
+                                    admin_key=admin_key, os=p.os, **extra)
+
+    await _with_client(p, rebuild)
     _log(p, "Хостинг принял переустановку, жду, пока старая система остановится")
     # the old panel must be gone before the install is awaited, or the admin would talk to the old one
     deadline, misses = time.time() + BOOT_TIMEOUT, 0
@@ -602,18 +620,28 @@ async def _install_over_ssh(p: db.Provision, fresh: bool) -> None:
     hoster = db.get_hoster(p.hoster_id)
     by_password = bool(hoster) and getattr(hosters.CLIENTS.get(hoster.provider), "setup", "") == "password"
 
+    attempts = 0
+
     async def root_password() -> str | None:
-        """NetGrid lets nothing in but its root password: the admin logs in with it, read anew on every
-        attempt since a reinstall changes it."""
+        """NetGrid lets nothing in but a root password: the one the admin set with the reinstall, and in turn
+        the one the API shows (a new server's), read anew since a reinstall changes it."""
+        nonlocal attempts
+        attempts += 1
+        own = p.secrets.get("root_password")
+        if own and attempts % 2:
+            return own
         try:
-            return await _with_client(p, lambda c: c.root_password(p.server_id)) or None
+            return await _with_client(p, lambda c: c.root_password(p.server_id)) or own
         except hosters.HosterError as exc:
             log.warning("provision %s: root password not read: %s", p.id, exc)
-            return None
+            return own
 
     keys_script = _authorized_keys_script(await _with_client(p, user_keys))
     key = asyncssh.import_private_key(p.secrets.get("service_key") or p.secrets["ssh_key"])
-    deadline, ssh_deadline = time.time() + _install_timeout(p), time.time() + SSH_WAIT
+    # a reinstall may still be running when the hosting reports the server up: the old system turns the new
+    # password away until the new one boots
+    ssh_wait = SSH_WAIT * 2 if by_password and p.in_place else SSH_WAIT
+    deadline, ssh_deadline = time.time() + _install_timeout(p), time.time() + ssh_wait
     started, finished, shown, lost = False, False, 0, False
     _log(p, "Подключаюсь к серверу по SSH")
     while True:
@@ -669,7 +697,7 @@ async def _install_over_ssh(p: db.Provision, fresh: bool) -> None:
                 break  # the keys were swapped before the link dropped
             why = _ssh_reason(exc, password_too=password is not None)
             if not started and time.time() > ssh_deadline:
-                raise ProvisionError(f"Сервер {p.ip} не пустил по SSH за {SSH_WAIT // 60} минут ({why}): установка "
+                raise ProvisionError(f"Сервер {p.ip} не пустил по SSH за {ssh_wait // 60} минут ({why}): установка "
                                      "остановлена. Проверьте сервер в панели хостинга и нажмите «Повторить»") from exc
             if time.time() > deadline:
                 raise ProvisionError(f"Не удалось выполнить установку по SSH за {_install_timeout(p) // 60} минут: "
@@ -677,7 +705,7 @@ async def _install_over_ssh(p: db.Provision, fresh: bool) -> None:
             if started and not lost:
                 _log(p, f"SSH-подключение прервалось ({why}), переподключаюсь")
             elif not started and not lost:
-                _log(p, f"SSH на сервере пока не отвечает ({why}), жду до {SSH_WAIT // 60} минут")
+                _log(p, f"SSH на сервере пока не отвечает ({why}), жду до {ssh_wait // 60} минут")
             lost = True
             await asyncio.sleep(POLL_EVERY)
     # the TLS key is on the server now; the SSH key stays for a later reinstall, but no longer opens the server
@@ -1160,6 +1188,15 @@ def retry(provision_id: int) -> dict:
     if p.state != "failed":
         raise ProvisionError("Повторить можно только задание с ошибкой")
     _set(p, state="running", error="")
+    hoster = db.get_hoster(p.hoster_id)
+    by_password = bool(hoster) and getattr(hosters.CLIENTS.get(hoster.provider), "setup", "") == "password"
+    if p.in_place and p.step in ("boot", "install") and by_password and "root_password" not in p.secrets:
+        # reinstalled by a version that did not set the root password: the API's may not open the new system,
+        # so the system is reinstalled again, this time with a password of the admin's (the disk is fresh anyway)
+        _set(p, step="rebuild")
+        _log(p, "Повтор: переустанавливаю систему ещё раз с root-паролем, который задаёт админка")
+        _spawn(p.id)
+        return public(p)
     _log(p, "Повтор с шага, на котором была ошибка")
     if p.step == "install":
         _fresh[p.id] = True
