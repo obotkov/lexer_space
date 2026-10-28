@@ -521,6 +521,9 @@ export interface AdoptForm {
   panel_id: number;
   os: string;
   domain: string;
+  /** Cloudflare account and zone the admin points the domain's A record in; 0 = the user does */
+  dns_account_id: number;
+  dns_zone_id: string;
   site_template: string;
   connections: boolean;
   connection_ids: number[];

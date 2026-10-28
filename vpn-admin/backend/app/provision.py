@@ -160,7 +160,10 @@ class AdoptIn(BaseModel):
     server_id: str
     panel_id: int = 0  # main panel for a server that is no node yet; a node stays in its own panel
     os: str = hosters.DEFAULT_OS
-    domain: str = ""  # panel address with a Let's Encrypt certificate; its A record is the user's
+    domain: str = ""  # panel address with a Let's Encrypt certificate
+    # the admin points the domain's A record at the server in this Cloudflare account and zone; 0 = the user does
+    dns_account_id: int = 0
+    dns_zone_id: str = ""
     site_template: str = ""
     connections: bool = True  # only for a server that is no node yet: a node keeps its inbounds
     connection_ids: list[int] | None = None
@@ -1039,8 +1042,9 @@ async def start(body: ProvisionIn) -> dict:
     return public(p)
 
 
-async def _check_dns_name(body: ProvisionIn) -> None:
-    """The name must belong to the chosen zone and must not already point somewhere else."""
+async def _check_dns_name(body: "ProvisionIn | AdoptIn", ip: str = "") -> None:
+    """The name must belong to the chosen zone and must not already point somewhere else (than `ip`, the
+    server's own address when it already exists)."""
     if not body.domain:
         raise ProvisionError("Укажите имя сервера в домене Cloudflare")
     try:
@@ -1050,7 +1054,7 @@ async def _check_dns_name(body: ProvisionIn) -> None:
         taken = await dns.existing_a(body.dns_account_id, body.dns_zone_id, body.domain)
     except dns.DNSError as exc:
         raise ProvisionError(str(exc)) from exc
-    if taken:
+    if taken and taken != ip:
         raise ProvisionError(f"В Cloudflare уже есть A-запись {body.domain} → {taken}: выберите другое имя")
 
 
@@ -1403,12 +1407,15 @@ async def adopt(hoster: db.Hoster, body: AdoptIn) -> dict:
         details = await client.get_server(server["id"], server["project"] or None)
     finally:
         await client.close()
+    if body.dns_account_id:
+        await _check_dns_name(body, server["ipv4"][0])  # a record already on this server is just kept
     kept = node["inbounds"] if node else []
     port, sub_port = _free_ports({i["port"] for i in kept if isinstance(i.get("port"), int)})
     p = _new_job(hoster_id=hoster.id, panel_id=panel_id, name=plan["name"],
                  region=details.get("region_id") or server.get("region_id") or server["region"] or "-",
                  plan=details.get("plan_id") or server.get("plan_id") or server["plan"] or "-",
                  project=server["project"], domain=body.domain, site_template=body.site_template, os=body.os,
+                 dns_account_id=body.dns_account_id if body.domain else 0, dns_zone_id=body.dns_zone_id,
                  in_place=1, step="rebuild", server_id=server["id"], ip=server["ipv4"][0],
                  node_id=node["node_id"] if node else None, port=port, sub_port=sub_port,
                  labels={"region": server["region"][:100], "plan": server["plan"][:100],

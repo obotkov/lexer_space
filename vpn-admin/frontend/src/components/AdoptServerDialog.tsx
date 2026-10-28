@@ -1,9 +1,25 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, type AdoptPlan, type ConnectionTemplate, type HostingOs, type HosterInfo, type HosterServer, type PanelInfo } from "../api";
+import { api, type AdoptPlan, type ConnectionTemplate, type DnsAccount, type HostingOs, type HosterInfo, type HosterServer, type PanelInfo } from "../api";
 import { fillRemark } from "./CreateServerDialog";
 import { StubTemplateSelect } from "./StubTemplateSelect";
 
 const DEFAULT_OS: HostingOs = { id: "ubuntu-24.04", label: "Ubuntu 24.04", regions: null, min_disk_gb: null };
+
+type Address = "ip" | "domain" | "cloudflare";
+
+/** Where the panel address starts: the node's domain as it is (in a Cloudflare zone of the admin, or the
+ * user's own), otherwise a Cloudflare name like for a new server, or the IP. */
+function startAddress(plan: AdoptPlan, dnsAccounts: DnsAccount[]): { address: Address; zoneKey: string; label: string; domain: string } {
+  const first = dnsAccounts[0] ? `${dnsAccounts[0].id}:${dnsAccounts[0].zones[0].id}` : "";
+  if (plan.domain) {
+    for (const a of dnsAccounts)
+      for (const z of a.zones)
+        if (plan.domain === z.name || plan.domain.endsWith(`.${z.name}`))
+          return { address: "cloudflare", zoneKey: `${a.id}:${z.id}`, label: plan.domain.slice(0, -z.name.length).replace(/\.$/, ""), domain: "" };
+    return { address: "domain", zoneKey: first, label: plan.name, domain: plan.domain };
+  }
+  return { address: dnsAccounts.length ? "cloudflare" : "ip", zoneKey: first, label: plan.name, domain: "" };
+}
 
 /** From zero on a server the admin did not create: the hosting reinstalls its OS (the IP stays), the admin
  * installs 3x-ui as on a new server, and the node it already runs switches over, or a new node joins. */
@@ -12,6 +28,7 @@ export function AdoptServerDialog({
   server,
   providerTitle,
   panels,
+  dnsAccounts,
   onClose,
   onStarted,
 }: {
@@ -19,6 +36,8 @@ export function AdoptServerDialog({
   server: HosterServer;
   providerTitle: string;
   panels: PanelInfo[];
+  /** Cloudflare accounts with zones: the admin can point a name of theirs at the server */
+  dnsAccounts: DnsAccount[];
   onClose: () => void;
   onStarted: () => void;
 }) {
@@ -26,7 +45,11 @@ export function AdoptServerDialog({
   const [plan, setPlan] = useState<AdoptPlan | null>(null);
   const [systems, setSystems] = useState<HostingOs[] | null>(null);
   const [os, setOs] = useState(DEFAULT_OS.id);
+  // panel address: the server's IP, a domain whose A record the user keeps, or a Cloudflare name the admin points
+  const [address, setAddress] = useState<Address>("ip");
   const [domain, setDomain] = useState("");
+  const [zoneKey, setZoneKey] = useState("");
+  const [label, setLabel] = useState("");
   const [siteTemplate, setSiteTemplate] = useState<string | null>(null);
   const [panelId, setPanelId] = useState(mainPanels[0]?.id ?? 0);
   const [templates, setTemplates] = useState<ConnectionTemplate[] | null>(null);
@@ -40,7 +63,11 @@ export function AdoptServerDialog({
       (p) => {
         if (!alive) return;
         setPlan(p);
-        setDomain(p.domain);
+        const start = startAddress(p, dnsAccounts);
+        setAddress(start.address);
+        setZoneKey(start.zoneKey);
+        setLabel(start.label);
+        setDomain(start.domain);
       },
       (e) => alive && setError((e as Error).message),
     );
@@ -61,6 +88,7 @@ export function AdoptServerDialog({
     return () => {
       alive = false;
     };
+    // dnsAccounts are read once the plan comes: a refresh of them in the parent must not reset the form
   }, [hoster.id, server.id, server.region_id]);
 
   const node = plan?.node ?? null;
@@ -69,6 +97,11 @@ export function AdoptServerDialog({
   const osLabel = osList.find((o) => o.id === osId)?.label ?? osId;
   const ip = server.ipv4[0] ?? "";
   const foreign = node?.inbounds.filter((i) => i.foreign_certs?.length) ?? [];
+  const [dnsAccountId, zoneId] = zoneKey.split(":");
+  const zone = dnsAccounts.find((a) => String(a.id) === dnsAccountId)?.zones.find((z) => z.id === zoneId);
+  const name = label.trim().toLowerCase();
+  const cloudflareName = zone ? (name ? `${name}.${zone.name}` : zone.name) : "";
+  const panelDomain = address === "domain" ? domain.trim() : address === "cloudflare" ? cloudflareName : "";
   const pick = (id: number, on: boolean) =>
     setPicked((all) => {
       const next = new Set(all);
@@ -88,7 +121,9 @@ export function AdoptServerDialog({
         server_id: server.id,
         panel_id: node ? node.panel_id : panelId,
         os: osId,
-        domain: domain.trim(),
+        domain: panelDomain,
+        dns_account_id: address === "cloudflare" ? Number(dnsAccountId) : 0,
+        dns_zone_id: address === "cloudflare" ? zoneId : "",
         site_template: siteTemplate ?? "",
         connections: !node && picked.size > 0,
         connection_ids: [...picked],
@@ -158,22 +193,62 @@ export function AdoptServerDialog({
               </select>
             </label>
 
-            <label className="field">
-              <span>Домен панели узла (необязательно)</span>
-              <input
-                className="input mono"
-                placeholder="vpn1.example.com"
-                pattern="([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}"
-                value={domain}
-                onChange={(e) => setDomain(e.target.value)}
-              />
+            <div className="field">
+              <span>Адрес панели узла и сертификат</span>
+              <div className="segmented">
+                {(
+                  [
+                    ["ip", "IP-адрес сервера"],
+                    ...(dnsAccounts.length ? [["cloudflare", "Домен Cloudflare"]] : []),
+                    ["domain", "Свой домен"],
+                  ] as [Address, string][]
+                ).map(([id, title]) => (
+                  <button key={id} type="button" className={address === id ? "active" : ""} aria-pressed={address === id} onClick={() => setAddress(id)}>
+                    {title}
+                  </button>
+                ))}
+              </div>
+              {address === "domain" && (
+                <input
+                  className="input mono"
+                  required
+                  placeholder="vpn1.example.com"
+                  pattern="([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}"
+                  value={domain}
+                  onChange={(e) => setDomain(e.target.value)}
+                />
+              )}
+              {address === "cloudflare" && (
+                <div className="domain-row">
+                  <input
+                    className="input mono"
+                    aria-label="Имя в домене"
+                    pattern="([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*"
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                  />
+                  <span className="muted">.</span>
+                  <select className="input" aria-label="Домен Cloudflare" value={zoneKey} onChange={(e) => setZoneKey(e.target.value)}>
+                    {dnsAccounts.map((a) =>
+                      a.zones.map((z) => (
+                        <option key={`${a.id}:${z.id}`} value={`${a.id}:${z.id}`}>
+                          {dnsAccounts.length > 1 ? `${z.name} (${a.name})` : z.name}
+                        </option>
+                      )),
+                    )}
+                  </select>
+                </div>
+              )}
               <small className="muted">
-                {domain.trim()
-                  ? `A-запись ${domain.trim()} должна указывать на ${ip}: тогда сервер выпустит сертификат Let's Encrypt на домен. Если записи нет, установка ждёт её до 20 минут, затем берёт сертификат на IP.`
-                  : "Без домена сервер выпустит сертификат Let's Encrypt на IP: короткий, сервер продлевает его сам."}
-                {plan.domain && domain.trim() === plan.domain ? " Домен взят из адреса узла." : ""}
+                {address === "cloudflare"
+                  ? `Админка создаст в Cloudflare A-запись ${cloudflareName} → ${ip} (без проксирования, иначе VPN не заработает) или оставит её, если она уже указывает на этот сервер, а сервер выпустит на этот домен сертификат Let's Encrypt. При удалении сервера из админки запись удалится.`
+                  : address === "domain"
+                    ? `A-запись ${domain.trim() || "домена"} должна указывать на ${ip}: тогда сервер выпустит сертификат Let's Encrypt на домен. Если записи нет, установка ждёт её до 20 минут, затем берёт сертификат на IP.`
+                    : "Сертификат Let's Encrypt на IP: короткий (около 6 дней), сервер продлевает его сам."}
+                {plan.domain && panelDomain === plan.domain ? " Домен взят из адреса узла." : ""}{" "}
+                Если Let's Encrypt откажет, панель останется на самоподписанном сертификате, закреплённом в основной панели.
               </small>
-            </label>
+            </div>
 
             <StubTemplateSelect value={siteTemplate} onChange={setSiteTemplate} />
 
@@ -210,9 +285,10 @@ export function AdoptServerDialog({
                             </label>
                           ))}
                         </div>
-                        {templates.some((t) => t.kind === "vless_xhttp_cdn" && picked.has(t.id)) && (
+                        {address !== "cloudflare" && templates.some((t) => t.kind === "vless_xhttp_cdn" && picked.has(t.id)) && (
                           <small className="error-text">
-                            Подключение через CDN создаётся только на сервере с доменом Cloudflare, а здесь домен ваш: снимите его галочку.
+                            Подключение через CDN создаётся только на сервере с доменом Cloudflare: выберите адрес «Домен Cloudflare» выше или снимите
+                            его галочку.
                           </small>
                         )}
                       </>

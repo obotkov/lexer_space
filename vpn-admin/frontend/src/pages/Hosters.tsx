@@ -197,6 +197,7 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
           server={adopting.server}
           providerTitle={providers[adopting.hoster.provider]?.title ?? adopting.hoster.provider}
           panels={panels}
+          dnsAccounts={dnsData?.accounts.filter((a) => a.ok && a.zones.length > 0) ?? []}
           onClose={() => setAdopting(null)}
           onStarted={() => {
             setAdopting(null);
