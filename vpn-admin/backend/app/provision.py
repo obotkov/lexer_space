@@ -932,21 +932,28 @@ async def _cdn_names(p: db.Provision) -> None:
         if item["kind"] != "vless_xhttp_cdn" or item.get("cdn_address") or item.get("inbound_id"):
             continue
         o = item["options"]
-        if not p.dns_account_id or not p.domain:  # the reason shows up when its inbound cannot be built
+        own_name = cdn.needs_dns(o.get("cdn_account_id") or 0)
+        if own_name and (not p.dns_account_id or not p.domain):  # the reason shows when its inbound cannot be built
             item["cdn_error"] = "у сервера нет домена Cloudflare: CDN-подключение работает только на таком сервере"
             continue
+        if not own_name and not (p.domain or p.ip):
+            item["cdn_error"] = "у сервера ещё нет адреса для источника CDN"
+            continue
         try:
-            zone = await dns.zone_name(p.dns_account_id, p.dns_zone_id)
             label = connections.fill(o.get("cdn_subdomain") or "cdn-{server}", _target(p).macros).replace(" ", "-")
-            name = f"{label}.{zone}".lower()
-            if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", name):
+            if own_name:
+                name = f"{label}.{await dns.zone_name(p.dns_account_id, p.dns_zone_id)}".lower()
+            else:  # Beget: the resource is served on its own technical name; this one only names it
+                name = label.lower()
+            if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)" + ("+" if own_name else "*"),
+                                name):
                 raise cdn.CDNError(f"имя {name} не годится для DNS: в шаблоне только латиница, цифры и дефис")
 
             async def put_record(kind: str, record: str, content: str) -> str:
                 return await dns.put_record(p.dns_account_id, p.dns_zone_id, kind, record, content,
                                             f"vpn-admin: CDN-подключение {p.name}")
 
-            await cdn.set_up(o.get("cdn_account_id") or 0, item, name, f"{p.domain}:{item['port']}", put_record,
+            await cdn.set_up(o.get("cdn_account_id") or 0, item, name, f"{p.domain or p.ip}:{item['port']}", put_record,
                              lambda m: _log(p, m), lambda: _set(p, connections=p.connections))
             item.pop("cdn_error", None)
         except (cdn.CDNError, dns.DNSError) as exc:

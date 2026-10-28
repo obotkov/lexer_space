@@ -64,7 +64,7 @@ KINDS: dict[str, dict[str, Any]] = {
                 "remark": "MTProto", "note": "прокси только для Telegram"},
     "vless_xhttp_cdn": {"title": "VLESS XHTTP через CDN", "protocol": "vless", "net": "tcp", "tls": True, "port": 0,
                         "remark": "CDN",
-                        "note": "для белых списков: клиенты ходят через CDN (Yandex Cloud), IP сервера не виден; "
+                        "note": "для белых списков: клиенты ходят через CDN (Yandex Cloud, VK Cloud, Beget), IP сервера не виден; "
                                 "медленнее остальных"},
 }
 Kind = Literal["vless_reality", "vless_xhttp_reality", "vless_ws_tls", "trojan_grpc_tls", "vmess_ws_tls",
@@ -455,7 +455,9 @@ def build(item: dict[str, Any], t: Target, node_id: int) -> dict[str, Any]:
         if not host or not address:
             raise TemplateError(item.get("cdn_error") or "CDN-ресурс не создан")
         settings = {"clients": [], "decryption": "none"}
-        xhttp: dict[str, Any] = {"path": _path(o["path"]), "host": host, "mode": "packet-up"}
+        # a CDN that forwards the source's name instead of the client's (Beget) gets no Host check on the node
+        xhttp: dict[str, Any] = {"path": _path(o["path"]), "host": "" if item.get("cdn_any_host") else host,
+                                 "mode": "packet-up"}
         if o["uplink"] == "get-header":
             # uploads as GET requests with the data in headers, 6000 bytes each: what CDNs and filters pass most
             # easily. 3x-ui puts these into the links' "extra"; the server needs room for the base64 headers

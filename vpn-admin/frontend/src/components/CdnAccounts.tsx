@@ -1,7 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { api, type CdnAccountChecked, type CdnAccountForm, type CdnAccounts as CdnAccountsData } from "../api";
 
-const BUTTONS: Record<string, string> = { yandex: "Yandex Cloud", vk: "VK Cloud" };
+const BUTTONS: Record<string, string> = { yandex: "Yandex Cloud", vk: "VK Cloud", beget: "Beget" };
+// accounts that sign in with a login and password rather than a key
+const PASSWORD = ["vk", "beget"];
 
 /** CDN accounts (Yandex Cloud CDN, VK Cloud CDN): a connection for whitelisted networks gets its CDN resource there. */
 export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChanged: () => void }) {
@@ -9,7 +11,7 @@ export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChan
   const [error, setError] = useState("");
 
   const remove = async (a: CdnAccountChecked) => {
-    const secret = a.provider === "vk" ? "Пароль будет стёрт" : "Ключ будет стёрт";
+    const secret = PASSWORD.includes(a.provider) ? "Пароль будет стёрт" : "Ключ будет стёрт";
     if (!confirm(`Удалить CDN-аккаунт «${a.name}» из админки? ${secret}, CDN-ресурсы в облаке останутся.`)) return;
     try {
       await api.deleteCdnAccount(a.id);
@@ -57,6 +59,8 @@ export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChan
                       <>
                         проект <span className="mono">{a.project_id}</span> · {a.username}
                       </>
+                    ) : a.provider === "beget" ? (
+                      <>логин {a.username}</>
                     ) : (
                       <>
                         каталог <span className="mono">{a.folder_id}</span>
@@ -68,7 +72,7 @@ export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChan
               </div>
               <div className="hoster-actions">
                 {a.ok ? (
-                  <span className="badge badge-active">{a.provider === "vk" ? "Доступ работает" : "Ключ работает"}</span>
+                  <span className="badge badge-active">{PASSWORD.includes(a.provider) ? "Доступ работает" : "Ключ работает"}</span>
                 ) : (
                   <span className="badge badge-expired">Ошибка</span>
                 )}
@@ -121,6 +125,7 @@ function CdnAccountDialog({
   onSaved: () => void;
 }) {
   const vk = provider === "vk";
+  const beget = provider === "beget";
   const [name, setName] = useState(account?.name ?? "");
   const [folderId, setFolderId] = useState(account?.folder_id ?? "");
   const [key, setKey] = useState("");
@@ -136,7 +141,9 @@ function CdnAccountDialog({
     setError("");
     const body: CdnAccountForm = vk
       ? { provider, name, project_id: projectId, username, password }
-      : { provider, name, folder_id: folderId, key };
+      : beget
+        ? { provider, name, username, password }
+        : { provider, name, folder_id: folderId, key };
     try {
       if (account) await api.updateCdnAccount(account.id, body);
       else await api.createCdnAccount(body);
@@ -162,8 +169,9 @@ function CdnAccountDialog({
           <input className="input" required value={name} onChange={(e) => setName(e.target.value)} placeholder={`${title}`} />
         </label>
 
-        {vk ? (
+        {vk || beget ? (
           <>
+            {vk && (
             <label className="field">
               <span>Project ID</span>
               <input
@@ -175,9 +183,17 @@ function CdnAccountDialog({
                 autoComplete="off"
               />
             </label>
+            )}
             <label className="field">
-              <span>Логин VK Cloud (email)</span>
-              <input className="input" required value={username} onChange={(e) => setUsername(e.target.value)} placeholder="user@example.com" autoComplete="off" />
+              <span>{vk ? "Логин VK Cloud (email)" : "Логин Beget"}</span>
+              <input
+                className="input"
+                required
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder={vk ? "user@example.com" : "логин аккаунта Beget"}
+                autoComplete="off"
+              />
             </label>
             <label className="field">
               <span>Пароль</span>
@@ -218,12 +234,12 @@ function CdnAccountDialog({
           {help}{" "}
           {helpUrl && (
             <a href={helpUrl} target="_blank" rel="noreferrer">
-              {vk ? "Как включить доступ по API →" : "Как создать ключ →"}
+              {vk ? "Как включить доступ по API →" : beget ? "Доступ к API в панели Beget →" : "Как создать ключ →"}
             </a>
           )}
         </div>
 
-        {busy && <div className="notice notice-info small">{vk ? "Вхожу в VK Cloud и проверяю доступ к CDN…" : "Проверяю ключ и права в каталоге…"}</div>}
+        {busy && <div className="notice notice-info small">{vk ? "Вхожу в VK Cloud и проверяю доступ к CDN…" : beget ? "Вхожу в Beget и проверяю доступ к CDN…" : "Проверяю ключ и права в каталоге…"}</div>}
         {error && <div className="notice notice-bad small">{error}</div>}
 
         <div className="modal-actions">

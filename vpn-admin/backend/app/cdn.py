@@ -9,7 +9,10 @@ the CDN with a CNAME. Clients are given the CDN's own technical address, with th
 Yandex Cloud CDN (a service account's authorized key and a folder) and VK Cloud CDN (a user's login and
 password for the API, and a project). VK Cloud issues the Let's Encrypt certificate itself, for a resource
 whose name already points at the CDN, so there the CNAME comes first and the certificate after it.
-Beget comes later.
+
+Beget CDN (the login and password of a Beget account, API access allowed in its panel) serves only names
+delegated to Beget's own DNS, so a connection there uses the resource's technical name (….begetcdn.cloud)
+with Beget's certificate, and nothing goes into Cloudflare.
 """
 
 import asyncio
@@ -38,6 +41,7 @@ RESOURCE_TIMEOUT = 20 * 60  # Yandex: "creating a resource can take up to 15 min
 VK_IDENTITY_URL = os.getenv("VK_IDENTITY_URL", "https://msk.cloud.vk.ru/infra/identity/v3")
 VK_CDN_URL = os.getenv("VK_CDN_URL", "")  # empty: the "cdn" endpoint from the token's catalog
 VK_CDN_DEFAULT = "https://msk.cloud.vk.ru/api/cdn/api/v1"
+BEGET_API_URL = os.getenv("BEGET_API_URL", "https://api.beget.com")
 VK_CERT_WAIT = 3 * 60  # VK Cloud: "issuing can take up to 30 minutes"; it switches HTTPS on by itself
 
 PROVIDERS = {
@@ -56,7 +60,16 @@ PROVIDERS = {
                 "в VK Cloud; у пользователя должна быть роль, которой разрешён CDN (например, «Администратор проекта»).",
         "help_url": "https://cloud.vk.ru/docs/tools-for-using-services/api/rest-api/enable-api",
     },
-    "beget": {"title": "Beget CDN", "available": False},
+    "beget": {
+        "title": "Beget CDN",
+        "available": True,
+        "help": "Логин и пароль аккаунта Beget. Сначала разрешите вход по API: панель Beget → «Настройки» → «Безопасность» → "
+                "«Доступ к API». Если на аккаунте включена двухфакторная аутентификация, API не пустит без кода — для "
+                "админки заведите отдельный аккаунт без неё. Свой домен Beget CDN раздаёт только с NS Beget, поэтому "
+                "клиенты ходят на технический адрес ресурса (….begetcdn.cloud), сертификат на него выпускает Beget. "
+                "POST Beget открывает только через поддержку, поэтому в шаблоне оставьте отправку через GET.",
+        "help_url": "https://cp.beget.com/settings/security/api",
+    },
 }
 
 
@@ -65,13 +78,13 @@ class CDNError(Exception):
 
 
 class CdnAccountIn(BaseModel):
-    provider: Literal["yandex", "vk"] = "yandex"
+    provider: Literal["yandex", "vk", "beget"] = "yandex"
     name: str = Field(min_length=1, max_length=100)
     folder_id: str = ""  # Yandex
     key: str = ""  # Yandex: the authorized key JSON; empty on edit = keep the stored one
     project_id: str = ""  # VK Cloud
-    username: str = ""  # VK Cloud
-    password: str = ""  # VK Cloud; empty on edit = keep the stored one
+    username: str = ""  # VK Cloud, Beget
+    password: str = ""  # VK Cloud, Beget; empty on edit = keep the stored one
 
     def credentials(self, stored: dict[str, str] | None = None) -> dict[str, str]:
         """What the account keeps, the empty secret fields taken from `stored`."""
@@ -79,6 +92,9 @@ class CdnAccountIn(BaseModel):
         if self.provider == "vk":
             return {"project_id": self.project_id.strip() or stored.get("project_id", ""),
                     "username": self.username.strip() or stored.get("username", ""),
+                    "password": self.password or stored.get("password", "")}
+        if self.provider == "beget":
+            return {"username": self.username.strip() or stored.get("username", ""),
                     "password": self.password or stored.get("password", "")}
         return {"folder_id": self.folder_id.strip() or stored.get("folder_id", ""),
                 "key": self.key.strip() or stored.get("key", "")}
@@ -382,7 +398,153 @@ class VKCloud:
         await self._request("DELETE", f"/sslData/{cert_id}", ok_missing=True)
 
 
-CLIENTS = {"yandex": YandexCloud, "vk": VKCloud}
+_beget_tokens: dict[str, tuple[str, str]] = {}  # login -> (password it was issued for, JWT)
+BEGET_AUTH_ERRORS = {
+    "INCORRECT_CREDENTIALS": "неверный логин или пароль",
+    "IP_BLOCKED": "Beget заблокировал вход с IP админки: разрешите его в настройках доступа к API",
+    "ACCOUNT_ON_MAINTANCE": "аккаунт Beget на обслуживании, повторите позже",
+    "ACCOUNT_DELETED": "аккаунт Beget удалён",
+    "EXPIRED_PASSWORD": "срок пароля истёк: смените его в панели Beget",
+}
+BEGET_CREATE_ERRORS = {
+    "INSUFFICIENT_FUNDS": "на балансе Beget не хватает денег на CDN",
+    "SOURCE_INVALID_IP": "Beget не принял адрес источника",
+    "DOMAIN_LIMIT": "достигнут лимит доменов CDN на аккаунте Beget",
+    "SERVICE_DISABLED": "CDN на аккаунте Beget отключён",
+}
+
+
+class Beget:
+    """Beget CDN: a managed service of Beget's cloud, its source the node over HTTPS, served on its technical name."""
+
+    def __init__(self, credentials: dict[str, Any]):
+        self.login = (credentials.get("username") or "").strip()
+        self.password = credentials.get("password") or ""
+        if not self.login or not self.password:
+            raise CDNError("Укажите логин и пароль Beget")
+        self.http = httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": "vpn-admin"})
+
+    async def close(self) -> None:
+        await self.http.aclose()
+
+    @staticmethod
+    def _message(resp: httpx.Response) -> str:
+        try:
+            data = resp.json()
+        except ValueError:
+            return (resp.text or "").strip()[:200] or f"HTTP {resp.status_code}"
+        if isinstance(data, dict):
+            for key in ("message", "error", "detail"):
+                value = data.get(key)
+                if isinstance(value, dict):
+                    value = value.get("message") or value.get("code")
+                if value:
+                    return str(value)[:300]
+        return f"HTTP {resp.status_code}"
+
+    async def _token(self, fresh: bool = False) -> str:
+        cached = _beget_tokens.get(self.login)
+        if cached and cached[0] == self.password and not fresh:
+            return cached[1]
+        try:
+            resp = await self.http.post(f"{BEGET_API_URL}/v1/auth",
+                                        json={"login": self.login, "password": self.password, "saveMe": True})
+        except httpx.HTTPError as exc:
+            raise CDNError(f"Beget недоступен: {exc}") from exc
+        data = resp.json() if resp.content and "json" in resp.headers.get("content-type", "") else {}
+        error = str(data.get("error") or "")
+        if error.startswith("CODE_REQUIRED") or error == "INCORRECT_CODE":
+            raise CDNError("Beget просит код двухфакторной аутентификации: для админки нужен аккаунт без 2FA")
+        if error or resp.status_code >= 400 or not data.get("token"):
+            why = BEGET_AUTH_ERRORS.get(error) or error or self._message(resp)
+            raise CDNError(f"Beget не пустил: {why}. Проверьте, что вход по API разрешён в панели Beget")
+        _beget_tokens[self.login] = (self.password, data["token"])
+        return data["token"]
+
+    async def _request(self, method: str, path: str, json_body: Any = None, params: dict | None = None,
+                       retry: bool = True) -> Any:
+        try:
+            resp = await self.http.request(method, f"{BEGET_API_URL}{path}", json=json_body, params=params,
+                                           headers={"Authorization": f"Bearer {await self._token()}"})
+        except httpx.HTTPError as exc:
+            raise CDNError(f"Beget недоступен: {exc}") from exc
+        if resp.status_code == 401 and retry:  # the year-long token was revoked: log in again
+            _beget_tokens.pop(self.login, None)
+            return await self._request(method, path, json_body, params, retry=False)
+        if resp.status_code == 404:
+            raise CDNError(f"Beget: не найдено ({self._message(resp)})")
+        if resp.status_code >= 400:
+            raise CDNError(f"Beget: {self._message(resp)}")
+        try:
+            return resp.json() if resp.content else {}
+        except ValueError:
+            return {}
+
+    async def _services(self) -> list[dict]:
+        data = await self._request("GET", "/v1/cloud", params={"limit": 9999})
+        return [s for s in data.get("service") or [] if s.get("type") == "CDN" or s.get("cdn")]
+
+    async def check(self) -> dict:
+        await self._configuration()
+        return {"resources": len(await self._services())}
+
+    async def _configuration(self) -> str:
+        data = await self._request("GET", "/v1/cloud/configuration")
+        found = [c for c in data.get("configuration") or [] if c.get("type") == "CDN"]
+        if not found:
+            raise CDNError("Beget не предлагает CDN на этом аккаунте")
+        found.sort(key=lambda c: c.get("region") != "ru1")
+        return found[0]["id"]
+
+    async def create_resource(self, name: str, origin: str) -> str:
+        """`origin`: the node as host:port; Beget asks for a host and a protocol, the port goes with the host."""
+        data = await self._request("POST", "/v1/cloud", json_body={
+            "configuration_id": await self._configuration(), "display_name": name[:63],
+            "description": "vpn-admin: CDN-подключение",
+            "cdn_params": {"resource_domain": [],
+                           "source_params": {"source_service_type": "DOMAIN", "domain": origin,
+                                             "source_protocol": "HTTPS"}}})
+        failed = data.get("cdn_error") or {}
+        error = failed.get("error") or {}
+        if error.get("code") not in (None, "", "_") or failed.get("domain_error"):
+            why = BEGET_CREATE_ERRORS.get(error.get("code"), "") or error.get("message") or error.get("code") or ""
+            domains = "; ".join(f"{e.get('domain')}: {e.get('message') or e.get('code')}" for e in failed.get("domain_error") or [])
+            raise CDNError(f"Beget не создал CDN ({'; '.join(x for x in (why, domains) if x)})")
+        service_id = (data.get("service") or {}).get("id")
+        if not service_id:
+            raise CDNError("Beget не вернул ID CDN-ресурса")
+        return service_id
+
+    async def resource(self, resource_id: str) -> dict:
+        return (await self._request("GET", f"/v1/cloud/{resource_id}")).get("service") or {}
+
+    async def configure(self, resource_id: str, settings: dict, allow_post: bool) -> None:
+        """XHTTP must not be cached or answered from a stale copy; POST is unlocked only by Beget's support."""
+        if allow_post and settings.get("is_allowed_http_methods_locked", True):
+            raise CDNError("Beget пропускает POST только после обращения в поддержку: выберите в шаблоне отправку "
+                           "через GET или попросите поддержку Beget открыть POST для этого CDN-ресурса")
+        wanted = {**settings,
+                  "caching_time": 1, "caching_time_browser": {"enable": True, "time": 1},
+                  "stale": {"enable": False, "type": []}, "follow_origin_redirect": {"enable": False},
+                  "ignore_query_string": False, "ignore_cookie": False,
+                  "gzip_compression": {"enable": False}, "content_slice": False}
+        if allow_post:
+            wanted["allowed_http_methods"] = {"enable": False, "http_method": []}
+        wanted.pop("is_allowed_http_methods_locked", None)
+        data = await self._request("POST", f"/v1/cloud/cdn/{resource_id}/setting",
+                                   json_body={"service_id": resource_id, "settings": wanted})
+        error = data.get("error") or {}
+        if error.get("code") not in (None, "", "_"):
+            raise CDNError(f"Beget не применил настройки CDN: {error.get('message') or error.get('code')}")
+
+    async def delete_resource(self, resource_id: str) -> None:
+        await self._request("DELETE", f"/v1/cloud/{resource_id}")
+
+    async def delete_certificate(self, cert_id: str) -> None:
+        pass  # the technical name's certificate belongs to the resource
+
+
+CLIENTS = {"yandex": YandexCloud, "vk": VKCloud, "beget": Beget}
 
 
 def _client(account: db.DnsAccount):
@@ -447,6 +609,8 @@ async def set_up(account_id: int, item: dict, domain: str, origin: str, put_reco
     acc = account(account_id)
     if acc.provider == "vk":
         return await _set_up_vk(acc, item, domain, origin, put_record, log, save)
+    if acc.provider == "beget":
+        return await _set_up_beget(acc, item, domain, origin, log, save)
     title = PROVIDERS[acc.provider]["title"]
     client = _client(acc)
     records: list[str] = item.setdefault("cdn_records", [])
@@ -542,6 +706,50 @@ async def _set_up_vk(acc: db.DnsAccount, item: dict, domain: str, origin: str, p
         else:
             log(f"{title}: CDN-ресурс {domain} создан, адрес для клиентов {address}. Сертификат ещё выпускается: "
                 "подключение заработает, когда VK Cloud включит на ресурсе HTTPS (обычно до 30 минут)")
+    finally:
+        await client.close()
+
+
+def needs_dns(account_id: int) -> bool:
+    """Whether the connection gets a name in the server's Cloudflare zone (Beget serves its own technical name)."""
+    found = db.get_cdn_account(account_id)
+    return not found or found.provider != "beget"
+
+
+async def _set_up_beget(acc: db.DnsAccount, item: dict, name: str, origin: str, log: Callable[[str], None],
+                        save: Callable[[], None]) -> None:
+    """Beget: the CDN service with the node as its HTTPS source, its settings, then its technical name, which
+    clients get as both address and SNI. `name` only names the service in Beget's panel."""
+    title = PROVIDERS[acc.provider]["title"]
+    client = _client(acc)
+    try:
+        if not item.get("cdn_resource_id"):
+            item["cdn_resource_id"] = await client.create_resource(name, origin)
+            save()
+            log(f"{title}: создан CDN-ресурс {name} → {origin}")
+        deadline = time.time() + RESOURCE_TIMEOUT
+        while True:
+            service = await client.resource(item["cdn_resource_id"])
+            cdn_info = service.get("cdn") or {}
+            technical = next((d for d in cdn_info.get("resource_domain") or [] if d.get("is_technical")), None)
+            if service.get("status") == "SUSPENDED":
+                raise CDNError(f"{title}: CDN-ресурс {name} приостановлен ({service.get('status_details') or 'проверьте баланс'})")
+            if service.get("status") == "RUNNING" and technical and technical.get("status") == "WORKING":
+                break
+            if time.time() > deadline:
+                raise CDNError(f"{title}: CDN-ресурс {name} не готов за {RESOURCE_TIMEOUT // 60} минут — "
+                               "нажмите «Раскатать подключения», чтобы подождать ещё")
+            await asyncio.sleep(POLL_EVERY)
+        if not item.get("cdn_configured"):
+            await client.configure(item["cdn_resource_id"], cdn_info.get("settings") or {},
+                                   allow_post=item["options"].get("uplink") == "post-body")
+            item["cdn_configured"] = True
+            save()
+        address = technical["domain"].rstrip(".")
+        # Beget may reach the node under the source's name, so the inbound takes any Host
+        item.update(cdn_domain=address, cdn_address=address, cdn_account_id=acc.id, cdn_any_host=True)
+        save()
+        log(f"{title}: CDN-ресурс готов, адрес для клиентов {address}")
     finally:
         await client.close()
 
