@@ -922,7 +922,7 @@ def _target(p: db.Provision) -> connections.Target:
         cert = key = pin = ""
     return connections.Target(server=p.name, tls_name=p.domain if p.cert_mode == "domain" else "",
                               cert_file=cert, key_file=key, pin_hex=pin, stub_html=_stub_html(p) if p.site_template else "",
-                              region=p.labels.get("region") or p.region)
+                              region=p.labels.get("region") or p.region, ip=p.ip)
 
 
 async def _cdn_names(p: db.Provision) -> None:
@@ -961,8 +961,40 @@ async def _cdn_names(p: db.Provision) -> None:
     _set(p, connections=p.connections)
 
 
+async def _xdns_names(p: db.Provision) -> None:
+    """A DNS tunnel gets its name before its inbound: <name>.<zone> delegated by an NS record to <name>-ns.<zone>,
+    which points at the server, so resolvers bring the tunnel's queries to its port 53."""
+    for item in p.connections:
+        if item["kind"] != "vless_xdns" or item.get("xdns_domain") or item.get("inbound_id"):
+            continue
+        if not p.dns_account_id or not p.domain or not p.ip:
+            item["xdns_error"] = "у сервера нет домена Cloudflare: DNS-туннель работает только на таком сервере"
+            continue
+        try:
+            zone = await dns.zone_name(p.dns_account_id, p.dns_zone_id)
+            label = connections.fill(item["options"].get("dns_subdomain") or "t-{server}", _target(p).macros)
+            tunnel = f"{label.replace(' ', '-')}.{zone}".lower()
+            if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", tunnel):
+                raise dns.DNSError(f"имя {tunnel} не годится для DNS: в шаблоне только латиница, цифры и дефис")
+            first, _, rest = tunnel.partition(".")
+            server_name = f"{first}-ns.{rest}"
+            records: list[str] = item.setdefault("xdns_records", [])
+            comment = f"vpn-admin: DNS-туннель {p.name}"
+            for kind, name, content in (("A", server_name, p.ip), ("NS", tunnel, server_name)):
+                record_id = await dns.put_record(p.dns_account_id, p.dns_zone_id, kind, name, content, comment)
+                if record_id not in records:
+                    records.append(record_id)
+            item.update(xdns_domain=tunnel)
+            item.pop("xdns_error", None)
+            _log(p, f"Cloudflare: {tunnel} делегирован на {server_name} → {p.ip} (DNS-туннель)")
+        except dns.DNSError as exc:
+            item["xdns_error"] = str(exc)
+    _set(p, connections=p.connections)
+
+
 async def _roll_out(p: db.Provision) -> None:
     await _cdn_names(p)
+    await _xdns_names(p)
     _, xui = await nodes.main_panel(p.panel_id)
     try:
         await connections.rollout(xui, p.node_id, p.connections, _target(p), lambda m: _log(p, m),
@@ -1391,6 +1423,7 @@ async def delete_hosted_server(hoster: db.Hoster, server_id: str) -> dict:
                 _log(p, f"CDN-ресурс {c.get('cdn_domain')} не удалён: {'; '.join(problems)}" if problems
                      else f"CDN-ресурс и сертификат {c.get('cdn_domain')} удалены")
             records += [(r, f"запись CDN-подключения {c.get('cdn_domain')}") for r in c.get("cdn_records") or []]
+            records += [(r, f"запись DNS-туннеля {c.get('xdns_domain')}") for r in c.get("xdns_records") or []]
             if c.get("cdn_record_id"):  # 0.27.0: Cloudflare's own proxy
                 records.append((c["cdn_record_id"], f"CDN-запись {c['cdn_domain']}"))
         for record_id, what in records if p.dns_account_id else []:

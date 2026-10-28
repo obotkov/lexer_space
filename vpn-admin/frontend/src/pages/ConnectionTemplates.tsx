@@ -9,6 +9,7 @@ import {
   type ConnectionsData,
   type ConnectionTemplate,
   type ConnectionUsers,
+  type MainInbound,
 } from "../api";
 import { Switch } from "../components/NodeDialog";
 
@@ -45,6 +46,14 @@ const OPTION_LABELS: Record<string, { label: string; hint?: string }> = {
     hint: "Поддомен в домене Cloudflare сервера: на него выпускается сертификат и создаётся CDN-ресурс, клиенты видят его в SNI. У Beget это только название ресурса в его панели: клиенты ходят на технический адрес ….begetcdn.cloud. Работают макросы {server}, {region} и другие, но в имени остаются только латиница, цифры и дефис",
   },
   uplink: { label: "Как клиент отправляет данные" },
+  dns_subdomain: {
+    label: "Имя DNS-туннеля в Cloudflare",
+    hint: "Поддомен в домене Cloudflare сервера: админка делегирует его серверу записью NS (на <имя>-ns.<домен> с IP сервера), и резолверы несут запросы туннеля на его порт 53. Работают макросы {server}, {region} и другие",
+  },
+  resolvers: {
+    label: "DNS-серверы для клиентов",
+    hint: "Через них клиенты отправляют запросы туннеля, через запятую: udp://77.88.8.8:53, tcp://…, https://dns.google/dns-query. В режиме белых списков берите тот, что у оператора открыт (например, Яндекс DNS)",
+  },
 };
 
 // the same option means something else in another kind
@@ -97,6 +106,8 @@ function summary(t: ConnectionTemplate): string {
       return `${o.subnet} · ${o.variant === "full" ? "AmneziaWG 3.1" : "классические параметры"}`;
     case "mtproto":
       return String(o.domain);
+    case "vless_xdns":
+      return `${o.dns_subdomain}.<домен Cloudflare> · ${o.resolvers}`;
     case "vless_xhttp_cdn":
       return `${o.cdn_subdomain}.<домен Cloudflare> · ${o.uplink === "get-header" ? "GET в заголовках" : "POST"}`;
     default:
@@ -644,6 +655,15 @@ function TemplateDialog({
           </div>
         )}
 
+        {kindId === "vless_xdns" && (
+          <div className="notice notice-info small">
+            Для сетей, где проходит только DNS. Нужен сервер, заказанный с доменом Cloudflare: при раскатке админка создаёт в этом домене
+            имя туннеля (по умолчанию t-имя сервера) и делегирует его серверу записью NS на t-имя-ns с IP сервера. Клиенты шлют DNS-запросы
+            через указанные DNS-серверы, те приводят их на UDP-порт 53 сервера (он слушает только свой IP, чтобы не мешать systemd-resolved).
+            Порт 53 обязателен: если он занят, подключение не создастся. Имя туннеля у каждого сервера своё и подставляется даже поверх
+            своего JSON. Делегирование расходится по DNS от нескольких минут до часа; скорость — десятки килобайт в секунду.
+          </div>
+        )}
         {kind.tls && kindId !== "vless_xhttp_cdn" && (
           <div className="notice notice-info small">
             Использует сертификат сервера, который получает установка: Let's Encrypt на домен или IP. Если сервер остался с самоподписанным
@@ -822,6 +842,36 @@ function JsonTab({
   onKeepSecrets: (on: boolean) => void;
   onImport: () => void;
 }) {
+  const [mains, setMains] = useState<MainInbound[] | null>(null);
+  const [mainsError, setMainsError] = useState("");
+  const [picked, setPicked] = useState("");
+  const [taking, setTaking] = useState(false);
+
+  useEffect(() => {
+    if (!importing || mains) return;
+    api.mainInbounds().then(
+      (r) => {
+        setMains(r.inbounds);
+        setMainsError(r.errors.join("; "));
+        if (r.inbounds.length) setPicked(`${r.inbounds[0].panel_id}:${r.inbounds[0].id}`);
+      },
+      (e) => setMainsError((e as Error).message),
+    );
+  }, [importing, mains]);
+
+  const takeMain = async () => {
+    const [panelId, inboundId] = picked.split(":").map(Number);
+    setTaking(true);
+    setMainsError("");
+    try {
+      onImportText((await api.mainInbound(panelId, inboundId)).text);
+    } catch (e) {
+      setMainsError((e as Error).message);
+    } finally {
+      setTaking(false);
+    }
+  };
+
   return (
     <div className="field">
       <small className="muted">
@@ -856,6 +906,27 @@ function JsonTab({
       </div>
       {importing && (
         <div className="json-import">
+          <label className="field">
+            <span>С основной панели</span>
+            <div className="input-with-button">
+              <select className="input" value={picked} onChange={(e) => setPicked(e.target.value)} disabled={!mains?.length || taking}>
+                {!mains && <option value="">загружаю инбаунды…</option>}
+                {mains?.length === 0 && <option value="">инбаундов нет</option>}
+                {mains?.map((i) => (
+                  <option key={`${i.panel_id}:${i.id}`} value={`${i.panel_id}:${i.id}`}>
+                    {i.xdns ? "DNS-туннель · " : ""}
+                    {i.server} · {i.remark || i.protocol} · {i.protocol}
+                    {i.network ? `/${i.network}` : ""} · {i.port}
+                  </option>
+                ))}
+              </select>
+              <button type="button" className="btn btn-small" onClick={takeMain} disabled={!picked || taking || busy}>
+                {taking ? "Беру…" : "Взять"}
+              </button>
+            </div>
+            <small className="muted">Админка подставит JSON инбаунда ниже (без пользователей); затем нажмите «Загрузить».</small>
+          </label>
+          {mainsError && <div className="notice notice-warn small">{mainsError}</div>}
           <textarea
             className="input mono json-editor json-editor-small"
             spellCheck={false}

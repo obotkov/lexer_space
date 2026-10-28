@@ -34,6 +34,7 @@ from . import db
 from .xui import XUIClient, XUIError, v3_record_to_client
 
 PORT_RANGE = (20000, 60000)
+XDNS_EDNS0 = 1232  # the EDNS0 payload xdns offered before it became a setting; without it answers cap at 512
 FINGERPRINTS = ["chrome", "firefox", "safari", "ios", "edge", "random", "randomized"]
 SNIFFING = {"enabled": True, "destOverride": ["http", "tls", "quic"], "metadataOnly": False, "routeOnly": False}
 
@@ -65,13 +66,17 @@ KINDS: dict[str, dict[str, Any]] = {
                   "remark": "AmneziaWG", "note": "WireGuard с маскировкой; приложения AmneziaVPN/AmneziaWG"},
     "mtproto": {"title": "MTProto (Telegram)", "protocol": "mtproto", "net": "tcp", "tls": False, "port": 0,
                 "remark": "MTProto", "note": "прокси только для Telegram"},
+    "vless_xdns": {"title": "VLESS через DNS-туннель (xdns)", "protocol": "vless", "net": "udp", "tls": False,
+                   "port": 53, "fixed_port": True, "remark": "DNS",
+                   "note": "для сетей, где проходит только DNS: трафик идёт DNS-запросами через резолвер; очень медленный; "
+                           "нужен домен Cloudflare сервера"},
     "vless_xhttp_cdn": {"title": "VLESS XHTTP через CDN", "protocol": "vless", "net": "tcp", "tls": True, "port": 0,
                         "remark": "CDN",
                         "note": "для белых списков: клиенты ходят через CDN (Yandex Cloud, VK Cloud, Beget), IP сервера не виден; "
                                 "медленнее остальных"},
 }
 Kind = Literal["vless_reality", "vless_xhttp_reality", "vless_tcp_tls", "vless_ws_tls", "trojan_grpc_tls", "vmess_ws_tls",
-               "shadowsocks", "hysteria2", "tuic", "wireguard", "amneziawg", "mtproto", "vless_xhttp_cdn"]
+               "shadowsocks", "hysteria2", "tuic", "wireguard", "amneziawg", "mtproto", "vless_xhttp_cdn", "vless_xdns"]
 
 # kind → option → (default, allowed values or None for free text / numbers)
 OPTIONS: dict[str, dict[str, tuple[Any, list[Any] | None]]] = {
@@ -93,6 +98,9 @@ OPTIONS: dict[str, dict[str, tuple[Any, list[Any] | None]]] = {
     "amneziawg": {"variant": ("classic", ["classic", "full"]), "subnet": ("10.8.1.0/24", None),
                   "dns": ("1.1.1.1", None)},
     "mtproto": {"domain": ("www.cloudflare.com", None)},
+    # dns_subdomain: the tunnel's name in the server's Cloudflare zone, delegated to the server by an NS record;
+    # resolvers: what clients send their DNS queries through
+    "vless_xdns": {"dns_subdomain": ("t-{server}", None), "resolvers": ("udp://77.88.8.8:53, udp://1.1.1.1:53", None)},
     # cdn_subdomain: the connection's name in the server's Cloudflare zone, which the CDN serves
     "vless_xhttp_cdn": {"cdn_account_id": (0, None), "cdn_subdomain": ("cdn-{server}", None), "path": ("", None),
                         "uplink": ("get-header", ["get-header", "post-body"]),
@@ -146,6 +154,11 @@ def _clean_options(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("cdn_subdomain: латиница, цифры, дефис, точка и макросы вроде {server}")
         if not db.get_cdn_account(out["cdn_account_id"]):
             raise ValueError("cdn_account_id: выберите CDN-аккаунт (подключается на странице VPN API Hoster)")
+    if kind == "vless_xdns":
+        out["dns_subdomain"] = out["dns_subdomain"].strip(".").lower()
+        if not out["dns_subdomain"] or not all(c.isalnum() or c in "-.{}" for c in out["dns_subdomain"]):
+            raise ValueError("dns_subdomain: латиница, цифры, дефис, точка и макросы вроде {server}")
+        out["resolvers"] = ", ".join(_resolvers(out["resolvers"]))
     if kind == "mtproto" and not _host_ok(out["domain"]):
         raise ValueError("domain: нужен домен, например www.cloudflare.com")
     for name in ("path", "service_name"):
@@ -157,6 +170,20 @@ def _clean_options(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
 
 
 clean_options = _clean_options
+
+
+XDNS_SCHEMES = ("udp://", "tcp://", "https://", "quic://")
+
+
+def _resolvers(text: str) -> list[str]:
+    """DNS servers the clients query: udp://8.8.8.8:53, https://dns.google/dns-query and the like."""
+    found = [r.strip() for r in text.replace(";", ",").replace(" ", ",").split(",") if r.strip()]
+    for r in found:
+        if not r.startswith(XDNS_SCHEMES) or len(r) <= len(r.split("://")[0]) + 3:
+            raise ValueError(f"resolvers: {r} — нужен адрес вида udp://77.88.8.8:53 или https://dns.google/dns-query")
+    if not found:
+        raise ValueError("resolvers: укажите хотя бы один DNS-сервер, например udp://77.88.8.8:53")
+    return found
 
 
 def _host_ok(name: str) -> bool:
@@ -260,15 +287,18 @@ def plan(items: list[dict[str, Any]], taken: set[tuple[int, str]]) -> list[dict[
     out = []
     for t in items:
         nets = _nets(KINDS[t["kind"]]["net"])
-        port = t["port"]
+        port, busy = t["port"], False
         if port and any((port, n) in used for n in nets):
-            port = 0  # the fixed port is busy on this server: a random one instead
+            if KINDS[t["kind"]].get("fixed_port"):
+                busy = True  # resolvers ask on 53 only: no other port will do
+            else:
+                port = 0  # the fixed port is busy on this server: a random one instead
         while not port:
             candidate = rng.randrange(*PORT_RANGE)
             if not any((candidate, n) in used for n in ("tcp", "udp")):
                 port = candidate
         used.update((port, n) for n in nets)
-        out.append({**t, "port": port})
+        out.append({**t, "port": port, **({"port_busy": True} if busy else {})})
     return out
 
 
@@ -285,7 +315,20 @@ def inbound_nets(inbound: dict[str, Any]) -> list[str]:
         return ["udp"]
     if protocol == "shadowsocks":
         return ["tcp", "udp"]
+    stream = parse_stream(inbound.get("streamSettings"))
+    if stream.get("network") == "kcp":  # mKCP, a DNS tunnel among them
+        return ["udp"]
     return ["tcp"]
+
+
+def parse_stream(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def macros(server: str, region: str = "") -> dict[str, str]:
@@ -331,6 +374,7 @@ class Target:
     key_file: str
     pin_hex: str         # sha256 of a self-signed certificate (clients trust exactly it), else ""
     stub_html: str = ""  # decoy page for Hysteria2 masquerade
+    ip: str = ""         # the server's public address, for what must listen on it alone (DNS on 53)
     region: str = ""     # region label, for {region}, {flag}, {country} and {city} in remarks
 
     @property
@@ -486,11 +530,29 @@ def build(item: dict[str, Any], t: Target, node_id: int) -> dict[str, Any]:
         stream = {"network": "xhttp", "security": "tls", "tlsSettings": tls, "xhttpSettings": xhttp,
                   # links lead to the CDN's technical address, the name stays as SNI and Host
                   "externalProxy": [{"forceTls": "same", "dest": address, "port": 443, "remark": ""}]}
+    elif kind == "vless_xdns":
+        if item.get("port_busy"):
+            raise TemplateError(f"порт {item['port']}/udp на сервере уже занят, а DNS-туннелю нужен именно он")
+        if not item.get("xdns_domain"):
+            raise TemplateError(item.get("xdns_error") or "домен DNS-туннеля не создан")
+        settings = {"clients": [], "decryption": "none"}
+        stream = {"network": "kcp", "security": "none",
+                  # xdns answers carry less than a plain UDP packet: 3x-ui sets 900 for it
+                  "kcpSettings": {"mtu": 900, "tti": 20, "uplinkCapacity": 5, "downlinkCapacity": 20,
+                                  "cwndMultiplier": 1, "maxSendingWindow": 2097152},
+                  "finalmask": {"udp": [{"type": "xdns", "settings": {
+                      "domains": [{"names": [item["xdns_domain"]], "edns0": XDNS_EDNS0}],
+                      "resolvers": [{"addrs": _resolvers(o["resolvers"])}]}}]}}
     else:
         raise TemplateError(f"Неизвестный тип подключения: {kind}")
     sections = _apply_custom({"settings": settings, "streamSettings": stream, "sniffing": copy.deepcopy(SNIFFING)},
                              o.get("custom"))
-    return {"enable": True, "remark": fill(item["remark"], t.macros), "listen": "", "port": item["port"],
+    listen = ""
+    if kind == "vless_xdns":
+        _xdns_names(sections["streamSettings"], item["xdns_domain"])
+        # on 0.0.0.0:53 it would clash with systemd-resolved's stub on 127.0.0.53
+        listen = t.ip
+    return {"enable": True, "remark": fill(item["remark"], t.macros), "listen": listen, "port": item["port"],
             "protocol": KINDS[kind]["protocol"], "settings": json.dumps(sections["settings"]),
             "streamSettings": json.dumps(sections["streamSettings"]), "sniffing": json.dumps(sections["sniffing"]),
             "expiryTime": 0, "total": 0, "nodeId": node_id}
@@ -580,9 +642,21 @@ def _mark(a: Any, b: Any) -> Any:
     return a if a == b else AUTO
 
 
+def _xdns_names(stream: Any, domain: str) -> None:
+    """Every xdns mask answers for this server's own tunnel name, whatever an own JSON brought along (lists in
+    it replace the build's whole, so the name is put in after it)."""
+    masks = ((stream.get("finalmask") or {}).get("udp") or []) if isinstance(stream, dict) else []
+    for mask in masks:
+        if isinstance(mask, dict) and str(mask.get("type", "")).lower() == "xdns":
+            settings = mask.setdefault("settings", {})
+            domains = [d for d in settings.get("domains") or [] if isinstance(d, dict)]
+            settings["domains"] = [{**d, "names": [domain]} for d in domains] or [{"names": [domain], "edns0": XDNS_EDNS0}]
+
+
 def _sections(kind: str, options: dict[str, Any], t: Target, cdn: str) -> dict[str, Any]:
+    # the tunnel's name is the same in both samples so its mask list stays readable; build() puts each server's own
     item = {"kind": kind, "remark": "", "port": 443, "options": options, "cdn_domain": f"cdn-{cdn}.example.com",
-            "cdn_address": f"{cdn}.cdn.example.net"}
+            "cdn_address": f"{cdn}.cdn.example.net", "xdns_domain": AUTO}
     body = build(item, t, 0)
     return {name: json.loads(body[name]) for name in SECTIONS}
 
@@ -615,7 +689,8 @@ def custom_from(kind: str, options: dict[str, Any], edited: Any) -> dict[str, An
     for t in _sample_targets():  # must still build on any server
         try:
             build({"kind": kind, "remark": "", "port": 443, "options": {**options, "custom": custom},
-                   "cdn_domain": "cdn.example.com", "cdn_address": "cdn.example.net"}, t, 0)
+                   "cdn_domain": "cdn.example.com", "cdn_address": "cdn.example.net", "xdns_domain": "t.example.com"},
+                  t, 0)
         except (TemplateError, TypeError, AttributeError, KeyError) as exc:
             raise ValueError(f"JSON не подходит: {exc}") from exc
     return custom
@@ -659,6 +734,11 @@ def _foreign_inbound(text: str) -> dict[str, Any]:
     return out
 
 
+def has_xdns(stream: Any) -> bool:
+    masks = ((stream.get("finalmask") or {}).get("udp") or []) if isinstance(stream, dict) else []
+    return any(isinstance(m, dict) and str(m.get("type", "")).lower() == "xdns" for m in masks)
+
+
 def import_config(text: str, keep_secrets: bool = False) -> dict[str, Any]:
     """A template made of a foreign inbound: its kind, port and own JSON. Keys, passwords and the like become
     "{auto}" (every server gets its own) unless `keep_secrets`; users are never taken over."""
@@ -667,6 +747,8 @@ def import_config(text: str, keep_secrets: bool = False) -> dict[str, Any]:
     stream = inbound.get("streamSettings") if isinstance(inbound.get("streamSettings"), dict) else {}
     network, security = str(stream.get("network") or "tcp").lower(), str(stream.get("security") or "none").lower()
     exact = next((k for p, n, sec, k in _IMPORT_KINDS if (p, n, sec) == (protocol, network, security)), None)
+    if protocol == "vless" and has_xdns(stream):
+        exact = "vless_xdns"
     # TLS of VLESS over another network: the kind that has the server's certificate
     kind = exact or ("vless_ws_tls" if (protocol, security) == ("vless", "tls") else _IMPORT_FIRST[protocol])
     options = _form_of(kind, inbound)
@@ -717,6 +799,11 @@ def _form_of(kind: str, inbound: dict[str, Any]) -> dict[str, Any]:
         "method": settings.get("method"),
         "short_ids": len(reality["shortIds"]) if isinstance(reality.get("shortIds"), list) and reality["shortIds"] else None,
         "domain": settings.get("fakeTlsDomain"),
+        "resolvers": ", ".join(a for m in ((stream.get("finalmask") or {}).get("udp") or [])
+                               if isinstance(m, dict) and str(m.get("type", "")).lower() == "xdns"
+                               for r in (m.get("settings") or {}).get("resolvers") or [] if isinstance(r, dict)
+                               for a in r.get("addrs") or [] if isinstance(a, str))
+        if isinstance(stream.get("finalmask"), dict) else None,
     }
     for name, value in found.items():
         if name in options and value not in (None, ""):

@@ -98,7 +98,9 @@ class Cloudflare:
         """A DNS-only record of any type, replacing one of the same type and name; returns its ID."""
         found = await self._request("GET", f"/zones/{zone_id}/dns_records", params={"type": kind, "name": name})
         record = next(iter(found.get("result") or []), None)
-        body = {"type": kind, "name": name, "content": content, "ttl": 1, "proxied": False, "comment": comment}
+        body = {"type": kind, "name": name, "content": content, "ttl": 1, "comment": comment}
+        if kind in ("A", "AAAA", "CNAME"):  # the only ones Cloudflare can proxy
+            body["proxied"] = False
         if record:
             data = await self._request("PATCH", f"/zones/{zone_id}/dns_records/{record['id']}", json=body)
         else:

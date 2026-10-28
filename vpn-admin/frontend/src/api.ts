@@ -794,6 +794,20 @@ export interface ConnectionTemplateForm {
 }
 
 /** A template made of a foreign inbound */
+/** An inbound of a main panel (its own or a node's), offered as the source of a template. */
+export interface MainInbound {
+  panel_id: number;
+  panel: string;
+  id: number;
+  remark: string;
+  protocol: string;
+  network: string;
+  port: number;
+  server: string;
+  /** a DNS tunnel (xdns mask) */
+  xdns: boolean;
+}
+
 export interface ConnectionImport {
   kind: string;
   port: number;
@@ -989,6 +1003,9 @@ export const api = {
     request<{ json: ConnectionSections }>("POST", "/api/connections/preview", { kind, options, custom }),
   connectionCustom: (kind: string, options: Record<string, ConnectionOptionValue>, json: unknown) =>
     request<{ custom: ConnectionCustom | null }>("POST", "/api/connections/json", { kind, options, json }),
+  mainInbounds: () => request<{ inbounds: MainInbound[]; errors: string[] }>("GET", "/api/connections/main-inbounds"),
+  mainInbound: (panelId: number, inboundId: number) =>
+    request<{ text: string }>("GET", `/api/connections/main-inbounds/${panelId}/${inboundId}`),
   importConnection: (text: string, keepSecrets: boolean) =>
     request<ConnectionImport>("POST", "/api/connections/import", { text, keep_secrets: keepSecrets }),
   checkSni: (host: string) => request<{ results: Record<string, string> }>("POST", "/api/connections/check-sni", { host }),

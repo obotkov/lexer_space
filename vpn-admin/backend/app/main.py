@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Literal
@@ -636,6 +637,48 @@ class ImportIn(BaseModel):
 @app.post("/api/connections/import", dependencies=[Depends(require_admin)])
 async def connections_import(body: ImportIn):
     return _json_call(lambda: connections.import_config(body.text, body.keep_secrets))
+
+
+@app.get("/api/connections/main-inbounds", dependencies=[Depends(require_admin)])
+async def connections_main_inbounds():
+    """Inbounds of every main panel (its own and its nodes'), to take one as a template; DNS tunnels first."""
+    out, errors = [], []
+    for panel in db.list_panels():
+        try:
+            _, xui = await nodes.main_panel(panel.id)
+            names = {n.get("id"): n.get("name", "") for n in await xui.v3_nodes()}
+            inbounds = await xui.inbounds()
+        except (nodes.NodeError, XUIError) as exc:
+            errors.append(f"{panel.name}: {exc}")
+            continue
+        for i in inbounds:
+            stream = connections.parse_stream(i.get("streamSettings"))
+            out.append({"panel_id": panel.id, "panel": panel.name, "id": i.get("id"), "remark": i.get("remark", ""),
+                        "protocol": i.get("protocol", ""), "network": stream.get("network", ""), "port": i.get("port"),
+                        "server": names.get(i.get("nodeId"), "") if i.get("nodeId") else panel.name,
+                        "xdns": connections.has_xdns(stream)})
+    out.sort(key=lambda i: (not i["xdns"], i["panel"], i["server"], i["port"] or 0))
+    return {"inbounds": out, "errors": errors}
+
+
+@app.get("/api/connections/main-inbounds/{panel_id}/{inbound_id}", dependencies=[Depends(require_admin)])
+async def connections_main_inbound(panel_id: int, inbound_id: int):
+    """One inbound as JSON for the import, without its users."""
+    try:
+        _, xui = await nodes.main_panel(panel_id)
+        inbound = next((i for i in await xui.inbounds() if i.get("id") == inbound_id), None)
+    except (nodes.NodeError, XUIError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not inbound:
+        raise HTTPException(404, "Инбаунд не найден на основной панели")
+    keep = ("protocol", "port", "listen", "remark", "settings", "streamSettings", "sniffing")
+    out = {k: inbound[k] for k in keep if k in inbound}
+    for name in ("settings", "streamSettings", "sniffing"):
+        if isinstance(out.get(name), str):
+            out[name] = connections.parse_stream(out[name])
+    if isinstance(out.get("settings"), dict):
+        out["settings"].pop("clients", None)
+    return {"text": json.dumps(out, ensure_ascii=False, indent=2)}
 
 
 class SniIn(BaseModel):
