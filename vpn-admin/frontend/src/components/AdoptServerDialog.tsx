@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, type AdoptPlan, type ConnectionTemplate, type CreateOptions, type DnsAccount, type HostingOs, type HosterInfo, type HosterServer, type PanelInfo } from "../api";
-import { fillRemark, randomName, SshKeyField } from "./CreateServerDialog";
+import { fillRemark, randomName, regionPrefix, SshKeyField } from "./CreateServerDialog";
 import { StubTemplateSelect } from "./StubTemplateSelect";
 
 const DEFAULT_OS: HostingOs = { id: "ubuntu-24.04", label: "Ubuntu 24.04", regions: null, min_disk_gb: null };
@@ -117,6 +117,9 @@ export function AdoptServerDialog({
   const sub = (label ?? name).trim().toLowerCase();
   const cloudflareName = zone ? (sub ? `${sub}.${zone.name}` : zone.name) : "";
   const panelDomain = address === "domain" ? domain.trim() : address === "cloudflare" ? cloudflareName : "";
+  // a new node is named with the region's flag and country first, like a new server
+  const prefix = regionPrefix(server.region);
+  const title = `${prefix} ${name.trim()}`.trim();
   const pick = (id: number, on: boolean) =>
     setPicked((all) => {
       const next = new Set(all);
@@ -136,6 +139,7 @@ export function AdoptServerDialog({
       await api.adoptServer(hoster.id, {
         server_id: server.id,
         name: name.trim(),
+        title,
         ssh_keys: sshKeys,
         fresh_node: !!node && freshNode,
         panel_id: keepNode ? node.panel_id : panelId,
@@ -172,6 +176,11 @@ export function AdoptServerDialog({
               <label className="field">
                 <span>Имя сервера</span>
                 <div className="input-with-button">
+                  {prefix && !keepNode && (
+                    <span className="name-prefix" title="Флаг и страна региона: с ними новый узел называется в админке и в основной панели">
+                      {prefix}
+                    </span>
+                  )}
                   <input className="input mono" required pattern="[a-zA-Z0-9][a-zA-Z0-9.\-]{0,62}" value={name} onChange={(e) => setName(e.target.value)} />
                   <button type="button" className="btn btn-small" title="Другое случайное имя" onClick={() => setName(randomName())}>
                     ↻

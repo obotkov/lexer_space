@@ -109,7 +109,8 @@ def _hostname(value: str) -> str:
 class ProvisionIn(BaseModel):
     hoster_id: int
     panel_id: int
-    name: str
+    name: str  # hostname at the hosting and the Cloudflare name; {server} of connections
+    title: str = Field("", max_length=100)  # in the admin and of the node: "🇳🇱 Нидерланды brave-yak"; "" = name
     region: str = Field(min_length=1)
     plan: str = Field(min_length=1)
     project: str | None = None
@@ -164,6 +165,7 @@ class AdoptIn(BaseModel):
     with, but the plan and region, which stay the server's."""
     server_id: str
     name: str = ""  # in the admin and of the new node; empty = from the server's name at the hosting
+    title: str = Field("", max_length=100)  # of a new node, with the flag and country; "" = name
     ssh_keys: list[str] = []  # the account's keys root gets after the install (VDSina)
     # a server that already is a node: False keeps that node (switched over, its inbounds stay), True drops it
     # with its inbounds and the server joins as a new node, like a new server
@@ -461,6 +463,11 @@ if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
 fi
 {extra}stage "Установка на сервере закончена"
 """
+
+
+def _title(p: db.Provision) -> str:
+    """How the admin and the main panel name the server: flag, country and name; the hostname for older jobs."""
+    return p.labels.get("title") or p.name
 
 
 def _node_host(p: db.Provision) -> str:
@@ -853,7 +860,7 @@ async def _step_connect(p: db.Provision) -> None:
     finally:
         await node.close()
     body = nodes.NodeIn(
-        name=p.name, remark="создан через VPN API Hoster", scheme="https", address=await _node_address(p), port=p.port,
+        name=_title(p), remark="создан через VPN API Hoster", scheme="https", address=await _node_address(p), port=p.port,
         base_path=p.base_path, api_token=token, tls_verify_mode="pin" if p.cert_mode == "self" else "verify",
         pinned_cert_sha256=p.cert_pin if p.cert_mode == "self" else "",
         allow_private_address=ipaddress.ip_address(p.ip).is_private,
@@ -1075,7 +1082,8 @@ async def start(body: ProvisionIn) -> dict:
                  project=body.project or "", ssh_keys=body.ssh_keys, domain=body.domain,
                  site_template=body.site_template, os=body.os,
                  dns_account_id=body.dns_account_id if body.domain else 0, dns_zone_id=body.dns_zone_id,
-                 labels={"region": body.region_label.strip()[:100], "plan": body.plan_label.strip()[:100]})
+                 labels={"region": body.region_label.strip()[:100], "plan": body.plan_label.strip()[:100],
+                         "title": body.title.strip()})
     if body.connections:
         # ports are fixed now: the install opens them in ufw
         chosen = connections.snapshot(connections.templates(), body.connection_ids)
@@ -1487,7 +1495,7 @@ async def adopt(hoster: db.Hoster, body: AdoptIn) -> dict:
                  dns_account_id=body.dns_account_id if body.domain else 0, dns_zone_id=body.dns_zone_id,
                  in_place=1, step="rebuild", server_id=server["id"], ip=server["ipv4"][0],
                  node_id=node["node_id"] if node else None, port=port, sub_port=sub_port,
-                 labels={"region": server["region"][:100], "plan": server["plan"][:100],
+                 labels={"region": server["region"][:100], "plan": server["plan"][:100], "title": body.title.strip(),
                          # the inbounds the node keeps: the install opens their ports like its own
                          "ports": " ".join(f"{i['port']}/{n}" for i in kept for n in i["nets"])})
     if not node and body.connections:
@@ -1515,7 +1523,7 @@ def forget(provision_id: int) -> None:
 
 def public(p: db.Provision) -> dict[str, Any]:
     return {
-        "id": p.id, "hoster_id": p.hoster_id, "panel_id": p.panel_id, "name": p.name,
+        "id": p.id, "hoster_id": p.hoster_id, "panel_id": p.panel_id, "name": p.name, "title": _title(p),
         "region": p.labels.get("region") or p.region, "plan": p.labels.get("plan") or p.plan,
         "server_id": p.server_id, "ip": p.ip, "node_id": p.node_id, "step": p.step,
         "state": p.state, "error": p.error, "log": p.log[-60:], "created_at": p.created_at,

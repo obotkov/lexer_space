@@ -3,6 +3,9 @@ import { api, type ConnectionTemplate, type CreateOptions, type DnsAccount, type
 import { formatPrice } from "../format";
 import { StubTemplateSelect } from "./StubTemplateSelect";
 
+/** Flag and country of a region label ("🇳🇱 Нидерланды, Amsterdam" → "🇳🇱 Нидерланды"): the start of a server's title. */
+export const regionPrefix = (regionLabel: string) => fillRemark("{flag} {country}", "", regionLabel);
+
 /** A template's remark as the new server will show it; mirrors connections.macros on the backend. */
 export function fillRemark(remark: string, server: string, regionLabel: string): string {
   let label = regionLabel.split(" — ")[0].trim();
@@ -138,6 +141,9 @@ export function CreateServerDialog({
   const zone = dnsAccounts.find((a) => String(a.id) === dnsAccountId)?.zones.find((z) => z.id === zoneId);
   const label = (subdomain ?? name).trim().toLowerCase();
   const cloudflareName = zone ? (label ? `${label}.${zone.name}` : zone.name) : "";
+  // in the admin and the main panel: flag and country first; at the hosting and in the domain only the name
+  const prefix = regionPrefix(regions.find((r) => r.id === region)?.name ?? "");
+  const title = `${prefix} ${name.trim()}`.trim();
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -148,6 +154,7 @@ export function CreateServerDialog({
         hoster_id: hoster.id,
         panel_id: panelId,
         name,
+        title,
         region,
         plan: planId,
         project: options?.project ?? null,
@@ -214,6 +221,11 @@ export function CreateServerDialog({
               <label className="field">
                 <span>Имя сервера</span>
                 <div className="input-with-button">
+                  {prefix && (
+                    <span className="name-prefix" title="Флаг и страна региона: с ними сервер называется в админке и в основной панели">
+                      {prefix}
+                    </span>
+                  )}
                   <input className="input mono" required pattern="[a-zA-Z0-9][a-zA-Z0-9.\-]{0,62}" value={name} onChange={(e) => setName(e.target.value)} />
                   <button type="button" className="btn btn-small" title="Другое случайное имя" onClick={() => setName(randomName())}>
                     ↻
@@ -241,6 +253,9 @@ export function CreateServerDialog({
                 </select>
               </label>
             </div>
+            <small className="muted">
+              В админке и в основной панели сервер будет называться «{title}», у хостинга и в домене — {name.trim() || "по имени"}.
+            </small>
 
             <div className="field">
               <span id="plan-label">Тариф</span>

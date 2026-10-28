@@ -520,6 +520,8 @@ export interface AdoptForm {
   server_id: string;
   /** in the admin and of the new node; the server keeps its name at the hosting */
   name: string;
+  /** of a new node: flag, country and name */
+  title: string;
   ssh_keys: string[];
   /** a server that already is a node: drop that node with its inbounds and join anew */
   fresh_node: boolean;
@@ -614,7 +616,10 @@ export interface CreateOptions {
 export interface ProvisionForm {
   hoster_id: number;
   panel_id: number;
+  /** hostname at the hosting and the Cloudflare name */
   name: string;
+  /** in the admin and of the node: flag, country and name */
+  title: string;
   region: string;
   plan: string;
   project: string | null;
@@ -782,6 +787,8 @@ export interface Provision {
   hoster_id: number;
   panel_id: number;
   name: string;
+  /** in the admin and of the node: flag, country and name */
+  title: string;
   region: string;
   plan: string;
   server_id: string;
