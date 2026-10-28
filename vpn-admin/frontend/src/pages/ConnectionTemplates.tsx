@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react
 import {
   api,
   type CdnAccount,
+  type ConnectionCustom,
   type ConnectionKind,
   type ConnectionNet,
   type ConnectionOptionValue,
@@ -221,7 +222,7 @@ export function ConnectionTemplates() {
                       </div>
                     )}
                   </td>
-                  <td className="muted small conn-options">{summary(t)}</td>
+                  <td className="muted small conn-options">{[summary(t), t.custom && "свой JSON"].filter(Boolean).join(" · ")}</td>
                   <td className="actions">
                     <span className="conn-move">
                       <button className="btn btn-small" disabled={i === 0} onClick={() => move(i, -1)} aria-label="Выше">
@@ -404,6 +405,17 @@ function TemplateDialog({
   const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // own JSON: what differs from the form's build; the JSON tab shows the whole of it
+  const [tab, setTab] = useState<"form" | "json">("form");
+  const [custom, setCustom] = useState<ConnectionCustom | null>(template?.custom ?? null);
+  const [jsonText, setJsonText] = useState("");
+  const [jsonDirty, setJsonDirty] = useState(false);
+  const [jsonBusy, setJsonBusy] = useState(false);
+  const [jsonError, setJsonError] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [keepSecrets, setKeepSecrets] = useState(false);
+  const [importNotes, setImportNotes] = useState<string[]>([]);
 
   const pickKind = (id: string) => {
     const k = kinds.find((x) => x.kind === id)!;
@@ -412,6 +424,98 @@ function TemplateDialog({
     setPort(k.port);
     setOptions(withAccount(defaults(k)));
     setSni(null);
+    setCustom(null);
+    setJsonDirty(false);
+    if (tab === "json") loadJson(id, withAccount(defaults(k)), null);
+  };
+
+  const loadJson = async (k: string, o: Record<string, ConnectionOptionValue>, c: ConnectionCustom | null) => {
+    setJsonBusy(true);
+    setJsonError("");
+    try {
+      setJsonText(JSON.stringify((await api.connectionPreview(k, o, c)).json, null, 2));
+      setJsonDirty(false);
+    } catch (e) {
+      setJsonError((e as Error).message);
+    } finally {
+      setJsonBusy(false);
+    }
+  };
+
+  /** The edited JSON turned into the own JSON to keep; throws (shown on the tab) when it does not fit. */
+  const commitJson = async (): Promise<ConnectionCustom | null> => {
+    if (!jsonDirty) return custom;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (e) {
+      const message = `JSON не читается: ${(e as Error).message}`;
+      setJsonError(message);
+      setTab("json");
+      throw new Error(message);
+    }
+    try {
+      const result = (await api.connectionCustom(kindId, options, parsed)).custom;
+      setCustom(result);
+      setJsonDirty(false);
+      setJsonError("");
+      return result;
+    } catch (e) {
+      setJsonError((e as Error).message);
+      setTab("json");
+      throw e;
+    }
+  };
+
+  const showTab = async (next: "form" | "json") => {
+    if (next === tab) return;
+    if (next === "json") {
+      setTab("json");
+      loadJson(kindId, options, custom);
+      return;
+    }
+    try {
+      await commitJson();
+      setTab("form");
+    } catch {
+      // the error stays on the JSON tab
+    }
+  };
+
+  const resetJson = () => {
+    setCustom(null);
+    setImportNotes([]);
+    loadJson(kindId, options, null);
+  };
+
+  const importConfig = async () => {
+    setJsonBusy(true);
+    setJsonError("");
+    try {
+      const r = await api.importConnection(importText, keepSecrets);
+      if (template && r.kind !== kindId) {
+        const title = kinds.find((k) => k.kind === r.kind)?.title ?? r.kind;
+        throw new Error(`Это конфиг типа «${title}», а подключение — «${kind.title}»: загрузите его в новое подключение`);
+      }
+      const k = kinds.find((x) => x.kind === r.kind)!;
+      const nextOptions = withAccount({ ...defaults(k), ...r.options });
+      if (!template && r.kind !== kindId) {
+        setKindId(r.kind);
+        setRemark(`{server} ${k.remark}`);
+      }
+      setOptions(nextOptions);
+      if (r.port) setPort(r.port);
+      setCustom(r.custom);
+      setImportNotes(r.notes);
+      setImporting(false);
+      setImportText("");
+      setJsonText(JSON.stringify((await api.connectionPreview(r.kind, nextOptions, r.custom)).json, null, 2));
+      setJsonDirty(false);
+    } catch (e) {
+      setJsonError((e as Error).message);
+    } finally {
+      setJsonBusy(false);
+    }
   };
 
   const set = (name: string, value: ConnectionOptionValue) => {
@@ -432,9 +536,15 @@ function TemplateDialog({
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    let own: ConnectionCustom | null;
+    try {
+      own = await commitJson();
+    } catch {
+      return;
+    }
     setBusy(true);
     setError("");
-    const form = { kind: kindId, remark, enabled, port, options };
+    const form = { kind: kindId, remark, enabled, port, options, custom: own };
     try {
       if (template) await api.updateConnection(template.id, form);
       else await api.createConnection(form);
@@ -469,6 +579,48 @@ function TemplateDialog({
           </small>
         </label>
 
+        <div className="segmented">
+          <button type="button" className={tab === "form" ? "active" : ""} aria-pressed={tab === "form"} onClick={() => showTab("form")}>
+            Настройки
+          </button>
+          <button type="button" className={tab === "json" ? "active" : ""} aria-pressed={tab === "json"} onClick={() => showTab("json")}>
+            JSON{custom ? " · свой" : ""}
+          </button>
+        </div>
+
+        {tab === "json" && (
+          <JsonTab
+            text={jsonText}
+            busy={jsonBusy}
+            error={jsonError}
+            custom={custom}
+            notes={importNotes}
+            onChange={(t) => {
+              setJsonText(t);
+              setJsonDirty(true);
+            }}
+            onReset={resetJson}
+            importing={importing}
+            onImporting={setImporting}
+            importText={importText}
+            onImportText={setImportText}
+            keepSecrets={keepSecrets}
+            onKeepSecrets={setKeepSecrets}
+            onImport={importConfig}
+          />
+        )}
+
+        {tab === "form" && custom && (
+          <div className="notice notice-info small">
+            У подключения свой JSON: его изменения применяются поверх этих настроек, остальное берётся отсюда.{" "}
+            <button type="button" className="link-button" onClick={() => showTab("json")}>
+              Открыть JSON
+            </button>
+          </div>
+        )}
+
+        {tab === "form" && (
+          <>
         {kindId === "vless_xhttp_cdn" && (
           <div className="notice notice-info small">
             Для серверов, заказанных с доменом Cloudflare. При раскатке админка создаёт в этом домене имя (по умолчанию cdn-имя сервера),
@@ -601,6 +753,9 @@ function TemplateDialog({
           );
         })}
 
+          </>
+        )}
+
         <label className="checkbox">
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           Создавать на новых серверах
@@ -613,11 +768,104 @@ function TemplateDialog({
           <button type="button" className="btn" onClick={onClose} disabled={busy}>
             Отмена
           </button>
-          <button type="submit" className="btn btn-primary" disabled={busy}>
+          <button type="submit" className="btn btn-primary" disabled={busy || jsonBusy}>
             {busy ? "Сохраняю…" : "Сохранить"}
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+/** The template's inbound as JSON: edited in place, or loaded from someone else's config. */
+function JsonTab({
+  text,
+  busy,
+  error,
+  custom,
+  notes,
+  onChange,
+  onReset,
+  importing,
+  onImporting,
+  importText,
+  onImportText,
+  keepSecrets,
+  onKeepSecrets,
+  onImport,
+}: {
+  text: string;
+  busy: boolean;
+  error: string;
+  custom: ConnectionCustom | null;
+  notes: string[];
+  onChange: (text: string) => void;
+  onReset: () => void;
+  importing: boolean;
+  onImporting: (on: boolean) => void;
+  importText: string;
+  onImportText: (text: string) => void;
+  keepSecrets: boolean;
+  onKeepSecrets: (on: boolean) => void;
+  onImport: () => void;
+}) {
+  return (
+    <div className="field">
+      <small className="muted">
+        Разделы settings, streamSettings и sniffing инбаунда 3x-ui так, как их получит сервер. <span className="mono">"{"{auto}"}"</span> — значение,
+        которое у каждого сервера своё: ключи, пароли, сертификат, случайный путь. Админка хранит только то, что вы изменили, поэтому остальное
+        по-прежнему берётся с вкладки «Настройки». Чтобы убрать параметр, поставьте ему <span className="mono">null</span>. Пользователей
+        (clients) добавляет админка.
+      </small>
+      <textarea
+        className="input mono json-editor"
+        spellCheck={false}
+        value={busy && !text ? "Загружаю…" : text}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={busy}
+        aria-label="JSON подключения"
+      />
+      {error && <div className="notice notice-bad small">{error}</div>}
+      {notes.map((n) => (
+        <div key={n} className="notice notice-warn small">
+          {n}
+        </div>
+      ))}
+      <div className="action-row">
+        <button type="button" className="btn btn-small" onClick={() => onImporting(!importing)} disabled={busy}>
+          {importing ? "Скрыть загрузку" : "Загрузить чужой конфиг"}
+        </button>
+        {custom && (
+          <button type="button" className="btn btn-small" onClick={onReset} disabled={busy}>
+            Сбросить свой JSON
+          </button>
+        )}
+      </div>
+      {importing && (
+        <div className="json-import">
+          <textarea
+            className="input mono json-editor json-editor-small"
+            spellCheck={false}
+            placeholder="Инбаунд 3x-ui (экспорт или ответ API), инбаунд Xray или весь конфиг Xray с разделом inbounds"
+            value={importText}
+            onChange={(e) => onImportText(e.target.value)}
+            aria-label="Чужой конфиг"
+          />
+          <label className="checkbox">
+            <input type="checkbox" checked={keepSecrets} onChange={(e) => onKeepSecrets(e.target.checked)} />
+            Оставить ключи и пароли из конфига: они будут одинаковыми на всех серверах
+          </label>
+          <small className="muted">
+            По протоколу, сети и защите админка выберет тип подключения, перенесёт порт и всё, чем конфиг отличается от её сборки. Пользователи
+            из конфига не переносятся; без галочки ключи, shortId и пароли у каждого сервера будут свои.
+          </small>
+          <div className="action-row">
+            <button type="button" className="btn btn-small btn-primary" onClick={onImport} disabled={busy || importText.trim().length < 2}>
+              {busy ? "Загружаю…" : "Загрузить"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

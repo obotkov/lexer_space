@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -589,6 +589,44 @@ async def connections_delete(template_id: int):
 async def connections_users(body: connections.UsersIn):
     connections.set_users(body)
     return connections.users()
+
+
+class TemplateJsonIn(BaseModel):
+    kind: connections.Kind
+    options: dict = {}
+    custom: dict | None = None
+    json_value: Any = Field(None, alias="json")  # the full JSON the user edited
+
+
+def _json_call(action):
+    try:
+        return action()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/connections/preview", dependencies=[Depends(require_admin)])
+async def connections_preview(body: TemplateJsonIn):
+    """The template's JSON as a server gets it: "{auto}" marks what is the server's own."""
+    return _json_call(lambda: {"json": connections.preview(
+        body.kind, connections.clean_options(body.kind, {**body.options, "custom": body.custom}))})
+
+
+@app.post("/api/connections/json", dependencies=[Depends(require_admin)])
+async def connections_json(body: TemplateJsonIn):
+    """The own JSON to keep from the edited full one: only what differs from the form's build."""
+    return _json_call(lambda: {"custom": connections.custom_from(
+        body.kind, connections.clean_options(body.kind, {**body.options, "custom": None}), body.json_value) or None})
+
+
+class ImportIn(BaseModel):
+    text: str = Field(min_length=2, max_length=512 * 1024)
+    keep_secrets: bool = False
+
+
+@app.post("/api/connections/import", dependencies=[Depends(require_admin)])
+async def connections_import(body: ImportIn):
+    return _json_call(lambda: connections.import_config(body.text, body.keep_secrets))
 
 
 class SniIn(BaseModel):

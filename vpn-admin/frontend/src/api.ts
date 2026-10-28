@@ -708,6 +708,11 @@ export interface ProvisionConnection {
 
 export type ConnectionOptionValue = string | number | boolean;
 
+/** Sections of an inbound in 3x-ui as a template builds them */
+export type ConnectionSections = Record<"settings" | "streamSettings" | "sniffing", Record<string, unknown>>;
+/** A template's own JSON: what differs from the form's build; null removes a key, "{auto}" keeps the server's value */
+export type ConnectionCustom = Partial<ConnectionSections>;
+
 export interface ConnectionKind {
   kind: string;
   title: string;
@@ -734,6 +739,7 @@ export interface ConnectionTemplate {
   /** 0 = a random free port on every server */
   port: number;
   options: Record<string, ConnectionOptionValue>;
+  custom: ConnectionCustom | null;
   position: number;
 }
 
@@ -758,6 +764,17 @@ export interface ConnectionTemplateForm {
   enabled: boolean;
   port: number;
   options: Record<string, ConnectionOptionValue>;
+  custom: ConnectionCustom | null;
+}
+
+/** A template made of a foreign inbound */
+export interface ConnectionImport {
+  kind: string;
+  port: number;
+  remark: string;
+  options: Record<string, ConnectionOptionValue>;
+  custom: ConnectionCustom | null;
+  notes: string[];
 }
 
 export interface Provision {
@@ -941,6 +958,12 @@ export const api = {
   orderConnections: (ids: number[]) => request("POST", "/api/connections/order", { ids }),
   deleteConnection: (id: number) => request("DELETE", `/api/connections/${id}`),
   setConnectionUsers: (users: ConnectionUsers) => request<ConnectionUsers>("PUT", "/api/connections-users", users),
+  connectionPreview: (kind: string, options: Record<string, ConnectionOptionValue>, custom: ConnectionCustom | null) =>
+    request<{ json: ConnectionSections }>("POST", "/api/connections/preview", { kind, options, custom }),
+  connectionCustom: (kind: string, options: Record<string, ConnectionOptionValue>, json: unknown) =>
+    request<{ custom: ConnectionCustom | null }>("POST", "/api/connections/json", { kind, options, json }),
+  importConnection: (text: string, keepSecrets: boolean) =>
+    request<ConnectionImport>("POST", "/api/connections/import", { text, keep_secrets: keepSecrets }),
   checkSni: (host: string) => request<{ results: Record<string, string> }>("POST", "/api/connections/check-sni", { host }),
   provisionCredentials: (id: number) => request<ProvisionCredentials>("GET", `/api/provisions/${id}/credentials`),
   forgetProvision: (id: number) => request("DELETE", `/api/provisions/${id}`),

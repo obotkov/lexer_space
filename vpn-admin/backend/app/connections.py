@@ -5,7 +5,14 @@ kind's options. When a server is ordered, the enabled templates are copied into 
 ports fixed (the install opens them in ufw); once the node is connected, each becomes an inbound of the
 main 3x-ui panel bound to the node (nodeId), with fresh keys, paths and passwords, and the chosen users
 are attached to all of them. The kinds and their settings follow 3X-UI KIT and 3x-ui-pro.
+
+Beyond the form, a template may carry its own JSON (options["custom"]): changes to the inbound's settings,
+streamSettings and sniffing as the kind builds them. Only what differs from the build is stored, so form
+fields keep working for the rest; null removes a key, "{auto}" keeps what the server gets (keys, passwords,
+certificate paths, which are its own on every server). A foreign config can be loaded the same way.
 """
+
+import copy
 
 import asyncio
 import base64
@@ -98,6 +105,7 @@ class TemplateError(Exception):
 
 def _clean_options(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
+    custom = _check_custom(raw.get("custom"))
     for name, (default, allowed) in OPTIONS[kind].items():
         value = raw.get(name, default)
         if allowed is not None:
@@ -133,7 +141,12 @@ def _clean_options(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
     for name in ("path", "service_name"):
         if name in out and out[name] and not all(c in string.ascii_letters + string.digits + "-_./" for c in out[name]):
             raise ValueError(f"{name}: только латиница, цифры и - _ . /")
+    if custom:
+        out["custom"] = custom
     return out
+
+
+clean_options = _clean_options
 
 
 def _host_ok(name: str) -> bool:
@@ -159,6 +172,7 @@ class TemplateIn(BaseModel):
     enabled: bool = True
     port: int = Field(0, ge=0, le=65535)
     options: dict[str, Any] = {}
+    custom: dict[str, Any] | None = None  # own JSON: what differs from the form's build
 
     @field_validator("remark")
     @classmethod
@@ -166,7 +180,7 @@ class TemplateIn(BaseModel):
         return value.strip()
 
     def cleaned(self) -> dict[str, Any]:
-        return _clean_options(self.kind, self.options)
+        return _clean_options(self.kind, {**self.options, "custom": self.custom})
 
 
 class UsersIn(BaseModel):
@@ -210,7 +224,8 @@ def set_users(body: UsersIn) -> None:
 def public(t: db.ConnectionTemplate) -> dict[str, Any]:
     kind = KINDS[t.kind]
     return {"id": t.id, "kind": t.kind, "kind_title": kind["title"], "protocol": kind["protocol"], "net": kind["net"],
-            "tls": kind["tls"], "remark": t.remark, "enabled": t.enabled, "port": t.port, "options": t.options,
+            "tls": kind["tls"], "remark": t.remark, "enabled": t.enabled, "port": t.port,
+            "options": {k: v for k, v in t.options.items() if k != "custom"}, "custom": t.options.get("custom") or None,
             "position": t.position}
 
 
@@ -454,9 +469,260 @@ def build(item: dict[str, Any], t: Target, node_id: int) -> dict[str, Any]:
                   "externalProxy": [{"forceTls": "same", "dest": address, "port": 443, "remark": ""}]}
     else:
         raise TemplateError(f"Неизвестный тип подключения: {kind}")
+    sections = _apply_custom({"settings": settings, "streamSettings": stream, "sniffing": copy.deepcopy(SNIFFING)},
+                             o.get("custom"))
     return {"enable": True, "remark": fill(item["remark"], t.macros), "listen": "", "port": item["port"],
-            "protocol": KINDS[kind]["protocol"], "settings": json.dumps(settings), "streamSettings": json.dumps(stream),
-            "sniffing": json.dumps(SNIFFING), "expiryTime": 0, "total": 0, "nodeId": node_id}
+            "protocol": KINDS[kind]["protocol"], "settings": json.dumps(sections["settings"]),
+            "streamSettings": json.dumps(sections["streamSettings"]), "sniffing": json.dumps(sections["sniffing"]),
+            "expiryTime": 0, "total": 0, "nodeId": node_id}
+
+
+# ---------- own JSON of a template ----------
+
+AUTO = "{auto}"  # in a template's JSON: the value the server gets (generated keys, its certificate…)
+SECTIONS = ("settings", "streamSettings", "sniffing")
+CUSTOM_MAX = 64 * 1024
+_SAME = object()
+
+
+def _check_custom(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    if not isinstance(value, dict) or set(value) - set(SECTIONS) or not all(
+            isinstance(v, dict) for v in value.values()):
+        raise ValueError("custom: JSON с разделами settings, streamSettings, sniffing, каждый — объект")
+    if len(json.dumps(value)) > CUSTOM_MAX:
+        raise ValueError("custom: JSON подключения больше 64 КБ")
+    return value
+
+
+def _overlay(base: Any, over: Any) -> Any:
+    """`over` on top of `base`: objects merge key by key, null removes a key, "{auto}" keeps the base value,
+    anything else (lists too) replaces it."""
+    if over is None or over == AUTO:
+        return base
+    if isinstance(over, dict) and isinstance(base, dict):
+        out = copy.deepcopy(base)
+        for key, value in over.items():
+            if value is None:
+                out.pop(key, None)
+            elif value == AUTO:
+                continue
+            else:
+                out[key] = _overlay(out.get(key), value)
+        return out
+    if isinstance(over, dict):
+        return {k: _overlay(None, v) for k, v in over.items() if v is not None and v != AUTO}
+    return copy.deepcopy(over)
+
+
+def _apply_custom(sections: dict[str, Any], custom: dict[str, Any] | None) -> dict[str, Any]:
+    if not custom:
+        return sections
+    out = {name: _overlay(sections[name], custom.get(name)) for name in SECTIONS}
+    out["settings"]["clients"] = []  # users are the admin's to attach
+    return out
+
+
+def _diff(new: Any, base: Any) -> Any:
+    """What `new` changes in `base`, in the form _overlay takes."""
+    if isinstance(new, dict) and isinstance(base, dict):
+        out = {}
+        for key, value in new.items():
+            if key not in base:
+                if value != AUTO:
+                    out[key] = value
+                continue
+            d = _diff(value, base[key])
+            if d is not _SAME:
+                out[key] = d
+        for key in base:
+            if key not in new:
+                out[key] = None
+        return out or _SAME
+    if new == base or new == AUTO:
+        return _SAME
+    return new
+
+
+def _sample_targets() -> list[Target]:
+    """Servers as different as they come: a domain with Let's Encrypt and an IP with the self-signed fallback."""
+    region = "🇩🇪 Германия, Франкфурт"
+    return [Target(server="example", tls_name="vpn.example.com", cert_file="/root/cert/le.crt",
+                   key_file="/root/cert/le.key", pin_hex="", stub_html="<html>a</html>", region=region),
+            Target(server="example", tls_name="", cert_file="/root/cert/panel.crt", key_file="/root/cert/panel.key",
+                   pin_hex="ab" * 32, stub_html="<html>b</html>", region=region)]
+
+
+def _mark(a: Any, b: Any) -> Any:
+    """`a` with what differs from `b` (generated anew, or the server's own) turned into "{auto}"."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return {k: (_mark(v, b[k]) if k in b else v) for k, v in a.items()}
+    return a if a == b else AUTO
+
+
+def _sections(kind: str, options: dict[str, Any], t: Target, cdn: str) -> dict[str, Any]:
+    item = {"kind": kind, "remark": "", "port": 443, "options": options, "cdn_domain": f"cdn-{cdn}.example.com",
+            "cdn_address": f"{cdn}.cdn.example.net"}
+    body = build(item, t, 0)
+    return {name: json.loads(body[name]) for name in SECTIONS}
+
+
+def preview(kind: str, options: dict[str, Any]) -> dict[str, Any]:
+    """The template's settings, streamSettings and sniffing as a server gets them, with what is the server's own
+    shown as "{auto}"; its own JSON included."""
+    a, b = _sample_targets()
+    plain = {k: v for k, v in options.items() if k != "custom"}
+    try:
+        first = _sections(kind, plain, a, "a")
+        out = _mark(_mark(first, _sections(kind, plain, a, "a")), _sections(kind, plain, b, "b"))
+    except TemplateError as exc:
+        raise ValueError(str(exc)) from exc
+    out["settings"]["clients"] = AUTO
+    return _overlay(out, options.get("custom")) if options.get("custom") else out
+
+
+def custom_from(kind: str, options: dict[str, Any], edited: Any) -> dict[str, Any]:
+    """The template's own JSON from the full JSON the user edited: only what differs from the form's build."""
+    if not isinstance(edited, dict) or set(edited) - set(SECTIONS) or not all(
+            isinstance(edited.get(n, {}), dict) for n in SECTIONS):
+        raise ValueError("Нужен JSON-объект с разделами settings, streamSettings и sniffing")
+    edited = copy.deepcopy(edited)
+    if isinstance(edited.get("settings"), dict):
+        edited["settings"]["clients"] = AUTO  # users are attached by the admin
+    base = preview(kind, {k: v for k, v in options.items() if k != "custom"})
+    diff = _diff({n: edited.get(n, base[n]) for n in SECTIONS}, base)
+    custom = _check_custom({} if diff is _SAME else diff)
+    for t in _sample_targets():  # must still build on any server
+        try:
+            build({"kind": kind, "remark": "", "port": 443, "options": {**options, "custom": custom},
+                   "cdn_domain": "cdn.example.com", "cdn_address": "cdn.example.net"}, t, 0)
+        except (TemplateError, TypeError, AttributeError, KeyError) as exc:
+            raise ValueError(f"JSON не подходит: {exc}") from exc
+    return custom
+
+
+# kind of a foreign inbound: by protocol, then network and security; the first one of the protocol otherwise
+_IMPORT_KINDS = [("vless", "tcp", "reality", "vless_reality"), ("vless", "raw", "reality", "vless_reality"),
+                 ("vless", "xhttp", "reality", "vless_xhttp_reality"), ("vless", "ws", "tls", "vless_ws_tls"),
+                 ("trojan", "grpc", "tls", "trojan_grpc_tls"), ("vmess", "ws", "tls", "vmess_ws_tls")]
+_IMPORT_FIRST = {"vless": "vless_reality", "trojan": "trojan_grpc_tls", "vmess": "vmess_ws_tls",
+                 "shadowsocks": "shadowsocks", "hysteria": "hysteria2", "hysteria2": "hysteria2", "tuic": "tuic",
+                 "wireguard": "wireguard", "amneziawg": "amneziawg", "mtproto": "mtproto"}
+
+
+def _foreign_inbound(text: str) -> dict[str, Any]:
+    """An inbound out of what was pasted: a 3x-ui inbound (its export or API answer, sections as strings or
+    objects), an Xray inbound, or a whole Xray config (its first inbound of a known protocol)."""
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"Это не JSON: {exc}") from exc
+    if isinstance(data, dict) and isinstance(data.get("obj"), (dict, list)):
+        data = data["obj"]
+    if isinstance(data, dict) and isinstance(data.get("inbounds"), list):
+        data = data["inbounds"]
+    if isinstance(data, list):
+        data = next((i for i in data if isinstance(i, dict) and str(i.get("protocol", "")).lower() in _IMPORT_FIRST),
+                    None)
+    if not isinstance(data, dict) or str(data.get("protocol", "")).lower() not in _IMPORT_FIRST:
+        raise ValueError("Не нашёл инбаунд: нужен JSON инбаунда 3x-ui или Xray (с полем protocol: vless, trojan, "
+                         "vmess, shadowsocks, hysteria, tuic, wireguard…) или конфиг Xray с разделом inbounds")
+    out = dict(data)
+    for name in SECTIONS:
+        value = out.get(name)
+        if isinstance(value, str):
+            try:
+                out[name] = json.loads(value) if value.strip() else {}
+            except ValueError as exc:
+                raise ValueError(f"{name}: это не JSON ({exc})") from exc
+    return out
+
+
+def import_config(text: str, keep_secrets: bool = False) -> dict[str, Any]:
+    """A template made of a foreign inbound: its kind, port and own JSON. Keys, passwords and the like become
+    "{auto}" (every server gets its own) unless `keep_secrets`; users are never taken over."""
+    inbound = _foreign_inbound(text)
+    protocol = str(inbound["protocol"]).lower()
+    stream = inbound.get("streamSettings") if isinstance(inbound.get("streamSettings"), dict) else {}
+    network, security = str(stream.get("network") or "tcp").lower(), str(stream.get("security") or "none").lower()
+    exact = next((k for p, n, sec, k in _IMPORT_KINDS if (p, n, sec) == (protocol, network, security)), None)
+    # TLS of VLESS over another network: the kind that has the server's certificate
+    kind = exact or ("vless_ws_tls" if (protocol, security) == ("vless", "tls") else _IMPORT_FIRST[protocol])
+    options = _form_of(kind, inbound)
+    base = preview(kind, options)
+    foreign = {n: copy.deepcopy(inbound[n]) for n in SECTIONS if isinstance(inbound.get(n), dict)}
+    notes = []
+    if isinstance(foreign.get("settings"), dict) and foreign["settings"].pop("clients", None):
+        notes.append("пользователи из конфига не переносятся: админка добавляет своих")
+    reality = (foreign.get("streamSettings") or {}).get("realitySettings")
+    if isinstance(reality, dict) and "dest" in reality and "target" not in reality:
+        reality["target"] = reality.pop("dest")  # the older name in Xray configs
+    merged = _overlay(base, foreign)
+    if keep_secrets:
+        # a kept private key needs its own public key for the links
+        priv = ((merged.get("streamSettings") or {}).get("realitySettings") or {}).get("privateKey")
+        if isinstance(priv, str) and priv != AUTO:
+            merged["streamSettings"]["realitySettings"].setdefault("settings", {})["publicKey"] = _x25519_public(priv)
+        notes.append("ключи и пароли из конфига сохранены: они будут одинаковыми на всех серверах")
+    else:
+        merged = _mark_auto(merged, base)
+    merged["settings"]["clients"] = AUTO
+    custom = custom_from(kind, options, merged)
+    port = inbound.get("port") if isinstance(inbound.get("port"), int) and 0 < inbound["port"] < 65536 else 0
+    if not exact and protocol in ("vless", "trojan", "vmess"):
+        notes.append(f"тип «{KINDS[kind]['title']}» выбран по протоколу, сеть {network} и защита {security} заданы "
+                     "в JSON")
+    return {"kind": kind, "port": port, "remark": str(inbound.get("remark") or inbound.get("tag") or "")[:100],
+            "options": options, "custom": custom or None, "notes": notes}
+
+
+def _form_of(kind: str, inbound: dict[str, Any]) -> dict[str, Any]:
+    """The form's fields out of a foreign inbound where it has them: its paths, SNI and the like are settings,
+    not secrets, so they stay as they are instead of becoming "{auto}"."""
+    options = {name: default for name, (default, _) in OPTIONS[kind].items()}
+    stream = inbound.get("streamSettings") if isinstance(inbound.get("streamSettings"), dict) else {}
+    settings = inbound.get("settings") if isinstance(inbound.get("settings"), dict) else {}
+    reality = stream.get("realitySettings") if isinstance(stream.get("realitySettings"), dict) else {}
+    tls = stream.get("tlsSettings") if isinstance(stream.get("tlsSettings"), dict) else {}
+    found = {
+        "sni": ", ".join(n for n in reality.get("serverNames") or [] if isinstance(n, str)),
+        "fingerprint": ((reality.get("settings") or tls.get("settings") or {}) or {}).get("fingerprint"),
+        "path": next((v.get("path") for k in ("wsSettings", "xhttpSettings", "httpupgradeSettings")
+                      if isinstance(v := stream.get(k), dict) and v.get("path")), None),
+        "mode": (stream.get("xhttpSettings") or {}).get("mode") if isinstance(stream.get("xhttpSettings"), dict) else None,
+        "service_name": (stream.get("grpcSettings") or {}).get("serviceName")
+        if isinstance(stream.get("grpcSettings"), dict) else None,
+        "method": settings.get("method"),
+        "short_ids": len(reality["shortIds"]) if isinstance(reality.get("shortIds"), list) and reality["shortIds"] else None,
+        "domain": settings.get("fakeTlsDomain"),
+    }
+    for name, value in found.items():
+        if name in options and value not in (None, ""):
+            try:  # a value the form cannot take stays in the JSON
+                options = _clean_options(kind, {**options, name: value})
+            except ValueError:
+                pass
+    return options
+
+
+def _mark_auto(value: Any, base: Any) -> Any:
+    """Where the build has "{auto}" (the server's own value), so has the imported config."""
+    if base == AUTO:
+        return AUTO
+    if isinstance(value, dict) and isinstance(base, dict):
+        return {k: (_mark_auto(v, base[k]) if k in base else v) for k, v in value.items()}
+    return value
+
+
+def _x25519_public(private_b64url: str) -> str:
+    try:
+        raw = base64.urlsafe_b64decode(private_b64url + "=" * (-len(private_b64url) % 4))
+        key = X25519PrivateKey.from_private_bytes(raw)
+    except ValueError as exc:
+        raise ValueError(f"privateKey REALITY не читается: {exc}") from exc
+    pub = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    return base64.urlsafe_b64encode(pub).decode().rstrip("=")
 
 
 def pin_hex(pin_b64: str) -> str:
@@ -519,7 +785,10 @@ def chosen_clients(records: list[dict[str, Any]], users_setting: dict[str, Any])
 
 def _ss_key_size(item: dict[str, Any]) -> int:
     """Shadowsocks 2022 takes a base64 key of the cipher's size as the user's password; 0 = any password."""
-    method = item["options"].get("method", "") if item["kind"] == "shadowsocks" else ""
+    if item["kind"] != "shadowsocks":
+        return 0
+    method = ((item["options"].get("custom") or {}).get("settings") or {}).get("method") or item["options"].get("method", "")
+    method = method if isinstance(method, str) else ""
     return (16 if "aes-128" in method else 32) if method.startswith("2022-") else 0
 
 
@@ -598,8 +867,14 @@ async def _attach(xui: XUIClient, items: list[dict[str, Any]], records: list[dic
         + (f"; ошибки: {'; '.join(errors[:5])}" if errors else ""))
     for note in skipped:
         log(f"Не добавлены в {note}")
-    if any(i["kind"] == "vless_reality" and i["options"].get("flow") for i in items):
+    if any(i["kind"] == "vless_reality" and i["options"].get("flow") and _tcp_stream(i) for i in items):
         await _vision(xui, [e for e in by_email if e in attached], log)
+
+
+def _tcp_stream(item: dict[str, Any]) -> bool:
+    """Vision works over TCP only: an own JSON may have moved REALITY to another network."""
+    network = ((item["options"].get("custom") or {}).get("streamSettings") or {}).get("network")
+    return network in (None, AUTO, "tcp", "raw")
 
 
 async def _vision(xui: XUIClient, emails: list[str], log: Any) -> None:
