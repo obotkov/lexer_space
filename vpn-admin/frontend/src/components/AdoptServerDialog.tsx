@@ -106,8 +106,9 @@ export function AdoptServerDialog({
   const node = plan?.node ?? null;
   const keepNode = !!node && !freshNode;
   const systems = options?.os.filter((x) => !x.regions || !server.region_id || x.regions.includes(server.region_id)) ?? [];
-  const osList = systems.length > 0 ? systems : [DEFAULT_OS];
-  const osId = osList.some((o) => o.id === os) ? os : osList[0].id;
+  // without the account's options the default system is offered; with them, only what the hosting has
+  const osList = options ? systems : [DEFAULT_OS];
+  const osId = osList.some((o) => o.id === os) ? os : osList[0]?.id ?? "";
   const osLabel = osList.find((o) => o.id === osId)?.label ?? osId;
   const ip = server.ipv4[0] ?? "";
   const foreign = keepNode ? node.inbounds.filter((i) => i.foreign_certs?.length) : [];
@@ -183,7 +184,7 @@ export function AdoptServerDialog({
               </label>
               <label className="field">
                 <span>Система</span>
-                <select className="input" value={osId} onChange={(e) => setOs(e.target.value)} disabled={!options}>
+                <select className="input" value={osId} onChange={(e) => setOs(e.target.value)} disabled={osList.length === 0}>
                   {osList.map((o) => (
                     <option key={o.id} value={o.id}>
                       {o.label}
@@ -192,6 +193,9 @@ export function AdoptServerDialog({
                 </select>
               </label>
             </div>
+            {osList.length === 0 && (
+              <div className="notice notice-bad small">{providerTitle} не вернул ни одной системы из поддерживаемых (Ubuntu 22.04/24.04, Debian 12/13): установить не на что.</div>
+            )}
             <small className="muted">
               Тариф и регион не меняются: это тот же сервер{[server.plan, server.specs, server.price].filter(Boolean).length > 0 ? ` (${[server.plan, server.specs, server.price].filter(Boolean).join(" · ")})` : ""}.
               Имя — для админки, узла и подключений; у хостинга сервер остаётся под своим именем.
@@ -360,7 +364,7 @@ export function AdoptServerDialog({
           <button type="button" className="btn" onClick={onClose} disabled={busy}>
             Отмена
           </button>
-          <button type="submit" className="btn btn-danger" disabled={!plan || busy || (!keepNode && mainPanels.length === 0)}>
+          <button type="submit" className="btn btn-danger" disabled={!plan || busy || !osId || (!keepNode && mainPanels.length === 0)}>
             {busy ? "Запускаю…" : "Установить с нуля"}
           </button>
         </div>

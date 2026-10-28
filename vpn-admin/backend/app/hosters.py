@@ -987,6 +987,10 @@ class VDSina:
     async def get_server(self, server_id: str, project: str | None = None) -> dict:
         return self._server_view(await self._request("GET", f"/server/{server_id}") or {})
 
+    async def check_os(self, os: str, plan: str) -> None:
+        """Before anything is changed: the reinstall would fail on a system the plan has no template of."""
+        await self._template(plan, os)
+
     async def rebuild_server(self, server_id: str, *, plan: str, name: str, project: str | None = None,
                              admin_key: str | None = None, os: str = DEFAULT_OS) -> None:
         """Reinstall the OS with root getting the admin's one-time key, like a new server."""
@@ -1550,21 +1554,33 @@ class NetGrid:
         details = await asyncio.gather(*(self._request("GET", f"/vps/{s['id']}") for s in items), return_exceptions=True)
         return [self._view({**s, **d} if isinstance(d, dict) else s, regions) for s, d in zip(items, details)]
 
+    @staticmethod
+    def _families(data: Any) -> list[dict]:
+        """The families of /os: {"families": [...]} as documented, or the bare list its own cabinet gets; a family
+        names itself by "family_slug" (the cabinet's) or "slug" (the docs')."""
+        items = data.get("families") if isinstance(data, dict) else data
+        return [f for f in items or [] if isinstance(f, dict)]
+
+    @staticmethod
+    def _family_slug(family: dict) -> str:
+        return str(family.get("family_slug") or family.get("slug") or family.get("family") or "")
+
     async def _os_items(self) -> dict[str, tuple[str, str]]:
         """{our os: (family slug, image id)} for the systems NetGrid has; its ids look like "ubuntu-24.04"."""
-        data = await self._request("GET", "/os") or {}
         found: dict[str, tuple[str, str]] = {}
-        for family in data.get("families") or []:
-            slug = str(family.get("slug") or "")
+        for family in self._families(await self._request("GET", "/os") or {}):
+            slug = self._family_slug(family)
             for os, (want, version) in self.os_names.items():
-                if os in found or not slug.lower().startswith(want):
+                if os in found or want not in f"{slug} {family.get('family') or ''}".lower():
                     continue
                 pattern = r"(?<![\d.])" + re.escape(version).replace(r"\.", "[.-]?") + r"(?![\d])"
                 for item in family.get("items") or []:
+                    if not isinstance(item, dict) or item.get("proxmox_supported") is False:
+                        continue
                     image = str(item.get("id") or "")
                     text = f"{image} {item.get('name') or ''} {item.get('version') or ''}".lower()
                     if image and (image.lower() == os or re.search(pattern, text)):
-                        found[os] = (slug, image)
+                        found[os] = (slug or want, image)
                         break
         return found
 
@@ -1602,8 +1618,14 @@ class NetGrid:
     async def _image(self, os: str) -> tuple[str, str]:
         images = await self._os_items()
         if os not in images:
-            raise HosterError(f"NetGrid: нет образа {OS_LABELS.get(os, os)}")
+            have = ", ".join(OS_LABELS[o] for o in OS_LABELS if o in images)
+            raise HosterError(f"NetGrid: нет образа {OS_LABELS.get(os, os)}"
+                              + (f" (есть: {have})" if have else ": API не вернул ни одной поддерживаемой системы"))
         return images[os]
+
+    async def check_os(self, os: str, plan: str) -> None:
+        """Before anything is changed: the reinstall would fail on a system the hosting does not have."""
+        await self._image(os)
 
     async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
                             project: str | None = None, admin_key: str | None = None, os: str = DEFAULT_OS) -> str:

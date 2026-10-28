@@ -1423,6 +1423,9 @@ async def adopt(hoster: db.Hoster, body: AdoptIn) -> dict:
     client = hosters.client_for(hoster)
     try:  # the list may lack what the reinstall needs (VDSina's plan id)
         details = await client.get_server(server["id"], server["project"] or None)
+        plan_id = details.get("plan_id") or server.get("plan_id") or server["plan"] or "-"
+        if hasattr(client, "check_os"):  # a refused reinstall must not find the node dropped already
+            await client.check_os(body.os, plan_id)
     finally:
         await client.close()
     if body.dns_account_id:
@@ -1442,7 +1445,7 @@ async def adopt(hoster: db.Hoster, body: AdoptIn) -> dict:
     port, sub_port = _free_ports({i["port"] for i in kept if isinstance(i.get("port"), int)})
     p = _new_job(hoster_id=hoster.id, panel_id=panel_id, name=body.name or plan["name"], ssh_keys=body.ssh_keys,
                  region=details.get("region_id") or server.get("region_id") or server["region"] or "-",
-                 plan=details.get("plan_id") or server.get("plan_id") or server["plan"] or "-",
+                 plan=plan_id,
                  project=server["project"], domain=body.domain, site_template=body.site_template, os=body.os,
                  dns_account_id=body.dns_account_id if body.domain else 0, dns_zone_id=body.dns_zone_id,
                  in_place=1, step="rebuild", server_id=server["id"], ip=server["ipv4"][0],
