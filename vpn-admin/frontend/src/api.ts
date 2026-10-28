@@ -378,6 +378,8 @@ export interface XNode {
   xray_error: string;
   panel_version: string;
   update_available: boolean;
+  /** installed by the admin: 3x-ui runs in Docker, where its self-updater cannot replace it */
+  docker?: boolean;
   /** current throughput, bytes/sec */
   net_up: number;
   net_down: number;
@@ -979,6 +981,8 @@ export const api = {
   updateNode: (panelId: number, id: number, form: NodeForm) => request("PUT", `/api/nodes/${panelId}/${id}`, form),
   deleteNode: (panelId: number, id: number) => request("DELETE", `/api/nodes/${panelId}/${id}`),
   enableNode: (panelId: number, id: number, enable: boolean) => request("POST", `/api/nodes/${panelId}/${id}/enable`, { enable }),
+  updateNodePanels: (panelId: number, ids: number[]) =>
+    request<{ results: { id: number; name: string; ok: boolean; error: string }[] }>("POST", `/api/nodes/${panelId}/update-panel`, { ids }),
   probeNode: (panelId: number, id: number) => request<NodeHeartbeat>("POST", `/api/nodes/${panelId}/${id}/probe`),
   testNode: (panelId: number, form: NodeForm, nodeId = 0) => request<NodeHeartbeat>("POST", "/api/nodes/test", { ...form, panel_id: panelId, node_id: nodeId }),
   nodeInboundOptions: (panelId: number, form: NodeForm, nodeId = 0) =>

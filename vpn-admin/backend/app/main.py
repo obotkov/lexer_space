@@ -298,6 +298,16 @@ async def nodes_probe(panel_id: int, node_id: int):
     return await _nodes_call(nodes.probe(panel_id, node_id))
 
 
+class NodeIdsIn(BaseModel):
+    ids: list[int] = Field(min_length=1)
+
+
+@app.post("/api/nodes/{panel_id}/update-panel", dependencies=[Depends(require_admin)])
+async def nodes_update_panel(panel_id: int, body: NodeIdsIn):
+    """3x-ui on the nodes updates itself to the latest release and restarts."""
+    return {"results": await _nodes_call(nodes.update_panels(panel_id, body.ids))}
+
+
 @app.post("/api/nodes/test", dependencies=[Depends(require_admin)])
 async def nodes_test(body: NodeCheckIn):
     return await _nodes_call(nodes.test(body.panel_id, body, body.node_id))

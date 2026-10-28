@@ -117,6 +117,11 @@ async def list_all() -> dict[str, Any]:
         return out
 
     panels = await asyncio.gather(*(one(p) for p in db.list_panels()))
+    # nodes the admin installed run 3x-ui in Docker, where the panel's self-updater cannot replace itself
+    docker = {(p.panel_id, p.node_id) for p in db.list_provisions() if p.node_id and p.state != "deleted"}
+    for p in panels:
+        for n in p["nodes"]:
+            n["docker"] = (p["panel_id"], n["id"]) in docker
     nodes = [n for p in panels for n in p["nodes"]]
     latencies = [n["latency_ms"] for n in nodes if n["status"] == "online" and n["latency_ms"]]
     return {
@@ -172,6 +177,19 @@ async def delete(panel_id: int, node_id: int) -> None:
 
 async def set_enable(panel_id: int, node_id: int, enable: bool) -> None:
     await _call(panel_id, lambda xui: xui.v3_node_set_enable(node_id, enable))
+
+
+UPDATE_ERRORS = {"node is offline": "узел не в сети", "node is disabled": "узел выключен",
+                 "node not found": "узла нет в основной панели"}
+
+
+async def update_panels(panel_id: int, ids: list[int]) -> list[dict[str, Any]]:
+    """Start the 3x-ui self-update on these nodes through the main panel; the nodes restart on their own, the
+    new version shows up with their next heartbeat."""
+    results = await _call(panel_id, lambda xui: xui.v3_nodes_update_panel(ids))
+    return [{"id": r.get("id"), "name": r.get("name") or "", "ok": bool(r.get("ok")),
+             "error": UPDATE_ERRORS.get(r.get("error") or "", r.get("error") or "")}
+            for r in results if isinstance(r, dict)]
 
 
 async def probe(panel_id: int, node_id: int) -> dict[str, Any]:

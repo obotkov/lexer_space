@@ -537,3 +537,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 
 /* flag and country before a server's name: part of its title in the admin, not of its hostname */
 .name-prefix { display: inline-flex; align-items: center; padding: 0 10px; white-space: nowrap; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); font-size: 14px; }
+
+/* a node's 3x-ui behind the latest release */
+.btn-update { margin-top: 4px; background: rgba(var(--warn-rgb), 0.15); color: var(--warn); border-color: transparent; }
+.btn-update:hover:not(:disabled) { background: rgba(var(--warn-rgb), 0.25); }
+.node-update-note { max-width: 220px; margin-top: 4px; }

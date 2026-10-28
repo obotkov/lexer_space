@@ -292,6 +292,11 @@ class XUIClient:
         """Probe connection details without saving: the same heartbeat a registered node gets."""
         return await self._call("POST", "/panel/api/nodes/test", json=node) or {}
 
+    async def v3_nodes_update_panel(self, ids: list[int]) -> list[dict]:
+        """The official 3x-ui self-updater on each node (latest stable release, then a restart); the answer says
+        per node whether it started: [{"id", "name", "ok", "error"}]."""
+        return await self._call("POST", "/panel/api/nodes/updatePanel", json={"ids": ids, "dev": False}) or []
+
     async def v3_node_probe(self, node_id: int) -> dict:
         return await self._call("POST", f"/panel/api/nodes/probe/{node_id}") or {}
 

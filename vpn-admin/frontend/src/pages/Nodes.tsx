@@ -5,6 +5,15 @@ import { Empty, StatCard } from "../components/ui";
 import { formatDateTime, formatSpeed, formatUptime } from "../format";
 
 const REFRESH_MS = 30_000;
+// a node's self-update: download, restart, then its new version comes with a heartbeat
+const UPDATE_CHECKS_MS = [20_000, 45_000, 90_000, 150_000];
+const UPDATE_WAIT_MS = 4 * 60_000;
+
+/** Started self-updates: the version a node had and when, by "panel-node". */
+type Updating = Record<string, { from: string; at: number }>;
+
+/** A node the button can update: 3x-ui outside Docker, enabled and online (the main panel skips the rest). */
+const updatable = (n: XNode) => n.update_available && !n.docker && n.enable && n.status === "online";
 
 const STATUS_LABELS: Record<string, string> = { online: "В сети", offline: "Не в сети", unknown: "Нет данных" };
 
@@ -19,6 +28,7 @@ export function Nodes({ panels, onChanged }: { panels: PanelInfo[]; onChanged: (
   const [editing, setEditing] = useState<{ panelId: number; node: XNode | null } | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const [updating, setUpdating] = useState<Updating>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -54,10 +64,43 @@ export function Nodes({ panels, onChanged }: { panels: PanelInfo[]; onChanged: (
     }
   };
 
+  // a node that came back with a new version is done
+  useEffect(() => {
+    if (!data) return;
+    setUpdating((all) => {
+      const next = { ...all };
+      for (const p of data.panels)
+        for (const n of p.nodes) {
+          const u = next[`${p.panel_id}-${n.id}`];
+          if (u && n.panel_version && n.panel_version !== u.from) delete next[`${p.panel_id}-${n.id}`];
+        }
+      return Object.keys(next).length === Object.keys(all).length ? all : next;
+    });
+  }, [data]);
+
+  /** Start the self-update on these nodes of one main panel; the list is re-read while they restart. */
+  const updatePanels = async (panelId: number, list: XNode[]) => {
+    const results = (await api.updateNodePanels(panelId, list.map((n) => n.id))).results;
+    const started = results.filter((r) => r.ok);
+    const at = Date.now();
+    setUpdating((all) => ({
+      ...all,
+      ...Object.fromEntries(
+        started.map((r) => [`${panelId}-${r.id}`, { from: list.find((n) => n.id === r.id)?.panel_version ?? "", at }]),
+      ),
+    }));
+    for (const ms of UPDATE_CHECKS_MS) setTimeout(load, ms);
+    const failed = results.filter((r) => !r.ok).map((r) => `«${r.name || r.id}»: ${r.error || "не запустилось"}`);
+    if (failed.length) setError(`Обновление не запущено — ${failed.join("; ")}`);
+    return started.length;
+  };
+
   if (!data) return error ? <div className="notice notice-bad">{error}</div> : <div className="center muted">Загрузка узлов…</div>;
 
   const mainPanels = data.panels.filter((p) => p.supported && p.ok);
   const t = data.totals;
+  const toUpdate = data.panels.map((p) => ({ panel: p, nodes: p.nodes.filter((n) => updatable(n) && !updating[`${p.panel_id}-${n.id}`]) }));
+  const toUpdateCount = toUpdate.reduce((sum, x) => sum + x.nodes.length, 0);
 
   if (panels.length === 0) return <Empty>Сначала подключите главную панель 3x-ui в разделе «Серверы 3x-ui».</Empty>;
 
@@ -78,6 +121,22 @@ export function Nodes({ panels, onChanged }: { panels: PanelInfo[]; onChanged: (
         <button className="btn" onClick={load} disabled={loading}>
           {loading ? "Обновляю…" : "Обновить"}
         </button>
+        {toUpdateCount > 1 && (
+          <button
+            className="btn"
+            disabled={rowBusy === "all"}
+            onClick={() => {
+              if (!confirm(`Обновить 3x-ui до ${data.latest_panel_version} на ${toUpdateCount} узлах? Каждый узел перезапустит панель и Xray: VPN на нём прервётся примерно на полминуты.`)) return;
+              rowAction("all", async () => {
+                let started = 0;
+                for (const x of toUpdate) if (x.nodes.length) started += await updatePanels(x.panel.panel_id, x.nodes);
+                setMessage(`Обновление запущено на узлах: ${started}. Новая версия появится, когда узлы перезапустятся (обычно 1–2 минуты).`);
+              });
+            }}
+          >
+            Обновить все узлы ({toUpdateCount})
+          </button>
+        )}
         {data.latest_panel_version && <span className="muted small">Последняя версия 3x-ui: {data.latest_panel_version}</span>}
       </div>
 
@@ -92,6 +151,15 @@ export function Nodes({ panels, onChanged }: { panels: PanelInfo[]; onChanged: (
           showAddress={showAddress}
           onToggleAddress={() => setShowAddress((v) => !v)}
           rowBusy={rowBusy}
+          latest={data.latest_panel_version}
+          updating={updating}
+          onUpdate={(node) => {
+            if (!confirm(`Обновить 3x-ui на узле «${node.name}» с ${node.panel_version} до ${data.latest_panel_version}? Узел перезапустит панель и Xray: VPN на нём прервётся примерно на полминуты.`)) return;
+            rowAction(`${p.panel_id}-${node.id}`, async () => {
+              if (await updatePanels(p.panel_id, [node]))
+                setMessage(`Обновление «${node.name}» запущено: новая версия появится, когда узел перезапустится (обычно 1–2 минуты).`);
+            });
+          }}
           onEdit={(node) => setEditing({ panelId: p.panel_id, node })}
           onToggle={(node) =>
             rowAction(`${p.panel_id}-${node.id}`, () => api.enableNode(p.panel_id, node.id, !node.enable), `Узел «${node.name}» ${node.enable ? "выключен" : "включён"}`)
@@ -133,6 +201,9 @@ function PanelNodes({
   showAddress,
   onToggleAddress,
   rowBusy,
+  latest,
+  updating,
+  onUpdate,
   onEdit,
   onToggle,
   onProbe,
@@ -143,6 +214,9 @@ function PanelNodes({
   showAddress: boolean;
   onToggleAddress: () => void;
   rowBusy: string | null;
+  latest: string | null;
+  updating: Updating;
+  onUpdate: (n: XNode) => void;
   onEdit: (n: XNode) => void;
   onToggle: (n: XNode) => void;
   onProbe: (n: XNode) => void;
@@ -223,7 +297,7 @@ function PanelNodes({
                     <td>{n.xray_version || "—"}</td>
                     <td>
                       {n.panel_version || "—"}
-                      {n.update_available && <div className="badge badge-depleted">Доступно обновление</div>}
+                      <PanelUpdate node={n} latest={latest} started={updating[`${panel.panel_id}-${n.id}`]} busy={busy} onUpdate={() => onUpdate(n)} />
                     </td>
                     <td className="num">{online ? formatUptime(n.uptime) : "—"}</td>
                     <td className="num">{online && n.latency_ms ? `${n.latency_ms} ms` : "—"}</td>
@@ -261,5 +335,47 @@ function PanelNodes({
         </div>
       )}
     </>
+  );
+}
+
+/** What the Panel column offers when 3x-ui on the node is behind: the update button, its progress, or why not. */
+function PanelUpdate({
+  node: n,
+  latest,
+  started,
+  busy,
+  onUpdate,
+}: {
+  node: XNode;
+  latest: string | null;
+  started?: { from: string; at: number };
+  busy: boolean;
+  onUpdate: () => void;
+}) {
+  if (started) {
+    if (Date.now() - started.at < UPDATE_WAIT_MS) return <div className="badge badge-depleted">Обновляется…</div>;
+    return (
+      <div className="error-text small node-update-note">
+        Не обновился за {UPDATE_WAIT_MS / 60_000} минуты: обновление 3x-ui на узле не прошло, причина — в журнале 3x-ui на нём.
+      </div>
+    );
+  }
+  if (!n.update_available) return null;
+  if (n.docker)
+    return (
+      <>
+        <div className="badge badge-depleted">Доступно обновление</div>
+        <div className="muted small node-update-note">
+          3x-ui в Docker не обновляет сам себя: обновите узел кнопкой «Переустановить с нуля» в блоке «Новые серверы»
+        </div>
+      </>
+    );
+  const why = !n.enable ? "Узел выключен: включите его, чтобы обновить" : n.status !== "online" ? "Узел не в сети" : "";
+  return (
+    <div>
+      <button className="btn btn-small btn-update" disabled={busy || !!why} title={why || `Обновить 3x-ui на узле до ${latest}`} onClick={onUpdate}>
+        Обновить{latest ? ` до ${latest}` : ""}
+      </button>
+    </div>
   );
 }
