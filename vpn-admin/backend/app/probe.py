@@ -20,10 +20,11 @@ import socket
 import time
 from collections import deque
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
-from . import db
+from . import db, hosters
 from .aggregator import SERVICE_EMAILS, overview_cache, pool
 from .xray_links import Link, LinkError, parse
 from .xui import XUIClient, XUIError, parse_json_field
@@ -53,6 +54,11 @@ _kick = asyncio.Event()
 _attached_at: dict[int, float] = {}  # panel id -> when the service client last went onto new connects
 # nodes get a new client from the main panel with a delay and reload Xray for it
 SETTLE = 60
+# where each server is: its IP and the hosting account it sits on, refreshed rarely (the hostings' APIs are slow)
+WHERE_TTL = 1800
+RESOLVE_TIMEOUT = 3.0
+_hosting: dict[str, Any] = {"at": -WHERE_TTL, "by_ip": {}}
+_resolved: dict[str, tuple[float, str]] = {}
 
 
 def kick() -> None:
@@ -282,14 +288,66 @@ async def _check_links(links: list[Link]) -> list[dict[str, Any]]:
 
 # ---------- a round ----------
 
-def _inbound_view(panel: db.Panel, inbound: dict, nodes: dict[int, str]) -> dict[str, Any]:
+def _inbound_view(panel: db.Panel, inbound: dict, nodes: dict[int, dict]) -> dict[str, Any]:
     stream = parse_json_field(inbound.get("streamSettings"))
     node_id = inbound.get("nodeId") or 0
+    node = nodes.get(node_id) or {}
     return {"inbound_id": inbound.get("id"), "remark": inbound.get("remark") or str(inbound.get("port")),
             "protocol": inbound.get("protocol", ""), "network": stream.get("network", ""),
             "security": stream.get("security", ""), "port": inbound.get("port"),
-            "server": nodes.get(node_id, f"узел #{node_id}") if node_id else panel.name,
+            "server": (node.get("name") or f"узел #{node_id}") if node_id else panel.name,
+            "server_host": (node.get("address") or "") if node_id else (urlsplit(panel.url).hostname or ""),
             "server_kind": "node" if node_id else "main", "enable": bool(inbound.get("enable", True))}
+
+
+def _is_ip(host: str) -> bool:
+    try:
+        socket.inet_pton(socket.AF_INET6 if ":" in host else socket.AF_INET, host)
+        return True
+    except OSError:
+        return False
+
+
+async def _ip(host: str) -> str:
+    """The server's IPv4: the address itself, or what its domain points at (cached for WHERE_TTL)."""
+    if not host or _is_ip(host):
+        return host
+    cached = _resolved.get(host)
+    if cached and time.monotonic() - cached[0] < WHERE_TTL:
+        return cached[1]
+    try:
+        found = await asyncio.wait_for(asyncio.get_running_loop().getaddrinfo(host, None, family=socket.AF_INET),
+                                       RESOLVE_TIMEOUT)
+        ip = found[0][4][0] if found else ""
+    except (OSError, asyncio.TimeoutError):
+        ip = ""
+    _resolved[host] = (time.monotonic(), ip)
+    return ip
+
+
+async def _hosting_by_ip() -> dict[str, dict[str, Any]]:
+    """IP -> hosting account, from the hostings' server lists, and from the created servers for the rest."""
+    if time.monotonic() - _hosting["at"] >= WHERE_TTL:
+        by_ip: dict[str, dict[str, Any]] = {}
+        try:
+            for h in await hosters.list_all():
+                for server in h.get("servers") or []:
+                    for ip in server.get("ipv4") or []:
+                        by_ip.setdefault(ip, {"id": h["id"], "name": h["name"], "provider": h["provider"]})
+        except Exception:  # noqa: BLE001 - the check goes on without the hostings
+            log.warning("hosting lists for the connection check failed", exc_info=True)
+        _hosting.update(at=time.monotonic(), by_ip=by_ip)
+    by_ip = dict(_hosting["by_ip"])
+    accounts = {h.id: h for h in db.list_hosters()}
+    for p in db.list_provisions():
+        h = accounts.get(p.hoster_id)
+        if p.ip and h and p.state != "deleted":
+            by_ip.setdefault(p.ip, {"id": h.id, "name": h.name, "provider": h.provider})
+    return by_ip
+
+
+def _provider_title(provider: str) -> str:
+    return hosters.PROVIDERS.get(provider, {}).get("title", provider)
 
 
 async def _panel(panel: db.Panel, now: int) -> dict[str, Any]:
@@ -301,7 +359,7 @@ async def _panel(panel: db.Panel, now: int) -> dict[str, Any]:
             out["error"] = "проверка коннектов работает с 3x-ui v3"
             return out
         inbounds = await xui.inbounds()
-        nodes = {n.get("id"): n.get("name", "") for n in await xui.v3_nodes()}
+        nodes = {n.get("id"): n for n in await xui.v3_nodes()}
         refused, fresh = await _ensure_client(xui, inbounds)
         if fresh:
             _attached_at[panel.id] = time.monotonic()
@@ -328,7 +386,8 @@ async def _panel(panel: db.Panel, now: int) -> dict[str, Any]:
         inbound = _match(link, inbounds)
         view = _inbound_view(panel, inbound, nodes) if inbound else {
             "inbound_id": None, "remark": link.remark, "protocol": link.protocol, "network": link.network,
-            "security": link.security, "port": link.port, "server": link.host, "server_kind": "main", "enable": True}
+            "security": link.security, "port": link.port, "server": link.host, "server_host": link.host,
+            "server_kind": "main", "enable": True}
         n = sum(1 for i in linked if i["inbound_id"] == view["inbound_id"])  # External Proxy: several links each
         item = {**view, "key": f"{panel.id}:{view['inbound_id']}:{n}", "address": f"{link.host}:{link.port}",
                 "link_remark": link.remark}
@@ -363,7 +422,14 @@ async def _panel(panel: db.Panel, now: int) -> dict[str, Any]:
             item.update(status="fail", error="3x-ui не выдала ссылку на этот коннект")
         items.append(item)
 
+    hosts = sorted({i.get("server_host") or "" for i in items} - {""})
+    ips = dict(zip(hosts, await asyncio.gather(*(_ip(h) for h in hosts))))
+    by_ip = await _hosting_by_ip()
     for item in items:
+        ip = ips.get(item.pop("server_host", "") or "", "")
+        hosting = by_ip.get(ip)
+        item["server_ip"] = ip
+        item["hoster"] = {**hosting, "title": _provider_title(hosting["provider"])} if hosting else None
         history = _history.setdefault(item["key"], deque(maxlen=HISTORY))
         if item["status"] in ("ok", "fail"):
             history.append({"t": now, "ms": item.get("ms")})

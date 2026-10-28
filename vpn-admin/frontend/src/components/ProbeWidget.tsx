@@ -22,7 +22,7 @@ function kindLabel(i: ProbeItem): string {
 }
 
 /** Every connect of the main panels, checked through Xray-core with a service client, refreshed while open. */
-export function ProbeWidget({ multiPanel }: { multiPanel: boolean }) {
+export function ProbeWidget() {
   const [data, setData] = useState<ProbeResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -74,18 +74,21 @@ export function ProbeWidget({ multiPanel }: { multiPanel: boolean }) {
       {!data && !error && <div className="muted small">Загрузка…</div>}
       {data && !data.error && data.checked_at === 0 && <div className="muted small">Первая проверка начнётся через несколько секунд после запуска админки…</div>}
       {panels.map((p) => (
-        <ProbePanelBlock key={p.panel_id} name={p.panel} error={p.error} items={p.items} multiPanel={multiPanel} />
+        <ProbePanelBlock key={p.panel_id} name={p.panel} error={p.error} items={p.items} />
       ))}
     </div>
   );
 }
 
-function ProbePanelBlock({ name, error, items, multiPanel }: { name: string; error: string | null; items: ProbeItem[]; multiPanel: boolean }) {
-  const groups: { server: string; kind: string; items: ProbeItem[] }[] = [];
+function ProbePanelBlock({ name, error, items }: { name: string; error: string | null; items: ProbeItem[] }) {
+  const groups: { server: string; kind: string; ip: string; hoster: ProbeItem["hoster"]; items: ProbeItem[] }[] = [];
   for (const item of items) {
     const last = groups[groups.length - 1];
-    if (last && last.server === item.server) last.items.push(item);
-    else groups.push({ server: item.server, kind: item.server_kind, items: [item] });
+    if (last && last.server === item.server) {
+      last.items.push(item);
+      last.ip ||= item.server_ip ?? "";
+      last.hoster ||= item.hoster;
+    } else groups.push({ server: item.server, kind: item.server_kind, ip: item.server_ip ?? "", hoster: item.hoster, items: [item] });
   }
   return (
     <div className="probe-panel">
@@ -100,8 +103,28 @@ function ProbePanelBlock({ name, error, items, multiPanel }: { name: string; err
         return (
           <section key={g.server} className="probe-group">
             <div className="probe-group-head">
-              <span className="strong">{g.kind === "node" && multiPanel ? `${name} › ${g.server}` : g.server}</span>
-              <span className={`badge ${g.kind === "main" ? "badge-main" : "badge-node"}`}>{g.kind === "main" ? "основной" : "узел"}</span>
+              {g.kind === "node" && (
+                <>
+                  <span className="strong">{name}</span>
+                  <span className="probe-sep">›</span>
+                </>
+              )}
+              {g.hoster && (
+                <>
+                  <span className={`provider-badge provider-${g.hoster.provider}`} title={`Хостинг: ${g.hoster.name}`}>
+                    {g.hoster.title}
+                  </span>
+                  <span className="probe-sep">›</span>
+                </>
+              )}
+              <span className="strong">{g.server}</span>
+              {g.kind === "main" && <span className="badge badge-main">основной</span>}
+              {g.ip && g.ip !== g.server && (
+                <>
+                  <span className="probe-sep">›</span>
+                  <span className="probe-ip">{g.ip}</span>
+                </>
+              )}
             </div>
             {checked.map((i) => (
               <ProbeRow key={i.key} item={i} />

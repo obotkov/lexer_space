@@ -81,6 +81,10 @@ export interface ProbeItem {
   /** the main panel's name or its node's */
   server: string;
   server_kind: "main" | "node";
+  /** the server's IPv4 (its domain resolved), empty when unknown */
+  server_ip?: string;
+  /** hosting account the server sits on, matched by IP; null when none of the added hostings has it */
+  hoster?: { id: number; name: string; provider: string; title: string } | null;
   enable?: boolean;
   address?: string;
   /** ok: works; fail: no traffic through it; skip: cannot be checked (MTProto, WireGuard…); off: disabled */

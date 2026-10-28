@@ -377,7 +377,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .probe-total { font-size: 18px; font-weight: 600; color: var(--good); margin-bottom: 2px; }
 .probe-total-bad { color: var(--bad); }
 .probe-panel { display: flex; flex-direction: column; gap: 14px; }
-.probe-group-head { display: flex; align-items: center; gap: 8px; padding-bottom: 4px; }
+.probe-group-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-bottom: 4px; }
+.probe-sep { color: var(--muted); }
+.probe-ip { color: var(--muted); font-variant-numeric: tabular-nums; }
 .probe-row { display: grid; grid-template-columns: minmax(0, 1fr) 120px 130px; gap: 14px; align-items: center; padding: 7px 0; border-top: 1px solid var(--border); }
 .probe-label { min-width: 0; }
 .probe-name { display: flex; align-items: center; gap: 8px; min-width: 0; }

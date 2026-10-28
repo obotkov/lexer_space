@@ -71,7 +71,7 @@ export function Overview({ data, onGoServers }: { data: OverviewData; onGoServer
       <NetLoadWidget multiPanel={data.panels.length > 1} />
 
       <h2 className="section-title">Проверка коннектов</h2>
-      <ProbeWidget multiPanel={data.panels.length > 1} />
+      <ProbeWidget />
 
       <div className="overview-widgets">
         <section className="overview-widget">
