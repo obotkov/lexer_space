@@ -6,7 +6,10 @@ gets a Let's Encrypt certificate for it in the CDN's cloud (the domain check pas
 DNS record), creates a CDN resource for that name with the node as its HTTPS origin and points the name at
 the CDN with a CNAME. Clients are given the CDN's own technical address, with the name as SNI and Host.
 
-Yandex Cloud CDN now (a service account's authorized key and a folder); VK Cloud and Beget come later.
+Yandex Cloud CDN (a service account's authorized key and a folder) and VK Cloud CDN (a user's login and
+password for the API, and a project). VK Cloud issues the Let's Encrypt certificate itself, for a resource
+whose name already points at the CDN, so there the CNAME comes first and the certificate after it.
+Beget comes later.
 """
 
 import asyncio
@@ -32,6 +35,10 @@ TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 POLL_EVERY = 15
 CERT_TIMEOUT = 40 * 60  # Let's Encrypt through Certificate Manager: usually minutes, sometimes half an hour
 RESOURCE_TIMEOUT = 20 * 60  # Yandex: "creating a resource can take up to 15 minutes"
+VK_IDENTITY_URL = os.getenv("VK_IDENTITY_URL", "https://msk.cloud.vk.ru/infra/identity/v3")
+VK_CDN_URL = os.getenv("VK_CDN_URL", "")  # empty: the "cdn" endpoint from the token's catalog
+VK_CDN_DEFAULT = "https://msk.cloud.vk.ru/api/cdn/api/v1"
+VK_CERT_WAIT = 3 * 60  # VK Cloud: "issuing can take up to 30 minutes"; it switches HTTPS on by itself
 
 PROVIDERS = {
     "yandex": {
@@ -41,7 +48,14 @@ PROVIDERS = {
                 "ключ» → скачайте JSON и вставьте его целиком. ID каталога — в консоли Yandex Cloud рядом с его именем.",
         "help_url": "https://yandex.cloud/ru/docs/iam/operations/authorized-key/create",
     },
-    "vk": {"title": "VK Cloud CDN", "available": False},
+    "vk": {
+        "title": "VK Cloud CDN",
+        "available": True,
+        "help": "Личный кабинет VK Cloud → имя пользователя → «Настройки проекта» → «Доступ по API»: включите доступ "
+                "(нужна двухфакторная аутентификация) и скопируйте Project ID. Логин и пароль — те, с которыми вы входите "
+                "в VK Cloud; у пользователя должна быть роль, которой разрешён CDN (например, «Администратор проекта»).",
+        "help_url": "https://cloud.vk.ru/docs/tools-for-using-services/api/rest-api/enable-api",
+    },
     "beget": {"title": "Beget CDN", "available": False},
 }
 
@@ -51,10 +65,23 @@ class CDNError(Exception):
 
 
 class CdnAccountIn(BaseModel):
-    provider: Literal["yandex"] = "yandex"
+    provider: Literal["yandex", "vk"] = "yandex"
     name: str = Field(min_length=1, max_length=100)
-    folder_id: str = ""
-    key: str = ""  # the authorized key JSON; empty on edit = keep the stored one
+    folder_id: str = ""  # Yandex
+    key: str = ""  # Yandex: the authorized key JSON; empty on edit = keep the stored one
+    project_id: str = ""  # VK Cloud
+    username: str = ""  # VK Cloud
+    password: str = ""  # VK Cloud; empty on edit = keep the stored one
+
+    def credentials(self, stored: dict[str, str] | None = None) -> dict[str, str]:
+        """What the account keeps, the empty secret fields taken from `stored`."""
+        stored = stored or {}
+        if self.provider == "vk":
+            return {"project_id": self.project_id.strip() or stored.get("project_id", ""),
+                    "username": self.username.strip() or stored.get("username", ""),
+                    "password": self.password or stored.get("password", "")}
+        return {"folder_id": self.folder_id.strip() or stored.get("folder_id", ""),
+                "key": self.key.strip() or stored.get("key", "")}
 
 
 def _b64url(data: bytes) -> str:
@@ -210,7 +237,152 @@ class YandexCloud:
         await self._request("DELETE", f"{YC_CM_URL}/certificates/{cert_id}")
 
 
-CLIENTS = {"yandex": YandexCloud}
+_vk_tokens: dict[tuple[str, str], tuple[str, str, float]] = {}  # (user, project) -> token, CDN URL, renew at
+
+
+class VKCloud:
+    """VK Cloud CDN: a Keystone token for the user and project, then the CDN API of that project."""
+
+    def __init__(self, credentials: dict[str, Any]):
+        self.project = (credentials.get("project_id") or "").strip()
+        self.username = (credentials.get("username") or "").strip()
+        self.password = credentials.get("password") or ""
+        if not self.project or not self.username or not self.password:
+            raise CDNError("Укажите Project ID, логин и пароль VK Cloud")
+        self.http = httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": "vpn-admin"})
+
+    async def close(self) -> None:
+        await self.http.aclose()
+
+    @staticmethod
+    def _message(resp: httpx.Response) -> str:
+        try:
+            data = resp.json()
+        except ValueError:
+            return (resp.text or "").strip()[:200] or f"HTTP {resp.status_code}"
+        if isinstance(data, dict):
+            error = data.get("error")
+            if isinstance(error, dict):
+                return error.get("message") or str(error)
+            for key in ("message", "detail", "errors", "error"):
+                if data.get(key):
+                    return str(data[key])[:300]
+        return str(data)[:300] or f"HTTP {resp.status_code}"
+
+    async def _token(self) -> tuple[str, str]:
+        cached = _vk_tokens.get((self.username, self.project))
+        if cached and time.time() < cached[2]:
+            return cached[0], cached[1]
+        body = {"auth": {
+            "identity": {"methods": ["password"], "password": {"user": {
+                "name": self.username, "domain": {"name": "users"}, "password": self.password}}},
+            "scope": {"project": {"id": self.project}}}}
+        try:
+            resp = await self.http.post(f"{VK_IDENTITY_URL.rstrip('/')}/auth/tokens", json=body)
+        except httpx.HTTPError as exc:
+            raise CDNError(f"VK Cloud недоступен: {exc}") from exc
+        if resp.status_code == 401:
+            raise CDNError("VK Cloud не пустил: неверный логин или пароль, либо в проекте не включён доступ по API")
+        if resp.status_code in (403, 404):
+            raise CDNError(f"VK Cloud: нет доступа к проекту {self.project} ({self._message(resp)}): проверьте Project ID "
+                           "на вкладке «Доступ по API»")
+        if resp.status_code >= 400:
+            raise CDNError(f"VK Cloud не выдал токен: {self._message(resp)}")
+        token = resp.headers.get("X-Subject-Token", "")
+        if not token:
+            raise CDNError("VK Cloud не выдал токен")
+        url = VK_CDN_URL
+        if not url:
+            for service in (resp.json().get("token") or {}).get("catalog") or []:
+                if service.get("type") == "cdn":
+                    url = next((e["url"] for e in service.get("endpoints") or []
+                                if e.get("interface") == "public" and e.get("url")), "")
+            url = url or VK_CDN_DEFAULT
+        _vk_tokens[(self.username, self.project)] = (token, url.rstrip("/"), time.time() + 3000)  # lives ~an hour+
+        return token, url.rstrip("/")
+
+    async def _request(self, method: str, path: str, json_body: Any = None, ok_missing: bool = False) -> Any:
+        token, base = await self._token()
+        try:
+            resp = await self.http.request(method, f"{base}/projects/{self.project}{path}", json=json_body,
+                                           headers={"X-Auth-Token": token})
+        except httpx.HTTPError as exc:
+            raise CDNError(f"VK Cloud недоступен: {exc}") from exc
+        if resp.status_code == 401:
+            _vk_tokens.pop((self.username, self.project), None)
+            raise CDNError("VK Cloud: токен не принят, повторите")
+        if resp.status_code == 403:
+            raise CDNError(f"VK Cloud: у пользователя нет прав на CDN в проекте ({self._message(resp)})")
+        if resp.status_code == 404:
+            if ok_missing:
+                return None
+            raise CDNError(f"VK Cloud: не найдено ({self._message(resp)})")
+        if resp.status_code >= 400:
+            raise CDNError(f"VK Cloud: {self._message(resp)}")
+        try:
+            return resp.json() if resp.content else {}
+        except ValueError:
+            return {}
+
+    async def check(self) -> dict:
+        address = await self.address()
+        resources = await self._request("GET", "/resources")
+        return {"project_id": self.project, "address": address,
+                "resources": len(resources) if isinstance(resources, list) else len(resources.get("results") or [])}
+
+    async def address(self) -> str:
+        """The account's own CDN name, the one every resource's domain points at (cl-….cdn.msk.vkcs.cloud)."""
+        cname = ((await self._request("GET", "/clients/me")) or {}).get("cname", "").rstrip(".")
+        if not cname:
+            raise CDNError("VK Cloud не сообщил технический адрес CDN аккаунта")
+        return cname
+
+    async def create_resource(self, domain: str, origin: str, allow_post: bool) -> str:
+        """XHTTP must not be cached and must reach the node under the name the client asked for (its inbound
+        checks Host); HTTPS is switched on by the Let's Encrypt certificate once it is issued."""
+        methods = ["GET", "HEAD", "OPTIONS"] + (["POST"] if allow_post else [])
+        resource = await self._request("POST", "/resources", json_body={
+            "cname": domain, "origin": origin, "originProtocol": "HTTPS", "active": True, "secondaryHostnames": [],
+            "options": {
+                "edge_cache_settings": {"enabled": True, "value": "0s", "default": "0s"},
+                "browser_cache_settings": {"enabled": True, "value": "0s"},
+                "forward_host_header": {"enabled": True, "value": True},
+                "allowedHttpMethods": {"enabled": True, "value": methods},
+            },
+        })
+        resource_id = (resource or {}).get("id")
+        if not resource_id:
+            raise CDNError("VK Cloud не вернул ID CDN-ресурса")
+        return str(resource_id)
+
+    async def resource(self, resource_id: str) -> dict:
+        return await self._request("GET", f"/resources/{resource_id}")
+
+    async def issue_certificate(self, resource_id: str) -> None:
+        try:
+            await self._request("POST", f"/resources/{resource_id}/ssl/le/issue")
+        except CDNError as exc:
+            text = str(exc).lower()
+            if "already" not in text:  # already issued, or the issuing already runs
+                raise
+
+    async def delete_resource(self, resource_id: str) -> None:
+        resource = await self._request("GET", f"/resources/{resource_id}", ok_missing=True)
+        if resource is None:
+            raise CDNError("VK Cloud: не найдено")
+        if resource.get("active"):  # a resource is switched off before it can be deleted
+            try:
+                await self._request("PUT", f"/resources/{resource_id}", json_body={
+                    "active": False, "secondaryHostnames": resource.get("secondaryHostnames") or []})
+            except CDNError:
+                pass
+        await self._request("DELETE", f"/resources/{resource_id}")
+
+    async def delete_certificate(self, cert_id: str) -> None:
+        await self._request("DELETE", f"/sslData/{cert_id}", ok_missing=True)
+
+
+CLIENTS = {"yandex": YandexCloud, "vk": VKCloud}
 
 
 def _client(account: db.DnsAccount):
@@ -236,7 +408,9 @@ def account(account_id: int) -> db.DnsAccount:
 
 def public(a: db.DnsAccount) -> dict:
     return {"id": a.id, "provider": a.provider, "provider_title": PROVIDERS.get(a.provider, {}).get("title", a.provider),
-            "name": a.name, "folder_id": a.credentials.get("folder_id", ""), "created_at": a.created_at}
+            "name": a.name, "folder_id": a.credentials.get("folder_id", ""),
+            "project_id": a.credentials.get("project_id", ""), "username": a.credentials.get("username", ""),
+            "created_at": a.created_at}
 
 
 async def check(provider: str, credentials: dict) -> dict:
@@ -271,6 +445,8 @@ async def set_up(account_id: int, item: dict, domain: str, origin: str, put_reco
     and the CNAME of `domain` to the CDN. Fills item: cdn_domain, cdn_address, cdn_cert_id, cdn_resource_id,
     cdn_records (Cloudflare record IDs to delete with the server)."""
     acc = account(account_id)
+    if acc.provider == "vk":
+        return await _set_up_vk(acc, item, domain, origin, put_record, log, save)
     title = PROVIDERS[acc.provider]["title"]
     client = _client(acc)
     records: list[str] = item.setdefault("cdn_records", [])
@@ -321,6 +497,51 @@ async def set_up(account_id: int, item: dict, domain: str, origin: str, put_reco
         item.update(cdn_address=address, cdn_account_id=account_id)
         save()
         log(f"{title}: CDN-ресурс {domain} готов, адрес для клиентов {address}")
+    finally:
+        await client.close()
+
+
+async def _set_up_vk(acc: db.DnsAccount, item: dict, domain: str, origin: str, put_record: PutRecord,
+                     log: Callable[[str], None], save: Callable[[], None]) -> None:
+    """VK Cloud: the resource, the CNAME of `domain` to the account's CDN name, then the Let's Encrypt
+    certificate, which VK Cloud checks through the CDN itself and puts on the resource when it is issued."""
+    title = PROVIDERS[acc.provider]["title"]
+    client = _client(acc)
+    records: list[str] = item.setdefault("cdn_records", [])
+    try:
+        item["cdn_domain"] = domain
+        address = await client.address()
+        if not item.get("cdn_resource_id"):
+            item["cdn_resource_id"] = await client.create_resource(
+                domain, origin, allow_post=item["options"].get("uplink") == "post-body")
+            save()
+            log(f"{title}: создан CDN-ресурс {domain} → {origin}")
+        record_id = await put_record("CNAME", domain, address)
+        if record_id not in records:
+            records.append(record_id)
+        save()
+        deadline = time.time() + RESOURCE_TIMEOUT
+        while (resource := await client.resource(item["cdn_resource_id"])).get("status") == "processed":
+            if time.time() > deadline:
+                raise CDNError(f"{title}: CDN-ресурс {domain} не готов за {RESOURCE_TIMEOUT // 60} минут — "
+                               "нажмите «Раскатать подключения», чтобы подождать ещё")
+            await asyncio.sleep(POLL_EVERY)
+        if resource.get("status") == "suspended":
+            raise CDNError(f"{title}: CDN-ресурс {domain} приостановлен — проверьте баланс и CDN в проекте VK Cloud")
+        if not resource.get("sslEnabled"):
+            await client.issue_certificate(item["cdn_resource_id"])
+            log(f"{title}: запрошен сертификат Let's Encrypt на {domain} (VK Cloud выпускает его до 30 минут)")
+            deadline = time.time() + VK_CERT_WAIT
+            while not resource.get("sslEnabled") and time.time() < deadline:
+                await asyncio.sleep(POLL_EVERY)
+                resource = await client.resource(item["cdn_resource_id"])
+        item.update(cdn_address=address, cdn_account_id=acc.id)
+        save()
+        if resource.get("sslEnabled"):
+            log(f"{title}: CDN-ресурс {domain} готов, адрес для клиентов {address}")
+        else:
+            log(f"{title}: CDN-ресурс {domain} создан, адрес для клиентов {address}. Сертификат ещё выпускается: "
+                "подключение заработает, когда VK Cloud включит на ресурсе HTTPS (обычно до 30 минут)")
     finally:
         await client.close()
 

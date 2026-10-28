@@ -450,6 +450,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .provider-cloudflare { border-color: rgba(var(--warn-rgb), 0.55); color: var(--warn); }
 .cdn-key { min-height: 120px; font-size: 12px; resize: vertical; }
 .provider-yandex { border-color: rgba(var(--bad-rgb), 0.5); color: var(--bad); }
+.provider-vk { border-color: rgba(var(--accent-rgb), 0.5); color: var(--accent); }
 .dns-zones { display: flex; flex-wrap: wrap; gap: 6px; }
 .dns-empty { margin-bottom: 14px; }
 .toolbar h2 { margin: 0; }
@@ -544,3 +545,5 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .btn-update { margin-top: 4px; background: rgba(var(--warn-rgb), 0.15); color: var(--warn); border-color: transparent; }
 .btn-update:hover:not(:disabled) { background: rgba(var(--warn-rgb), 0.25); }
 .node-update-note { max-width: 220px; margin-top: 4px; }
+
+.toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }

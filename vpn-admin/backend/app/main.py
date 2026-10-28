@@ -477,7 +477,7 @@ async def dns_accounts_delete(account_id: int):
     return {"ok": True}
 
 
-# ---------- CDN accounts (Yandex Cloud CDN) ----------
+# ---------- CDN accounts (Yandex Cloud CDN, VK Cloud CDN) ----------
 
 @app.get("/api/cdn-accounts", dependencies=[Depends(require_admin)])
 async def cdn_accounts_list():
@@ -493,7 +493,7 @@ async def _cdn_checked(provider: str, credentials: dict) -> None:
 
 @app.post("/api/cdn-accounts", dependencies=[Depends(require_admin)])
 async def cdn_accounts_create(body: cdn.CdnAccountIn):
-    credentials = {"folder_id": body.folder_id.strip(), "key": body.key.strip()}
+    credentials = body.credentials()
     await _cdn_checked(body.provider, credentials)
     return cdn.public(db.create_cdn_account(body.provider, body.name.strip(), credentials))
 
@@ -503,8 +503,7 @@ async def cdn_accounts_update(account_id: int, body: cdn.CdnAccountIn):
     stored = db.get_cdn_account(account_id)
     if not stored:
         raise HTTPException(404, "Аккаунт не найден")
-    credentials = {"folder_id": body.folder_id.strip() or stored.credentials.get("folder_id", ""),
-                   "key": body.key.strip() or stored.credentials.get("key", "")}
+    credentials = body.model_copy(update={"provider": stored.provider}).credentials(stored.credentials)
     if credentials != stored.credentials:
         await _cdn_checked(stored.provider, credentials)
     return cdn.public(db.update_cdn_account(account_id, body.name.strip(), credentials))

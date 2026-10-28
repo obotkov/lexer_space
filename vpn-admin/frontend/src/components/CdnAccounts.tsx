@@ -1,13 +1,16 @@
 import { useState, type FormEvent } from "react";
-import { api, type CdnAccountChecked, type CdnAccounts as CdnAccountsData } from "../api";
+import { api, type CdnAccountChecked, type CdnAccountForm, type CdnAccounts as CdnAccountsData } from "../api";
 
-/** CDN accounts (Yandex Cloud CDN): a connection for whitelisted networks gets its CDN resource there. */
+const BUTTONS: Record<string, string> = { yandex: "Yandex Cloud", vk: "VK Cloud" };
+
+/** CDN accounts (Yandex Cloud CDN, VK Cloud CDN): a connection for whitelisted networks gets its CDN resource there. */
 export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChanged: () => void }) {
-  const [editing, setEditing] = useState<CdnAccountChecked | "new" | null>(null);
+  const [editing, setEditing] = useState<{ provider: string; account: CdnAccountChecked | null } | null>(null);
   const [error, setError] = useState("");
 
   const remove = async (a: CdnAccountChecked) => {
-    if (!confirm(`Удалить CDN-аккаунт «${a.name}» из админки? Ключ будет стёрт, CDN-ресурсы в облаке останутся.`)) return;
+    const secret = a.provider === "vk" ? "Пароль будет стёрт" : "Ключ будет стёрт";
+    if (!confirm(`Удалить CDN-аккаунт «${a.name}» из админки? ${secret}, CDN-ресурсы в облаке останутся.`)) return;
     try {
       await api.deleteCdnAccount(a.id);
       onChanged();
@@ -16,17 +19,23 @@ export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChan
     }
   };
 
+  const available = Object.entries(data.providers).filter(([, p]) => p.available);
   const soon = Object.values(data.providers)
     .filter((p) => !p.available)
     .map((p) => p.title);
+  const provider = editing ? data.providers[editing.provider] : null;
 
   return (
     <>
       <div className="toolbar section-title">
         <h2>CDN для белых списков</h2>
-        <button className="btn btn-small" onClick={() => setEditing("new")}>
-          + Подключить Yandex Cloud
-        </button>
+        <div className="toolbar-actions">
+          {available.map(([key, p]) => (
+            <button key={key} className="btn btn-small" onClick={() => setEditing({ provider: key, account: null })}>
+              + Подключить {BUTTONS[key] ?? p.title}
+            </button>
+          ))}
+        </div>
       </div>
       {error && <div className="notice notice-bad small">{error}</div>}
 
@@ -44,14 +53,26 @@ export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChan
                 <div>
                   <div className="strong">{a.name}</div>
                   <div className="muted small">
-                    каталог <span className="mono">{a.folder_id}</span>
+                    {a.provider === "vk" ? (
+                      <>
+                        проект <span className="mono">{a.project_id}</span> · {a.username}
+                      </>
+                    ) : (
+                      <>
+                        каталог <span className="mono">{a.folder_id}</span>
+                      </>
+                    )}
                     {a.ok ? ` · CDN-ресурсов: ${a.resources}` : ""}
                   </div>
                 </div>
               </div>
               <div className="hoster-actions">
-                {a.ok ? <span className="badge badge-active">Ключ работает</span> : <span className="badge badge-expired">Ошибка</span>}
-                <button className="btn btn-small" onClick={() => setEditing(a)}>
+                {a.ok ? (
+                  <span className="badge badge-active">{a.provider === "vk" ? "Доступ работает" : "Ключ работает"}</span>
+                ) : (
+                  <span className="badge badge-expired">Ошибка</span>
+                )}
+                <button className="btn btn-small" onClick={() => setEditing({ provider: a.provider, account: a })}>
                   Изменить
                 </button>
                 <button className="btn btn-small btn-danger" onClick={() => remove(a)}>
@@ -66,9 +87,11 @@ export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChan
 
       {editing && (
         <CdnAccountDialog
-          account={editing === "new" ? null : editing}
-          help={data.providers.yandex?.help ?? ""}
-          helpUrl={data.providers.yandex?.help_url ?? ""}
+          provider={editing.provider}
+          title={provider?.title ?? editing.provider}
+          account={editing.account}
+          help={provider?.help ?? ""}
+          helpUrl={provider?.help_url ?? ""}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -81,21 +104,29 @@ export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChan
 }
 
 function CdnAccountDialog({
+  provider,
+  title,
   account,
   help,
   helpUrl,
   onClose,
   onSaved,
 }: {
+  provider: string;
+  title: string;
   account: CdnAccountChecked | null;
   help: string;
   helpUrl: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const vk = provider === "vk";
   const [name, setName] = useState(account?.name ?? "");
   const [folderId, setFolderId] = useState(account?.folder_id ?? "");
   const [key, setKey] = useState("");
+  const [projectId, setProjectId] = useState(account?.project_id ?? "");
+  const [username, setUsername] = useState(account?.username ?? "");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -103,7 +134,9 @@ function CdnAccountDialog({
     e.preventDefault();
     setBusy(true);
     setError("");
-    const body = { provider: "yandex", name, folder_id: folderId, key };
+    const body: CdnAccountForm = vk
+      ? { provider, name, project_id: projectId, username, password }
+      : { provider, name, folder_id: folderId, key };
     try {
       if (account) await api.updateCdnAccount(account.id, body);
       else await api.createCdnAccount(body);
@@ -118,7 +151,7 @@ function CdnAccountDialog({
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && !busy && onClose()}>
       <form className="modal" onSubmit={submit}>
         <div className="modal-head">
-          <h2>{account ? `Yandex Cloud «${account.name}»` : "Подключить Yandex Cloud CDN"}</h2>
+          <h2>{account ? `${title} «${account.name}»` : `Подключить ${title}`}</h2>
           <button type="button" className="btn btn-small" onClick={onClose} disabled={busy}>
             ✕
           </button>
@@ -126,37 +159,71 @@ function CdnAccountDialog({
 
         <label className="field">
           <span>Название в админке</span>
-          <input className="input" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Yandex Cloud — CDN" />
+          <input className="input" required value={name} onChange={(e) => setName(e.target.value)} placeholder={`${title}`} />
         </label>
 
-        <label className="field">
-          <span>ID каталога</span>
-          <input className="input mono" required value={folderId} onChange={(e) => setFolderId(e.target.value)} placeholder="b1g…" autoComplete="off" />
-        </label>
+        {vk ? (
+          <>
+            <label className="field">
+              <span>Project ID</span>
+              <input
+                className="input mono"
+                required
+                value={projectId}
+                onChange={(e) => setProjectId(e.target.value)}
+                placeholder="вкладка «Доступ по API» в настройках проекта"
+                autoComplete="off"
+              />
+            </label>
+            <label className="field">
+              <span>Логин VK Cloud (email)</span>
+              <input className="input" required value={username} onChange={(e) => setUsername(e.target.value)} placeholder="user@example.com" autoComplete="off" />
+            </label>
+            <label className="field">
+              <span>Пароль</span>
+              <input
+                className="input"
+                type="password"
+                required={!account}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={account ? "сохранён, оставьте пустым чтобы не менять" : ""}
+                autoComplete="new-password"
+              />
+            </label>
+          </>
+        ) : (
+          <>
+            <label className="field">
+              <span>ID каталога</span>
+              <input className="input mono" required value={folderId} onChange={(e) => setFolderId(e.target.value)} placeholder="b1g…" autoComplete="off" />
+            </label>
 
-        <label className="field">
-          <span>Авторизованный ключ сервисного аккаунта (JSON)</span>
-          <textarea
-            className="input mono cdn-key"
-            required={!account}
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder={account ? "сохранён, оставьте пустым чтобы не менять" : '{"id": "…", "service_account_id": "…", "private_key": "…"}'}
-            spellCheck={false}
-            autoComplete="off"
-          />
-        </label>
+            <label className="field">
+              <span>Авторизованный ключ сервисного аккаунта (JSON)</span>
+              <textarea
+                className="input mono cdn-key"
+                required={!account}
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                placeholder={account ? "сохранён, оставьте пустым чтобы не менять" : '{"id": "…", "service_account_id": "…", "private_key": "…"}'}
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </label>
+          </>
+        )}
 
         <div className="notice notice-info small">
           {help}{" "}
           {helpUrl && (
             <a href={helpUrl} target="_blank" rel="noreferrer">
-              Как создать ключ →
+              {vk ? "Как включить доступ по API →" : "Как создать ключ →"}
             </a>
           )}
         </div>
 
-        {busy && <div className="notice notice-info small">Проверяю ключ и права в каталоге…</div>}
+        {busy && <div className="notice notice-info small">{vk ? "Вхожу в VK Cloud и проверяю доступ к CDN…" : "Проверяю ключ и права в каталоге…"}</div>}
         {error && <div className="notice notice-bad small">{error}</div>}
 
         <div className="modal-actions">

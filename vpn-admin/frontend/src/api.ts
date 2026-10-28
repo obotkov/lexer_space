@@ -662,14 +662,29 @@ export interface DnsAccount {
   zones: DnsZone[];
 }
 
-/** A CDN account (Yandex Cloud CDN): connections for whitelisted networks go through its CDN. */
+/** A CDN account (Yandex Cloud CDN, VK Cloud CDN): connections for whitelisted networks go through its CDN. */
 export interface CdnAccount {
   id: number;
   provider: string;
   provider_title: string;
   name: string;
+  /** Yandex Cloud */
   folder_id: string;
+  /** VK Cloud */
+  project_id: string;
+  username: string;
   created_at: number;
+}
+
+/** What the account dialog sends; the secret (key, password) empty on edit keeps the stored one. */
+export interface CdnAccountForm {
+  provider: string;
+  name: string;
+  folder_id?: string;
+  key?: string;
+  project_id?: string;
+  username?: string;
+  password?: string;
 }
 
 export interface CdnAccountChecked extends CdnAccount {
@@ -938,9 +953,8 @@ export const api = {
   updateHoster: (id: number, form: HosterForm) => request<Hoster>("PUT", `/api/hosters/${id}`, form),
   deleteHoster: (id: number) => request("DELETE", `/api/hosters/${id}`),
   cdnAccounts: () => request<CdnAccounts>("GET", "/api/cdn-accounts"),
-  createCdnAccount: (body: { provider: string; name: string; folder_id: string; key: string }) => request("POST", "/api/cdn-accounts", body),
-  updateCdnAccount: (id: number, body: { provider: string; name: string; folder_id: string; key: string }) =>
-    request("PUT", `/api/cdn-accounts/${id}`, body),
+  createCdnAccount: (body: CdnAccountForm) => request("POST", "/api/cdn-accounts", body),
+  updateCdnAccount: (id: number, body: CdnAccountForm) => request("PUT", `/api/cdn-accounts/${id}`, body),
   deleteCdnAccount: (id: number) => request("DELETE", `/api/cdn-accounts/${id}`),
   dnsAccounts: () => request<DnsAccounts>("GET", "/api/dns-accounts"),
   createDnsAccount: (body: { name: string; token: string }) => request("POST", "/api/dns-accounts", body),
