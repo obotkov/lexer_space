@@ -40,8 +40,11 @@ HISTORY = 3600 // INTERVAL  # an hour of points per connect
 PARALLEL = 8
 # protocols 3x-ui gives share links for that Xray can dial as a client
 CHECKED = {"vless", "vmess", "trojan", "shadowsocks", "hysteria"}
-SKIP_REASONS = {"mtproto": "MTProto — не Xray, не проверяется", "wireguard": "WireGuard — ссылок нет, не проверяется",
-                "amneziawg": "AmneziaWG — ссылок нет, не проверяется", "tuic": "TUIC — Xray не умеет, не проверяется"}
+SKIP_REASONS = {"mtproto": "MTProto — не Xray, не проверяется", "wireguard": "WireGuard — Xray не умеет, не проверяется",
+                "amneziawg": "AmneziaWG — Xray не умеет, не проверяется", "tuic": "TUIC — Xray не умеет, не проверяется"}
+# links of connects Xray can't dial (AmneziaVPN's vpn:// holds a whole WireGuard config, private key included):
+# they are left out, and the connect itself shows as not checked
+UNDIALED = {"vpn", "wireguard", "wg", "awg", "amneziawg", "tuic", "tg"}
 
 _state: dict[str, Any] = {"checked_at": 0, "duration": 0.0, "error": None, "panels": []}
 _history: dict[str, deque] = {}
@@ -312,11 +315,15 @@ async def _panel(panel: db.Panel, now: int) -> dict[str, Any]:
     linked: list[dict[str, Any]] = []
     seen: set[int] = set()
     for url in raw_links:
+        scheme = url.split("://", 1)[0].lower() if "://" in url else ""
+        if scheme in UNDIALED:
+            continue
         try:
             link = parse(url)
         except LinkError as exc:
-            items.append({"key": f"{panel.id}:link:{len(items)}", "remark": url.split("#")[-1][:60], "status": "fail",
-                          "error": str(exc), "server": "", "server_kind": "main", "protocol": url.split(":")[0]})
+            remark = url.split("#", 1)[1][:60] if "#" in url else (scheme or "ссылка")  # never the link's body
+            items.append({"key": f"{panel.id}:link:{len(items)}", "remark": remark, "status": "fail",
+                          "error": str(exc), "server": "", "server_kind": "main", "protocol": scheme})
             continue
         inbound = _match(link, inbounds)
         view = _inbound_view(panel, inbound, nodes) if inbound else {
