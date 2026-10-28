@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, type AdoptPlan, type ConnectionTemplate, type DnsAccount, type HostingOs, type HosterInfo, type HosterServer, type PanelInfo } from "../api";
-import { fillRemark } from "./CreateServerDialog";
+import { api, type AdoptPlan, type ConnectionTemplate, type CreateOptions, type DnsAccount, type HostingOs, type HosterInfo, type HosterServer, type PanelInfo } from "../api";
+import { fillRemark, randomName, SshKeyField } from "./CreateServerDialog";
 import { StubTemplateSelect } from "./StubTemplateSelect";
 
 const DEFAULT_OS: HostingOs = { id: "ubuntu-24.04", label: "Ubuntu 24.04", regions: null, min_disk_gb: null };
@@ -8,21 +8,23 @@ const DEFAULT_OS: HostingOs = { id: "ubuntu-24.04", label: "Ubuntu 24.04", regio
 type Address = "ip" | "domain" | "cloudflare";
 
 /** Where the panel address starts: the node's domain as it is (in a Cloudflare zone of the admin, or the
- * user's own), otherwise a Cloudflare name like for a new server, or the IP. */
-function startAddress(plan: AdoptPlan, dnsAccounts: DnsAccount[]): { address: Address; zoneKey: string; label: string; domain: string } {
+ * user's own), otherwise a Cloudflare name following the server name like for a new server, or the IP.
+ * `label` null: the Cloudflare name follows the server name. */
+function startAddress(plan: AdoptPlan, dnsAccounts: DnsAccount[]): { address: Address; zoneKey: string; label: string | null; domain: string } {
   const first = dnsAccounts[0] ? `${dnsAccounts[0].id}:${dnsAccounts[0].zones[0].id}` : "";
   if (plan.domain) {
     for (const a of dnsAccounts)
       for (const z of a.zones)
         if (plan.domain === z.name || plan.domain.endsWith(`.${z.name}`))
           return { address: "cloudflare", zoneKey: `${a.id}:${z.id}`, label: plan.domain.slice(0, -z.name.length).replace(/\.$/, ""), domain: "" };
-    return { address: "domain", zoneKey: first, label: plan.name, domain: plan.domain };
+    return { address: "domain", zoneKey: first, label: null, domain: plan.domain };
   }
-  return { address: dnsAccounts.length ? "cloudflare" : "ip", zoneKey: first, label: plan.name, domain: "" };
+  return { address: dnsAccounts.length ? "cloudflare" : "ip", zoneKey: first, label: null, domain: "" };
 }
 
-/** From zero on a server the admin did not create: the hosting reinstalls its OS (the IP stays), the admin
- * installs 3x-ui as on a new server, and the node it already runs switches over, or a new node joins. */
+/** From zero on a server the admin did not create, with everything a new server is set up with but the plan
+ * and region: the hosting reinstalls its OS (the IP stays), the admin installs 3x-ui as on a new server, and
+ * the node it already runs switches over or is replaced by a new one. */
 export function AdoptServerDialog({
   hoster,
   server,
@@ -43,14 +45,18 @@ export function AdoptServerDialog({
 }) {
   const mainPanels = panels.filter((p) => p.ok && p.api_version === "v3");
   const [plan, setPlan] = useState<AdoptPlan | null>(null);
-  const [systems, setSystems] = useState<HostingOs[] | null>(null);
+  const [options, setOptions] = useState<CreateOptions | null>(null);
+  const [name, setName] = useState("");
   const [os, setOs] = useState(DEFAULT_OS.id);
+  const [sshKeys, setSshKeys] = useState<string[]>([]);
   // panel address: the server's IP, a domain whose A record the user keeps, or a Cloudflare name the admin points
   const [address, setAddress] = useState<Address>("ip");
   const [domain, setDomain] = useState("");
   const [zoneKey, setZoneKey] = useState("");
-  const [label, setLabel] = useState("");
+  const [label, setLabel] = useState<string | null>(null);
   const [siteTemplate, setSiteTemplate] = useState<string | null>(null);
+  // a server that already is a node: keep that node (switched over) or join anew like a new server
+  const [freshNode, setFreshNode] = useState(false);
   const [panelId, setPanelId] = useState(mainPanels[0]?.id ?? 0);
   const [templates, setTemplates] = useState<ConnectionTemplate[] | null>(null);
   const [picked, setPicked] = useState<Set<number>>(new Set());
@@ -63,18 +69,24 @@ export function AdoptServerDialog({
       (p) => {
         if (!alive) return;
         setPlan(p);
+        setName(p.name);
         const start = startAddress(p, dnsAccounts);
         setAddress(start.address);
         setZoneKey(start.zoneKey);
         setLabel(start.label);
         setDomain(start.domain);
+        if (p.node) setPanelId(p.node.panel_id);
       },
       (e) => alive && setError((e as Error).message),
     );
-    // the systems the hosting has; without them the default one is offered
+    // systems and SSH keys of the account; without them the default system is offered
     api.hosterOptions(hoster.id).then(
-      (o) => alive && setSystems(o.os.filter((x) => !x.regions || !server.region_id || x.regions.includes(server.region_id))),
-      () => alive && setSystems([DEFAULT_OS]),
+      (o) => {
+        if (!alive) return;
+        setOptions(o);
+        setSshKeys(o.ssh_multiple ? o.ssh_keys.map((k) => k.id) : o.ssh_keys.slice(0, 1).map((k) => k.id));
+      },
+      () => alive && setOptions(null),
     );
     api.connections().then(
       (d) => {
@@ -89,18 +101,20 @@ export function AdoptServerDialog({
       alive = false;
     };
     // dnsAccounts are read once the plan comes: a refresh of them in the parent must not reset the form
-  }, [hoster.id, server.id, server.region_id]);
+  }, [hoster.id, server.id]);
 
   const node = plan?.node ?? null;
-  const osList = systems && systems.length > 0 ? systems : [DEFAULT_OS];
+  const keepNode = !!node && !freshNode;
+  const systems = options?.os.filter((x) => !x.regions || !server.region_id || x.regions.includes(server.region_id)) ?? [];
+  const osList = systems.length > 0 ? systems : [DEFAULT_OS];
   const osId = osList.some((o) => o.id === os) ? os : osList[0].id;
   const osLabel = osList.find((o) => o.id === osId)?.label ?? osId;
   const ip = server.ipv4[0] ?? "";
-  const foreign = node?.inbounds.filter((i) => i.foreign_certs?.length) ?? [];
+  const foreign = keepNode ? node.inbounds.filter((i) => i.foreign_certs?.length) : [];
   const [dnsAccountId, zoneId] = zoneKey.split(":");
   const zone = dnsAccounts.find((a) => String(a.id) === dnsAccountId)?.zones.find((z) => z.id === zoneId);
-  const name = label.trim().toLowerCase();
-  const cloudflareName = zone ? (name ? `${name}.${zone.name}` : zone.name) : "";
+  const sub = (label ?? name).trim().toLowerCase();
+  const cloudflareName = zone ? (sub ? `${sub}.${zone.name}` : zone.name) : "";
   const panelDomain = address === "domain" ? domain.trim() : address === "cloudflare" ? cloudflareName : "";
   const pick = (id: number, on: boolean) =>
     setPicked((all) => {
@@ -113,19 +127,23 @@ export function AdoptServerDialog({
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!plan) return;
-    if (!confirm(`Переустановить систему на сервере «${server.name}» (${ip})? Диск будет стёрт, всё, что на нём сейчас, пропадёт.`)) return;
+    const dropping = node && freshNode ? ` Узел «${node.name}» и его подключения (${node.inbounds.length} шт.) удалятся из основной панели.` : "";
+    if (!confirm(`Переустановить систему на сервере «${server.name}» (${ip})? Диск будет стёрт, всё, что на нём сейчас, пропадёт.${dropping}`)) return;
     setBusy(true);
     setError("");
     try {
       await api.adoptServer(hoster.id, {
         server_id: server.id,
-        panel_id: node ? node.panel_id : panelId,
+        name: name.trim(),
+        ssh_keys: sshKeys,
+        fresh_node: !!node && freshNode,
+        panel_id: keepNode ? node.panel_id : panelId,
         os: osId,
         domain: panelDomain,
         dns_account_id: address === "cloudflare" ? Number(dnsAccountId) : 0,
         dns_zone_id: address === "cloudflare" ? zoneId : "",
         site_template: siteTemplate ?? "",
-        connections: !node && picked.size > 0,
+        connections: !keepNode && picked.size > 0,
         connection_ids: [...picked],
       });
       onStarted();
@@ -149,49 +167,37 @@ export function AdoptServerDialog({
 
         {plan && (
           <>
-            <ol className="delete-steps small">
-              <li>
-                {providerTitle} переустановит ОС ({osLabel}) на этом же сервере: <b>диск будет стёрт</b>, IP {ip} и тариф останутся прежними,
-                новый сервер не заказывается.
-              </li>
-              <li>
-                Админка выполнит штатную установку, как у нового сервера: Docker, 3x-ui с новыми логином и паролем, сайт-заглушка и сертификат
-                Let's Encrypt.
-              </li>
-              <li>
-                {node ? (
-                  <>
-                    Узел «{node.name}» основной панели «{node.panel_name}» переключится на новую установку: его подключения
-                    {node.inbounds.length > 0 ? ` (${node.inbounds.length} шт.)` : ""} и клиенты сохранятся, порты подключений откроются как
-                    раньше.
-                  </>
-                ) : (
-                  <>Сервер подключится новым узлом к основной панели, которую вы выберете ниже.</>
-                )}
-              </li>
-              <li>Сервер появится в блоке «Новые серверы»: дальше его можно переустанавливать с нуля и удалять оттуда, как созданные в админке.</li>
-            </ol>
-            <div className="muted small">Пока идёт установка (обычно 5–10 минут), VPN на этом сервере не работает.</div>
+            <div className="field-row">
+              <label className="field">
+                <span>Имя сервера</span>
+                <div className="input-with-button">
+                  <input className="input mono" required pattern="[a-zA-Z0-9][a-zA-Z0-9.\-]{0,62}" value={name} onChange={(e) => setName(e.target.value)} />
+                  <button type="button" className="btn btn-small" title="Другое случайное имя" onClick={() => setName(randomName())}>
+                    ↻
+                  </button>
+                </div>
+              </label>
+              <label className="field">
+                <span>Регион</span>
+                <input className="input" value={server.region || "—"} disabled readOnly />
+              </label>
+              <label className="field">
+                <span>Система</span>
+                <select className="input" value={osId} onChange={(e) => setOs(e.target.value)} disabled={!options}>
+                  {osList.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <small className="muted">
+              Тариф и регион не меняются: это тот же сервер{[server.plan, server.specs, server.price].filter(Boolean).length > 0 ? ` (${[server.plan, server.specs, server.price].filter(Boolean).join(" · ")})` : ""}.
+              Имя — для админки, узла и подключений; у хостинга сервер остаётся под своим именем.
+            </small>
 
-            {foreign.length > 0 && (
-              <div className="notice notice-warn small">
-                У {foreign.length === 1 ? "подключения" : "подключений"} {foreign.map((i) => `«${i.remark || i.protocol} :${i.port}»`).join(", ")} TLS-сертификат
-                лежит в файлах старой системы ({[...new Set(foreign.flatMap((i) => i.foreign_certs ?? []))].join(", ")}): после переустановки их
-                не будет. Поправьте сертификат в настройках этих подключений в основной панели: у новой установки он лежит в /root/cert/le.crt и
-                /root/cert/le.key.
-              </div>
-            )}
-
-            <label className="field">
-              <span>Система</span>
-              <select className="input" value={osId} onChange={(e) => setOs(e.target.value)} disabled={!systems}>
-                {osList.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {options && <SshKeyField options={options} value={sshKeys} onChange={setSshKeys} />}
 
             <div className="field">
               <span>Адрес панели узла и сертификат</span>
@@ -224,7 +230,7 @@ export function AdoptServerDialog({
                     className="input mono"
                     aria-label="Имя в домене"
                     pattern="([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*"
-                    value={label}
+                    value={label ?? name}
                     onChange={(e) => setLabel(e.target.value)}
                   />
                   <span className="muted">.</span>
@@ -252,7 +258,35 @@ export function AdoptServerDialog({
 
             <StubTemplateSelect value={siteTemplate} onChange={setSiteTemplate} />
 
-            {!node && (
+            {node && (
+              <div className="field">
+                <span>Узел основной панели</span>
+                <div className="segmented">
+                  <button type="button" className={freshNode ? "" : "active"} aria-pressed={!freshNode} onClick={() => setFreshNode(false)}>
+                    Оставить узел «{node.name}»
+                  </button>
+                  <button type="button" className={freshNode ? "active" : ""} aria-pressed={freshNode} onClick={() => setFreshNode(true)}>
+                    Подключить заново
+                  </button>
+                </div>
+                <small className="muted">
+                  {freshNode
+                    ? `Узел «${node.name}» и его подключения (${node.inbounds.length} шт.) удалятся из основной панели «${node.panel_name}», клиенты останутся. Сервер подключится новым узлом с подключениями, выбранными ниже, как новый сервер: у клиентов появятся новые ссылки.`
+                    : `Узел «${node.name}» основной панели «${node.panel_name}» переключится на новую установку: его подключения (${node.inbounds.length} шт.) и клиенты сохранятся, ссылки не изменятся, порты подключений откроются как раньше. Недостающие подключения из шаблонов потом добавит «Раскатать подключения».`}
+                </small>
+              </div>
+            )}
+
+            {foreign.length > 0 && (
+              <div className="notice notice-warn small">
+                У {foreign.length === 1 ? "подключения" : "подключений"} {foreign.map((i) => `«${i.remark || i.protocol} :${i.port}»`).join(", ")} TLS-сертификат
+                лежит в файлах старой системы ({[...new Set(foreign.flatMap((i) => i.foreign_certs ?? []))].join(", ")}): после переустановки их
+                не будет. Поправьте сертификат в настройках этих подключений в основной панели: у новой установки он лежит в /root/cert/le.crt и
+                /root/cert/le.key.
+              </div>
+            )}
+
+            {!keepNode && (
               <>
                 <label className="field">
                   <span>Подключить узлом к основной панели</span>
@@ -276,7 +310,7 @@ export function AdoptServerDialog({
                             <label key={t.id} className="checkbox">
                               <input type="checkbox" checked={picked.has(t.id)} onChange={(e) => pick(t.id, e.target.checked)} />
                               <span>
-                                {fillRemark(t.remark, plan.name, server.region)}
+                                {fillRemark(t.remark, name, server.region)}
                                 <span className="muted small">
                                   {" "}
                                   · {t.kind_title} · порт {t.port || "случайный"}
@@ -285,6 +319,16 @@ export function AdoptServerDialog({
                             </label>
                           ))}
                         </div>
+                        <small className="muted">
+                          Включённые подключения из раздела «Подключения». Выбрано {picked.size} из {templates.length}:{" "}
+                          <button type="button" className="link-button" onClick={() => setPicked(new Set(templates.map((t) => t.id)))}>
+                            все
+                          </button>{" "}
+                          ·{" "}
+                          <button type="button" className="link-button" onClick={() => setPicked(new Set())}>
+                            ни одного
+                          </button>
+                        </small>
                         {address !== "cloudflare" && templates.some((t) => t.kind === "vless_xhttp_cdn" && picked.has(t.id)) && (
                           <small className="error-text">
                             Подключение через CDN создаётся только на сервере с доменом Cloudflare: выберите адрес «Домен Cloudflare» выше или снимите
@@ -293,12 +337,19 @@ export function AdoptServerDialog({
                         )}
                       </>
                     ) : (
-                      <small className="muted">В разделе «Подключения» ни одно не включено: инбаунды узлу можно добавить потом.</small>
+                      <small className="muted">В разделе «Подключения» ни одно не включено: инбаунды узлу можно добавить потом в основной панели.</small>
                     )}
                   </div>
                 )}
               </>
             )}
+
+            <div className="notice notice-info small">
+              {providerTitle} переустановит {osLabel} на этом же сервере: <b>диск будет стёрт</b>, IP {ip} и тариф останутся прежними, новый сервер
+              не заказывается. Затем админка поставит Docker, 3x-ui с новыми логином и паролем, сайт-заглушку и сертификат, как на новый сервер,
+              и сервер появится в блоке «Новые серверы»: дальше его можно переустанавливать с нуля и удалять оттуда. Обычно всё занимает 5–10
+              минут, VPN на сервере в это время не работает.
+            </div>
           </>
         )}
 
@@ -309,7 +360,7 @@ export function AdoptServerDialog({
           <button type="button" className="btn" onClick={onClose} disabled={busy}>
             Отмена
           </button>
-          <button type="submit" className="btn btn-danger" disabled={!plan || busy || (!node && mainPanels.length === 0)}>
+          <button type="submit" className="btn btn-danger" disabled={!plan || busy || (!keepNode && mainPanels.length === 0)}>
             {busy ? "Запускаю…" : "Установить с нуля"}
           </button>
         </div>

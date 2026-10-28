@@ -99,6 +99,13 @@ def _domain_name(value: str) -> str:
     return value
 
 
+def _hostname(value: str) -> str:
+    value = value.strip()
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,62}", value):
+        raise ValueError("Имя сервера: латинские буквы, цифры, точка и дефис, до 63 символов")
+    return value
+
+
 class ProvisionIn(BaseModel):
     hoster_id: int
     panel_id: int
@@ -137,10 +144,7 @@ class ProvisionIn(BaseModel):
     @field_validator("name")
     @classmethod
     def hostname(cls, value: str) -> str:
-        value = value.strip()
-        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,62}", value):
-            raise ValueError("Имя сервера: латинские буквы, цифры, точка и дефис, до 63 символов")
-        return value
+        return _hostname(value)
 
 
 class ReinstallIn(BaseModel):
@@ -156,17 +160,28 @@ class ReinstallIn(BaseModel):
 
 
 class AdoptIn(BaseModel):
-    """From zero on a server of the hosting account the admin did not create."""
+    """From zero on a server of the hosting account the admin did not create: what a new server is set up
+    with, but the plan and region, which stay the server's."""
     server_id: str
-    panel_id: int = 0  # main panel for a server that is no node yet; a node stays in its own panel
+    name: str = ""  # in the admin and of the new node; empty = from the server's name at the hosting
+    ssh_keys: list[str] = []  # the account's keys root gets after the install (VDSina)
+    # a server that already is a node: False keeps that node (switched over, its inbounds stay), True drops it
+    # with its inbounds and the server joins as a new node, like a new server
+    fresh_node: bool = False
+    panel_id: int = 0  # main panel for a new node; a kept node stays in its own panel
     os: str = hosters.DEFAULT_OS
     domain: str = ""  # panel address with a Let's Encrypt certificate
     # the admin points the domain's A record at the server in this Cloudflare account and zone; 0 = the user does
     dns_account_id: int = 0
     dns_zone_id: str = ""
     site_template: str = ""
-    connections: bool = True  # only for a server that is no node yet: a node keeps its inbounds
+    connections: bool = True  # only for a new node: a kept node keeps its inbounds
     connection_ids: list[int] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def hostname(cls, value: str) -> str:
+        return _hostname(value) if value.strip() else ""
 
     @field_validator("os")
     @classmethod
@@ -1397,6 +1412,9 @@ def _free_ports(taken: set[int]) -> tuple[int, int]:
 async def adopt(hoster: db.Hoster, body: AdoptIn) -> dict:
     plan = await adopt_plan(hoster, body.server_id)
     server, node = plan["server"], plan["node"]
+    dropped = node if node and body.fresh_node else None
+    if dropped:
+        node = None
     panel_id = node["panel_id"] if node else body.panel_id
     try:
         await nodes.main_panel(panel_id)
@@ -1409,9 +1427,20 @@ async def adopt(hoster: db.Hoster, body: AdoptIn) -> dict:
         await client.close()
     if body.dns_account_id:
         await _check_dns_name(body, server["ipv4"][0])  # a record already on this server is just kept
+    if dropped:  # nothing has changed yet: if the main panel refuses, the server is not touched either
+        xui = await pool.get(db.get_panel(dropped["panel_id"]))
+        try:
+            for inbound in dropped["inbounds"]:
+                await xui.delete_inbound(inbound["id"])
+            await xui.v3_node_delete(dropped["node_id"])
+        except XUIError as exc:
+            raise ProvisionError(f"Узел «{dropped['name']}» не удалён из основной панели «{dropped['panel_name']}», "
+                                 f"сервер не тронут: {exc}") from exc
+        finally:
+            overview_cache.invalidate()
     kept = node["inbounds"] if node else []
     port, sub_port = _free_ports({i["port"] for i in kept if isinstance(i.get("port"), int)})
-    p = _new_job(hoster_id=hoster.id, panel_id=panel_id, name=plan["name"],
+    p = _new_job(hoster_id=hoster.id, panel_id=panel_id, name=body.name or plan["name"], ssh_keys=body.ssh_keys,
                  region=details.get("region_id") or server.get("region_id") or server["region"] or "-",
                  plan=details.get("plan_id") or server.get("plan_id") or server["plan"] or "-",
                  project=server["project"], domain=body.domain, site_template=body.site_template, os=body.os,
@@ -1425,9 +1454,12 @@ async def adopt(hoster: db.Hoster, body: AdoptIn) -> dict:
         chosen = connections.snapshot(connections.templates(), body.connection_ids)
         _set(p, connections=connections.plan(chosen, _busy_ports(p)))
     title = hosters.PROVIDERS.get(hoster.provider, {}).get("title", hoster.provider)
+    if dropped:
+        _log(p, f"Узел «{dropped['name']}» удалён из основной панели «{dropped['panel_name']}» вместе с подключениями: "
+                f"{len(dropped['inbounds'])} шт.")
     _log(p, f"Установка с нуля на сервер {p.ip}, созданный не через админку: {title} переустановит ОС, IP не изменится"
          + (f"; узел «{node['name']}» основной панели «{node['panel_name']}» переключится на новую установку"
-            if node else ""))
+            if node else "; сервер подключится новым узлом"))
     _spawn(p.id)
     return public(p)
 

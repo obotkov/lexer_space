@@ -36,7 +36,7 @@ const NAME_WORDS = [
    "tiger", "tundra", "valley", "walrus", "willow", "wolf", "yak", "zebra", "zephyr"],
 ];
 const pick = (words: string[]) => words[Math.floor(Math.random() * words.length)];
-const randomName = () => `${pick(NAME_WORDS[0])}-${pick(NAME_WORDS[1])}`;
+export const randomName = () => `${pick(NAME_WORDS[0])}-${pick(NAME_WORDS[1])}`;
 
 
 /** Order a server at a hosting account; the admin installs 3x-ui on it and attaches it as a node. */
@@ -260,36 +260,7 @@ export function CreateServerDialog({
               )}
             </div>
 
-            <div className="field">
-              <span>SSH-ключ для входа на сервер</span>
-              {options.ssh_note ? (
-                <small className="muted">{options.ssh_note}</small>
-              ) : options.ssh_keys.length === 0 ? (
-                <small className="muted">В аккаунте нет SSH-ключей: сервер будет работать, но войти на него по SSH не получится. Ключ можно добавить в панели хостинга.</small>
-              ) : options.ssh_multiple ? (
-                <div className="node-picker">
-                  {options.ssh_keys.map((k) => (
-                    <label key={k.id} className="checkbox">
-                      <input
-                        type="checkbox"
-                        checked={sshKeys.includes(k.id)}
-                        onChange={() => setSshKeys((s) => (s.includes(k.id) ? s.filter((x) => x !== k.id) : [...s, k.id]))}
-                      />
-                      <span>{k.name}</span>
-                    </label>
-                  ))}
-                </div>
-              ) : (
-                <select className="input" value={sshKeys[0] ?? ""} onChange={(e) => setSshKeys(e.target.value ? [e.target.value] : [])}>
-                  <option value="">Без ключа</option>
-                  {options.ssh_keys.map((k) => (
-                    <option key={k.id} value={k.id}>
-                      {k.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
+            <SshKeyField options={options} value={sshKeys} onChange={setSshKeys} />
 
             <div className="field">
               <span>Адрес панели узла и сертификат</span>
@@ -482,5 +453,41 @@ export function PlanNote({ plan, provider }: { plan: HostingPlan; provider: stri
             : ""
         }Цены без налогов.`}
     </small>
+  );
+}
+
+/** The account's SSH keys root gets on the server, or the hosting's note where it has none to choose. */
+export function SshKeyField({ options, value, onChange }: { options: CreateOptions; value: string[]; onChange: (keys: string[]) => void }) {
+  return (
+    <div className="field">
+      <span>SSH-ключ для входа на сервер</span>
+      {options.ssh_note ? (
+        <small className="muted">{options.ssh_note}</small>
+      ) : options.ssh_keys.length === 0 ? (
+        <small className="muted">В аккаунте нет SSH-ключей: сервер будет работать, но войти на него по SSH не получится. Ключ можно добавить в панели хостинга.</small>
+      ) : options.ssh_multiple ? (
+        <div className="node-picker">
+          {options.ssh_keys.map((k) => (
+            <label key={k.id} className="checkbox">
+              <input
+                type="checkbox"
+                checked={value.includes(k.id)}
+                onChange={() => onChange(value.includes(k.id) ? value.filter((x) => x !== k.id) : [...value, k.id])}
+              />
+              <span>{k.name}</span>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <select className="input" value={value[0] ?? ""} onChange={(e) => onChange(e.target.value ? [e.target.value] : [])}>
+          <option value="">Без ключа</option>
+          {options.ssh_keys.map((k) => (
+            <option key={k.id} value={k.id}>
+              {k.name}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
   );
 }

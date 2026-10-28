@@ -518,6 +518,11 @@ export interface AdoptPlan {
 
 export interface AdoptForm {
   server_id: string;
+  /** in the admin and of the new node; the server keeps its name at the hosting */
+  name: string;
+  ssh_keys: string[];
+  /** a server that already is a node: drop that node with its inbounds and join anew */
+  fresh_node: boolean;
   panel_id: number;
   os: string;
   domain: string;
