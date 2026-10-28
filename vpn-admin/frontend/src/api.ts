@@ -69,6 +69,49 @@ export interface PingTarget {
   error: string;
 }
 
+/** One connect checked through Xray-core with the admin's service client. */
+export interface ProbeItem {
+  key: string;
+  inbound_id: number | null;
+  remark: string;
+  protocol: string;
+  network?: string;
+  security?: string;
+  port?: number;
+  /** the main panel's name or its node's */
+  server: string;
+  server_kind: "main" | "node";
+  enable?: boolean;
+  address?: string;
+  /** ok: works; fail: no traffic through it; skip: cannot be checked (MTProto, WireGuard…); off: disabled */
+  status: "ok" | "fail" | "skip" | "off";
+  /** answer through the open tunnel */
+  ms: number | null;
+  /** tunnel set up plus the first answer */
+  connect_ms?: number;
+  error: string;
+  detail?: string;
+  history: { t: number; ms: number | null }[];
+}
+
+export interface ProbePanel {
+  panel_id: number;
+  panel: string;
+  error: string | null;
+  items: ProbeItem[];
+}
+
+export interface ProbeResult {
+  checked_at: number;
+  duration: number;
+  error: string | null;
+  panels: ProbePanel[];
+  running: boolean;
+  interval: number;
+  url: string;
+  xray: boolean;
+}
+
 export interface PingResult {
   checked_at: number;
   targets: PingTarget[];
@@ -759,6 +802,8 @@ export const api = {
   setInboundEnable: (panelId: number, inboundId: number, enable: boolean) =>
     request<{ ok: boolean }>("POST", "/api/inbounds/enable", { panel_id: panelId, inbound_id: inboundId, enable }),
   netload: () => request<NetLoad>("GET", "/api/netload"),
+  probe: () => request<ProbeResult>("GET", "/api/probe"),
+  probeRun: () => request<ProbeResult>("POST", "/api/probe/run"),
   ping: (refresh = false) => request<PingResult>("GET", `/api/ping${refresh ? "?refresh=true" : ""}`),
   overview: (refresh = false) => request<Overview>("GET", `/api/overview${refresh ? "?refresh=true" : ""}`),
   panels: () => request<Panel[]>("GET", "/api/panels"),

@@ -47,7 +47,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from pydantic import BaseModel, Field, field_validator
 
-from . import cdn, connections, db, dns, hosters, nodes, site
+from . import cdn, connections, db, dns, hosters, nodes, probe, site
 from .aggregator import overview_cache, pool
 from .xui import XUIClient, XUIError
 
@@ -855,6 +855,7 @@ async def _roll_out(p: db.Provision) -> None:
         raise ProvisionError(f"Подключения: {exc}") from exc
     finally:
         overview_cache.invalidate()
+        probe.kick()  # the new connects get the service client and their first check
 
 
 async def _step_connections(p: db.Provision) -> None:

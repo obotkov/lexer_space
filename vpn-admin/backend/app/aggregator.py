@@ -13,6 +13,9 @@ from . import db
 from .config import settings
 from .xui import XUIClient, XUIError, node_view, parse_json_field, subscription_base
 
+# the admin's own clients on the panels (probe.PROBE_EMAIL checks the connects): not users, so out of every list
+SERVICE_EMAILS = {"vpn-admin-probe"}
+
 
 class ClientPool:
     """Keeps one logged-in XUIClient per panel so we don't log in on every refresh."""
@@ -216,6 +219,7 @@ def build_overview(fetched: list[dict[str, Any]]) -> dict[str, Any]:
     for item in fetched:
         panel: db.Panel = item["panel"]
         rows = _v3_rows(item, now_ms) if item["v3_clients"] is not None else _legacy_rows(item, now_ms)
+        rows = [r for r in rows if r["email"] not in SERVICE_EMAILS]
         clients += rows
 
         per_inbound: dict[Any, list[dict]] = {}
@@ -278,7 +282,7 @@ def build_overview(fetched: list[dict[str, Any]]) -> dict[str, Any]:
             "up": sum(int(i.get("up") or 0) for i in item["inbounds"]),
             "down": sum(int(i.get("down") or 0) for i in item["inbounds"]),
             "clients": len(rows),
-            "online": len(set(item["onlines"])),
+            "online": len(set(item["onlines"]) - SERVICE_EMAILS),
             "sub_base": item["sub_base"],
         })
 

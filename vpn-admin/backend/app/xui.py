@@ -229,6 +229,10 @@ class XUIClient:
     async def v3_delete_client(self, email: str) -> None:
         await self._call("POST", f"/panel/api/clients/del/{quote(email, safe='')}")
 
+    async def v3_client_links(self, email: str) -> list[str]:
+        """Share links of the client on all its inbounds, as its subscription gives them (also without one)."""
+        return await self._call("GET", f"/panel/api/clients/links/{quote(email, safe='')}") or []
+
     async def v3_reset_traffic(self, email: str) -> None:
         await self._call("POST", f"/panel/api/clients/resetTraffic/{quote(email, safe='')}")
 

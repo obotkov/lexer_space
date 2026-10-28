@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import cdn, clients, connections, db, dns, hosters, netload, nodes, ping, provision, site, system, tls
+from . import cdn, clients, connections, db, dns, hosters, netload, nodes, ping, probe, provision, site, system, tls
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -32,10 +32,12 @@ async def lifespan(_: FastAPI):
     seed_panel_from_env()
     renewal = asyncio.create_task(tls.renewal_loop())
     sampler = asyncio.create_task(netload.loop())
+    checks = asyncio.create_task(probe.loop())
     provision.resume_all()
     yield
     renewal.cancel()
     sampler.cancel()
+    checks.cancel()
     await pool.close_all()
 
 
@@ -146,6 +148,7 @@ async def panels_create(body: PanelIn):
     panel = db.create_panel(body.name.strip(), normalize_url(body.url), body.username.strip(), password,
                             body.verify_tls, body.sub_base_url.strip(), token)
     overview_cache.invalidate()
+    probe.kick()  # puts the service client on the new panel's connects and checks them
     return panel.public()
 
 
@@ -718,6 +721,17 @@ async def network_load():
 async def ping_servers(refresh: bool = False):
     """Ping from the admin's server to each main panel and node."""
     return await ping.ping_all(force=refresh)
+
+
+@app.get("/api/probe", dependencies=[Depends(require_admin)])
+async def probe_results():
+    """Results of the last connection check round (every connect through Xray-core)."""
+    return probe.snapshot()
+
+
+@app.post("/api/probe/run", dependencies=[Depends(require_admin)])
+async def probe_run():
+    return await probe.run_round()
 
 
 @app.get("/api/health")
