@@ -32,7 +32,9 @@ export function Servers({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
               <div className="card-head">
                 <div>
                   <div className="strong">{p.name}</div>
-                  <div className="muted small mono">{p.url}</div>
+                  <div className="muted small mono card-url" title={p.url}>
+                    {p.url}
+                  </div>
                 </div>
                 {p.ok ? <span className="badge badge-active">На связи</span> : <span className="badge badge-expired">Ошибка</span>}
               </div>

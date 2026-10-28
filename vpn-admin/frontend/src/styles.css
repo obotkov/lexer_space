@@ -196,6 +196,10 @@ tbody tr:hover { background: var(--bg-hover); }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
 .card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
 .card-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+/* a long name or URL shrinks its own column instead of pushing the badge out of the card */
+.card-head > :first-child { min-width: 0; }
+.card-head > .badge { flex-shrink: 0; }
+.card-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }  /* narrow cards: buttons go to the next line */
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
 .kv dt { color: var(--muted); }
