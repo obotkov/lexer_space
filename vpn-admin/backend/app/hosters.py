@@ -1,5 +1,5 @@
-"""VPN API Hoster: hosting accounts (DigitalOcean, OVHcloud) whose APIs can list and,
-later, create servers for new VPN nodes.
+"""VPN API Hoster: hosting accounts (DigitalOcean, OVHcloud, Scaleway, UpCloud, VDSina, NetGrid) whose APIs
+list and create servers for new VPN nodes.
 
 Each provider declares the credential fields it needs (rendered by the UI as a form),
 checks the keys by reading the account, and lists the servers of the account in one
@@ -41,6 +41,7 @@ VDSINA_ENDPOINTS = {
     "vdsina-com": (os.getenv("VDSINA_COM_API_URL", "https://userapi.vdsina.com/v1"), "USD"),
     "vdsina-ru": (os.getenv("VDSINA_RU_API_URL", "https://userapi.vdsina.ru/v1"), "RUB"),
 }
+NETGRID_API_URL = os.getenv("NETGRID_API_URL", "https://billing.netgrid.host/api/v1/ext")
 
 
 class HosterError(Exception):
@@ -136,6 +137,21 @@ PROVIDERS: dict[str, dict[str, Any]] = {
                 "пароля. Сайт выберите тот, где зарегистрирован аккаунт: у vdsina.com и vdsina.ru отдельные аккаунты.",
         "help_url": "https://www.vdsina.com/tech/api",
         "help_urls": {"vdsina-com": "https://www.vdsina.com/tech/api", "vdsina-ru": "https://www.vdsina.ru/tech/api"},
+    },
+    "netgrid": {
+        "title": "NetGrid",
+        "site": "https://netgrid.host",
+        "fields": [
+            {"key": "token", "label": "API-ключ", "secret": True},
+            {"key": "ssh_public_key", "label": "SSH-ключ для входа на новые серверы (необязательно)", "secret": False,
+             "optional": True,
+             "placeholder": "ssh-ed25519 AAAA… — открытый ключ, как в ~/.ssh/id_ed25519.pub"},
+        ],
+        "help": "Личный кабинет NetGrid → API-ключи → создать ключ. Ключ работает только с разрешённых IP: добавьте "
+                "в список IP сервера, на котором стоит админка. SSH-ключей в API NetGrid нет, поэтому свой открытый "
+                "ключ можно указать здесь: админка добавит его root после установки (root-пароль сервера виден в "
+                "кабинете NetGrid).",
+        "help_url": "https://billing.netgrid.host/",
     },
 }
 
@@ -254,7 +270,7 @@ COUNTRIES = {"FR": "Франция", "DE": "Германия", "GB": "Велик
              "RU": "Россия", "KZ": "Казахстан", "TR": "Турция", "FI": "Финляндия", "SE": "Швеция", "CH": "Швейцария",
              "ES": "Испания", "LV": "Латвия", "LT": "Литва", "EE": "Эстония", "BG": "Болгария", "MD": "Молдова",
              "RS": "Сербия", "GE": "Грузия", "AM": "Армения", "AE": "ОАЭ", "HK": "Гонконг", "JP": "Япония",
-             "DK": "Дания", "NO": "Норвегия"}
+             "DK": "Дания", "NO": "Норвегия", "GR": "Греция", "CZ": "Чехия", "RO": "Румыния", "UA": "Украина"}
 
 # OVHcloud Public Cloud: new names (EU-WEST-PAR, AP-SOUTH-MUM-1) first, then the classic ones (GRA11, DE1)
 OVH_PLACES = [
@@ -1408,7 +1424,214 @@ class Scaleway:
                     raise
 
 
-CLIENTS = {"digitalocean": DigitalOcean, "ovh": OVHcloud, "vdsina": VDSina, "scaleway": Scaleway, "upcloud": UpCloud}
+class NetGrid:
+    """NetGrid external API (BILLmanager behind it): Bearer key limited to allowed IPs, errors as {"detail": ...}.
+    There is no cloud-init and no SSH keys: the order returns a root password, which the admin logs in with
+    once to run the install. Servers are paid a month ahead from the balance; the API cannot delete them."""
+    title = "NetGrid"
+    setup = "password"
+    rebuild = True
+    os_names = {"ubuntu-24.04": ("ubuntu", "24.04"), "ubuntu-22.04": ("ubuntu", "22.04"),
+                "debian-13": ("debian", "13"), "debian-12": ("debian", "12")}
+    delete_hint = ("NetGrid не даёт удалять серверы через API: удалите сервер в личном кабинете NetGrid "
+                   "(Виртуальные серверы → сервер → Удалить). Когда он пропадёт из списка, удаление здесь уберёт "
+                   "его узел и подключения из основной панели")
+    # BILLmanager service state: 1 — being created, 2 — active (then vm_state tells the machine's own), 3 — suspended
+    service_states = {1: "new", 2: "active", 3: "suspended"}
+    status_map = {"active": "running", "running": "running", "new": "pending", "creating": "pending",
+                  "provisioning": "pending", "pending": "pending", "starting": "pending", "stopping": "pending",
+                  "restarting": "pending", "installation": "pending", "reinstalling": "pending",
+                  "stopped": "stopped", "suspended": "stopped", "blocked": "stopped", "error": "error",
+                  "failed": "error"}
+    status_labels = {"active": "Работает", "running": "Работает", "new": "Создаётся", "creating": "Создаётся",
+                     "provisioning": "Создаётся", "pending": "Создаётся", "starting": "Запускается",
+                     "stopping": "Останавливается", "restarting": "Перезагружается", "installation": "Ставится система",
+                     "reinstalling": "Ставится система", "stopped": "Выключен", "suspended": "Заблокирован",
+                     "blocked": "Заблокирован", "error": "Ошибка", "failed": "Ошибка"}
+    error_hints = {"insufficient_balance": "на балансе NetGrid не хватает денег на месяц тарифа: пополните баланс"}
+
+    def __init__(self, credentials: dict[str, str]):
+        token = credentials.get("token", "").strip()
+        if not token:
+            raise HosterError("Укажите API-ключ NetGrid")
+        self.user_key = credentials.get("ssh_public_key", "").strip()
+        self.http = httpx.AsyncClient(base_url=NETGRID_API_URL, timeout=TIMEOUT, headers={
+            "Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": "vpn-admin"})
+
+    async def close(self) -> None:
+        await self.http.aclose()
+
+    async def _request(self, method: str, path: str, params: dict | None = None, json: dict | None = None) -> Any:
+        try:
+            resp = await self.http.request(method, path, params=params, json=json)
+        except httpx.HTTPError as exc:
+            raise HosterError(f"NetGrid недоступен: {exc}") from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError:
+            data = {}
+        if resp.status_code < 400:
+            return data
+        detail = data.get("detail") if isinstance(data, dict) else None
+        if isinstance(detail, list):  # request validation: [{"loc": [...], "msg": "..."}]
+            detail = "; ".join(str(d.get("msg", d)) if isinstance(d, dict) else str(d) for d in detail)
+        detail = str(detail or resp.text[:200] or f"HTTP {resp.status_code}")
+        detail = self.error_hints.get(detail, detail)
+        if resp.status_code == 401:
+            raise HosterError(f"NetGrid: ключ не принят ({detail})", "HTTP_401")
+        if resp.status_code == 403:
+            # the same answer for a wrong key and for an address outside the key's allowlist
+            raise HosterError(f"NetGrid: ключ не принят ({detail}). Проверьте ключ и что IP сервера админки есть в "
+                              "списке разрешённых IP ключа в кабинете NetGrid", "HTTP_403")
+        raise HosterError(f"NetGrid: {detail}", "NOT_FOUND" if resp.status_code == 404 else f"HTTP_{resp.status_code}")
+
+    async def account(self) -> dict:
+        me = await self._request("GET", "/whoami") or {}
+        return {"login": f"аккаунт {me['account_id']}" if me.get("account_id") else "", "name": "", "status": "",
+                "balance": None, "limits": f"ключ «{me['label']}»" if me.get("label") else ""}
+
+    @staticmethod
+    def _dc_label(dc: dict) -> str:
+        country = str(dc.get("country_code") or dc.get("code") or "").upper()
+        city = dc.get("city") or dc.get("name") or str(dc.get("id", ""))
+        if len(country) != 2:
+            return city
+        return f"{_flag(country)} {COUNTRIES.get(country, dc.get('country') or country)}, {city}"
+
+    async def _datacenters(self) -> list[dict]:
+        data = await self._request("GET", "/datacenters") or {}
+        items = data.get("datacenters") if isinstance(data, dict) else data
+        return [dc for dc in items or [] if isinstance(dc, dict) and dc.get("id") is not None
+                and dc.get("enabled", True) is not False]
+
+    def _status(self, s: dict) -> str:
+        status = s.get("status")
+        if isinstance(status, int):
+            status = self.service_states.get(status, str(status))
+        status = str(status or "").lower()
+        if status == "active" and s.get("vm_state"):
+            return str(s["vm_state"]).lower()
+        return status
+
+    def _view(self, s: dict, regions: dict[str, str]) -> dict:
+        status = self._status(s)
+        ips = s.get("ips") or s.get("ip") or []
+        ips = [str(a.get("ip") or a.get("address") or "") if isinstance(a, dict) else str(a)
+               for a in (ips if isinstance(ips, list) else [ips])]
+        ipv6 = [a for a in ips + [str(s.get("ipv6") or "")] if ":" in a]
+        dc = s.get("datacenter") or s.get("location")
+        region = (self._dc_label(dc) if isinstance(dc, dict) else str(dc or "")) or regions.get(str(s.get("dc_id")), "")
+        plan = s.get("plan")
+        price, period = s.get("price"), s.get("period")
+        return _server(
+            id=s.get("id"), name=s.get("name") or s.get("hostname") or "", kind="VPS", deletable=False,
+            status=self.status_map.get(status, "unknown"), status_label=self.status_labels.get(status, status),
+            region=region, plan=(plan.get("name", "") if isinstance(plan, dict) else str(plan or "")),
+            specs=str(s.get("os") or s.get("os_name") or ""),
+            price=f"{_money(float(price), 'EUR')}/мес" if isinstance(price, (int, float)) and period in (None, 1) else "",
+            ipv4=[a for a in ips if a and ":" not in a], ipv6=ipv6, created_at=str(s.get("created_at") or ""),
+        )
+
+    async def servers(self) -> list[dict]:
+        """The list carries only the id, name, IP and status, so the rest is read per server; a server whose
+        details fail is shown from the list."""
+        data, datacenters = await asyncio.gather(self._request("GET", "/vps"), self._datacenters(),
+                                                 return_exceptions=True)
+        if isinstance(data, Exception):
+            raise data
+        regions = {} if isinstance(datacenters, Exception) else {str(dc["id"]): self._dc_label(dc) for dc in datacenters}
+        listed = (data or {}).get("vps") or {}
+        items = [s for s in (listed.get("items") if isinstance(listed, dict) else listed) or []
+                 if isinstance(s, dict) and s.get("id") is not None]
+        details = await asyncio.gather(*(self._request("GET", f"/vps/{s['id']}") for s in items), return_exceptions=True)
+        return [self._view({**s, **d} if isinstance(d, dict) else s, regions) for s, d in zip(items, details)]
+
+    async def _os_items(self) -> dict[str, tuple[str, str]]:
+        """{our os: (family slug, image id)} for the systems NetGrid has; its ids look like "ubuntu-24.04"."""
+        data = await self._request("GET", "/os") or {}
+        found: dict[str, tuple[str, str]] = {}
+        for family in data.get("families") or []:
+            slug = str(family.get("slug") or "")
+            for os, (want, version) in self.os_names.items():
+                if os in found or not slug.lower().startswith(want):
+                    continue
+                pattern = r"(?<![\d.])" + re.escape(version).replace(r"\.", "[.-]?") + r"(?![\d])"
+                for item in family.get("items") or []:
+                    image = str(item.get("id") or "")
+                    text = f"{image} {item.get('name') or ''} {item.get('version') or ''}".lower()
+                    if image and (image.lower() == os or re.search(pattern, text)):
+                        found[os] = (slug, image)
+                        break
+        return found
+
+    async def create_options(self, project: str | None = None) -> dict:
+        data, datacenters, images = await asyncio.gather(self._request("GET", "/plans"), self._datacenters(),
+                                                         self._os_items())
+        regions = sorted(({"id": str(dc["id"]), "name": self._dc_label(dc)} for dc in datacenters),
+                         key=lambda r: r["name"])
+        plans = []
+        for plan in (data or {}).get("plans") or []:
+            if plan.get("id") is None or plan.get("enabled", True) is False:
+                continue
+            price = plan.get("price")
+            month = round(float(price), 2) if isinstance(price, (int, float)) else None
+            ram = plan.get("ram")
+            ram_gb = f"{ram / 1024:g} GB RAM" if isinstance(ram, (int, float)) and ram >= 128 else f"{ram} GB RAM"
+            specs = " · ".join(x for x in (f"{plan['cpu']} vCPU" if plan.get("cpu") else "", ram_gb if ram else "",
+                                          f"{plan['disk']} GB NVMe" if plan.get("disk") else "") if x)
+            dcs = plan.get("dc_ids") or plan.get("datacenters")
+            plans.append({"id": str(plan["id"]), "label": plan.get("name") or str(plan["id"]), "specs": specs,
+                          "price_hour": round(month / HOURS_PER_MONTH, 4) if month is not None else None,
+                          "price_month": month, "price_month_plan": None,
+                          "currency": plan.get("currency") or "EUR",
+                          "regions": [str(d.get("id") if isinstance(d, dict) else d) for d in dcs]
+                          if isinstance(dcs, list) else [r["id"] for r in regions]})
+        plans.sort(key=lambda p: (p["price_month"] is None, p["price_month"] or 0, p["label"]))
+        return {"projects": None, "project": None, "ssh_multiple": False, "ssh_keys": [],
+                "os": _os_options({os: None for os in images}),
+                "ssh_note": "Войти на сервер можно будет ключом из настроек аккаунта NetGrid в админке или "
+                            "root-паролем из кабинета NetGrid." if self.user_key else
+                            "SSH-ключей в API NetGrid нет: войти на сервер можно root-паролем из кабинета NetGrid "
+                            "или ключом, если указать его в настройках аккаунта NetGrid в админке.",
+                "regions": regions, "plans": plans}
+
+    async def _image(self, os: str) -> tuple[str, str]:
+        images = await self._os_items()
+        if os not in images:
+            raise HosterError(f"NetGrid: нет образа {OS_LABELS.get(os, os)}")
+        return images[os]
+
+    async def create_server(self, *, name: str, region: str, plan: str, ssh_keys: list[str], user_data: str,
+                            project: str | None = None, admin_key: str | None = None, os: str = DEFAULT_OS) -> str:
+        family, image = await self._image(os)
+        data = await self._request("POST", "/vps", json={
+            "plan_id": int(plan), "dc_id": int(region), "os_family_slug": family, "os_item_id": image,
+            "hostname": name, "period": 1, "autorenew": True})
+        return str(data["item_id"])
+
+    async def get_server(self, server_id: str, project: str | None = None) -> dict:
+        return self._view(await self._request("GET", f"/vps/{server_id}") or {}, {})
+
+    async def root_password(self, server_id: str) -> str:
+        """The current root password: NetGrid shows it in the server's details, also after a reinstall."""
+        return str((await self._request("GET", f"/vps/{server_id}") or {}).get("root_password") or "")
+
+    async def rebuild_server(self, server_id: str, *, plan: str, name: str, project: str | None = None,
+                             admin_key: str | None = None, os: str = DEFAULT_OS) -> None:
+        """Reinstall the OS; NetGrid sets a new root password, which the install logs in with."""
+        _, image = await self._image(os)
+        await self._request("POST", f"/vps/{server_id}/reinstall", json={"os_id": image})
+
+    async def delete_server(self, server_id: str, project: str | None = None) -> None:
+        raise HosterError(self.delete_hint, "NO_DELETE")
+
+    async def public_keys(self, key_ids: list[str]) -> list[str]:
+        """The key from the account's settings in the admin: the API has no SSH keys to choose from."""
+        return [self.user_key] if self.user_key else []
+
+
+CLIENTS = {"digitalocean": DigitalOcean, "ovh": OVHcloud, "vdsina": VDSina, "scaleway": Scaleway, "upcloud": UpCloud,
+           "netgrid": NetGrid}
 
 
 # ---------- accounts ----------

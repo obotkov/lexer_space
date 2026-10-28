@@ -4,7 +4,7 @@ attach it as a node of a main 3x-ui v3 panel.
 The admin generates everything the node needs up front (panel port, path, login,
 password, a self-signed TLS certificate and an SSH key of its own for this server).
 The hosting gets only a tiny cloud-init script (VDSina: the key itself) that lets
-that key in as root; the admin then logs in over SSH and runs the install: Docker,
+that key in as root (NetGrid takes neither: the admin logs in with its root password); the admin then logs in over SSH and runs the install: Docker,
 the official 3x-ui image, the decoy page on port 80, a Let's Encrypt certificate
 for the chosen domain or the server's IP, `x-ui setting`. The install removes the
 key again. The admin waits for the panel, checks which certificate it serves,
@@ -15,7 +15,7 @@ Because the cloud-init script runs again whenever the hosting reinstalls the OS,
 the admin can always log in afterwards and run the current install from zero.
 
 A reinstall is a new job that takes over an existing one. Where the hosting can
-reinstall the OS (DigitalOcean, OVHcloud, VDSina) it does so on the same server
+reinstall the OS (DigitalOcean, OVHcloud, VDSina, NetGrid) it does so on the same server
 and the IP stays; elsewhere a fresh server is ordered and the old one removed.
 Either way the same node of the main panel switches over to the new install.
 
@@ -538,9 +538,22 @@ async def _install_over_ssh(p: db.Provision, fresh: bool) -> None:
     a running install is followed and a finished one is taken as it is."""
 
     async def user_keys(client) -> list[str]:  # cloud-init hostings put the chosen keys in place themselves
-        if getattr(client, "setup", "") == "ssh" and p.ssh_keys:
+        setup = getattr(client, "setup", "")
+        if (setup == "ssh" and p.ssh_keys) or setup == "password":
             return await client.public_keys(p.ssh_keys)
         return []
+
+    hoster = db.get_hoster(p.hoster_id)
+    by_password = bool(hoster) and getattr(hosters.CLIENTS.get(hoster.provider), "setup", "") == "password"
+
+    async def root_password() -> str | None:
+        """NetGrid lets nothing in but its root password: the admin logs in with it, read anew on every
+        attempt since a reinstall changes it."""
+        try:
+            return await _with_client(p, lambda c: c.root_password(p.server_id)) or None
+        except hosters.HosterError as exc:
+            log.warning("provision %s: root password not read: %s", p.id, exc)
+            return None
 
     keys_script = _authorized_keys_script(await _with_client(p, user_keys))
     key = asyncssh.import_private_key(p.secrets.get("service_key") or p.secrets["ssh_key"])
@@ -548,9 +561,11 @@ async def _install_over_ssh(p: db.Provision, fresh: bool) -> None:
     started, finished, shown, lost = False, False, 0, False
     _log(p, "Подключаюсь к серверу по SSH")
     while True:
+        password = await root_password() if by_password else None
         try:
-            async with asyncssh.connect(p.ip, username="root", client_keys=[key], known_hosts=None,
-                                        connect_timeout=15, keepalive_interval=15, keepalive_count_max=4) as conn:
+            async with asyncssh.connect(p.ip, username="root", client_keys=[key], password=password,
+                                        known_hosts=None, connect_timeout=15, keepalive_interval=15,
+                                        keepalive_count_max=4) as conn:
                 if lost:
                     _log(p, "SSH-подключение восстановлено, установка на сервере шла дальше")
                     lost = False
@@ -596,7 +611,7 @@ async def _install_over_ssh(p: db.Provision, fresh: bool) -> None:
         except (OSError, asyncssh.Error) as exc:  # the OS is still being installed, sshd is not up, the link dropped
             if finished and isinstance(exc, asyncssh.PermissionDenied):
                 break  # the keys were swapped before the link dropped
-            why = _ssh_reason(exc)
+            why = _ssh_reason(exc, password_too=password is not None)
             if not started and time.time() > ssh_deadline:
                 raise ProvisionError(f"Сервер {p.ip} не пустил по SSH за {SSH_WAIT // 60} минут ({why}): установка "
                                      "остановлена. Проверьте сервер в панели хостинга и нажмите «Повторить»") from exc
@@ -623,13 +638,13 @@ async def _install_over_ssh(p: db.Provision, fresh: bool) -> None:
         log.warning("provision %s: setup key not removed from the account: %s", p.id, exc)
 
 
-def _ssh_reason(exc: Exception) -> str:
+def _ssh_reason(exc: Exception, password_too: bool = False) -> str:
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return "нет ответа на порту 22"
     if isinstance(exc, ConnectionRefusedError):
         return "порт 22 закрыт"
     if isinstance(exc, asyncssh.PermissionDenied):
-        return "ключ админки не принят"
+        return "не приняты ни ключ админки, ни root-пароль хостинга" if password_too else "ключ админки не принят"
     return str(exc) or type(exc).__name__
 
 
@@ -790,7 +805,10 @@ async def _step_retire(p: db.Provision) -> None:
         try:
             await _with_client(old, lambda c: c.delete_server(old.server_id, old.project or None))
         except hosters.HosterError as exc:
-            if exc.code != "NOT_FOUND":  # already deleted in the hosting's own panel
+            if exc.code == "NO_DELETE":  # NetGrid: the node already moved, the old server is left to the user
+                _log(p, f"Старый сервер {old.ip or old.server_id} не удалён: хостинг не даёт удалять серверы через "
+                        "API. Удалите его в панели хостинга, иначе он продолжит стоить денег")
+            elif exc.code != "NOT_FOUND":  # already deleted in the hosting's own panel
                 raise
     db.delete_provision(old.id)
     _log(p, "Прежнее задание этого сервера убрано из списка" if p.in_place
@@ -1168,8 +1186,9 @@ async def delete_plan(hoster: db.Hoster, server_id: str) -> dict:
     if not server and not jobs:
         raise ProvisionError("Сервер не найден у хостинга: обновите список")
     if server and not server["deletable"]:
-        raise ProvisionError("Этот сервер через API не удалить: VPS OVHcloud удаляется в панели OVHcloud "
-                             "(расторжение подтверждается по почте)")
+        raise ProvisionError(getattr(hosters.CLIENTS.get(hoster.provider), "delete_hint", "")
+                             or "Этот сервер через API не удалить: VPS OVHcloud удаляется в панели OVHcloud "
+                                "(расторжение подтверждается по почте)")
     if any(p.state == "running" for p in jobs):
         raise ProvisionError("С этим сервером сейчас идёт задание в блоке «Новые серверы»: дождитесь его окончания")
     ips = set(server["ipv4"] + server["ipv6"]) if server else {p.ip for p in jobs if p.ip}

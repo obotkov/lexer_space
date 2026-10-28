@@ -305,7 +305,7 @@ function AccountBlock({
                           Удалить
                         </button>
                       ) : (
-                        <span className="muted small" title="VPS OVHcloud удаляется только в панели OVHcloud: расторжение подтверждается по почте">
+                        <span className="muted small" title={h.provider === "netgrid" ? "NetGrid не даёт удалять серверы через API: удалите сервер в кабинете NetGrid" : "VPS OVHcloud удаляется только в панели OVHcloud: расторжение подтверждается по почте"}>
                           в панели хостинга
                         </span>
                       )}
