@@ -181,6 +181,7 @@ nginx на домене показывает обычный сайт, по ко�
 |---|---|---|---|
 | VLESS REALITY | vless, TCP | 443 | сайт маскировки (SNI; несколько через запятую — каждому серверу случайный), fingerprint, flow, число shortId |
 | VLESS XHTTP + REALITY | vless, TCP | случайный | сайт маскировки, fingerprint, режим XHTTP, путь |
+| VLESS TCP + TLS (домен сервера) | vless, TCP | случайный | SNI (пусто — домен сервера, на который выпущен его сертификат; свой домен — если он тоже есть в сертификате), fingerprint, flow (xtls-rprx-vision). Не входит в стандартный набор: добавьте его кнопкой «Добавить» |
 | VLESS WebSocket + TLS | vless, TCP | случайный | путь, fingerprint |
 | Trojan gRPC + TLS | trojan, TCP | случайный | имя сервиса, fingerprint |
 | VMess WebSocket + TLS | vmess, TCP | случайный | путь, fingerprint |

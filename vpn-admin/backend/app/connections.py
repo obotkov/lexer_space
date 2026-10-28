@@ -44,6 +44,9 @@ KINDS: dict[str, dict[str, Any]] = {
     "vless_xhttp_reality": {"title": "VLESS XHTTP + REALITY", "protocol": "vless", "net": "tcp", "tls": False,
                             "port": 0, "remark": "XHTTP",
                             "note": "если обычный REALITY не подключается: трафик похож на обычный HTTP"},
+    "vless_tcp_tls": {"title": "VLESS TCP + TLS (домен сервера)", "protocol": "vless", "net": "tcp", "tls": True,
+                      "port": 0, "remark": "VLESS-TLS",
+                      "note": "TLS с настоящим сертификатом, в SNI домен сервера; нужен сертификат сервера"},
     "vless_ws_tls": {"title": "VLESS WebSocket + TLS", "protocol": "vless", "net": "tcp", "tls": True, "port": 0,
                      "remark": "VLESS-WS", "note": "работает через CDN; нужен сертификат сервера"},
     "trojan_grpc_tls": {"title": "Trojan gRPC + TLS", "protocol": "trojan", "net": "tcp", "tls": True, "port": 0,
@@ -67,7 +70,7 @@ KINDS: dict[str, dict[str, Any]] = {
                         "note": "для белых списков: клиенты ходят через CDN (Yandex Cloud, VK Cloud, Beget), IP сервера не виден; "
                                 "медленнее остальных"},
 }
-Kind = Literal["vless_reality", "vless_xhttp_reality", "vless_ws_tls", "trojan_grpc_tls", "vmess_ws_tls",
+Kind = Literal["vless_reality", "vless_xhttp_reality", "vless_tcp_tls", "vless_ws_tls", "trojan_grpc_tls", "vmess_ws_tls",
                "shadowsocks", "hysteria2", "tuic", "wireguard", "amneziawg", "mtproto", "vless_xhttp_cdn"]
 
 # kind → option → (default, allowed values or None for free text / numbers)
@@ -76,6 +79,9 @@ OPTIONS: dict[str, dict[str, tuple[Any, list[Any] | None]]] = {
                       "flow": ("xtls-rprx-vision", ["xtls-rprx-vision", ""]), "short_ids": (1, None)},
     "vless_xhttp_reality": {"sni": ("www.microsoft.com", None), "fingerprint": ("chrome", FINGERPRINTS),
                             "mode": ("auto", ["auto", "packet-up", "stream-up", "stream-one"]), "path": ("", None)},
+    # sni: empty = the server's own domain (its certificate's name)
+    "vless_tcp_tls": {"sni": ("", None), "fingerprint": ("chrome", FINGERPRINTS),
+                      "flow": ("xtls-rprx-vision", ["xtls-rprx-vision", ""])},
     "vless_ws_tls": {"path": ("", None), "fingerprint": ("chrome", FINGERPRINTS)},
     "trojan_grpc_tls": {"service_name": ("", None), "fingerprint": ("chrome", FINGERPRINTS)},
     "vmess_ws_tls": {"path": ("", None), "fingerprint": ("chrome", FINGERPRINTS)},
@@ -124,6 +130,10 @@ def _clean_options(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
         if not names or any(not _host_ok(n) for n in names):
             raise ValueError("sni: нужен домен сайта для маскировки, например www.microsoft.com")
         out["sni"] = ", ".join(names)
+    if kind == "vless_tcp_tls":
+        out["sni"] = out["sni"].strip(".").lower()
+        if out["sni"] and not _host_ok(out["sni"]):
+            raise ValueError("sni: нужен домен, например vpn.example.com, или пусто — домен сервера")
     if kind == "vless_reality" and not 1 <= out["short_ids"] <= 8:
         raise ValueError("short_ids: от 1 до 8")
     if kind in ("wireguard", "amneziawg"):
@@ -405,6 +415,13 @@ def build(item: dict[str, Any], t: Target, node_id: int) -> dict[str, Any]:
         settings = {"clients": [], "decryption": "none"}
         stream = {"network": "xhttp", "security": "reality", "xhttpSettings": {"path": _path(o["path"]), "mode": o["mode"]},
                   "realitySettings": _reality(_pick(o["sni"]), o["fingerprint"])}
+    elif kind == "vless_tcp_tls":
+        settings = {"clients": [], "decryption": "none", "fallbacks": []}
+        tls = _tls(t, ["h2", "http/1.1"], o["fingerprint"])
+        if o["sni"]:  # a name of its own; clients check the certificate against it (or its pin on an IP server)
+            tls["serverName"] = o["sni"]
+        stream = {"network": "tcp", "security": "tls", "tlsSettings": tls,
+                  "tcpSettings": {"acceptProxyProtocol": False, "header": {"type": "none"}}}
     elif kind == "vless_ws_tls":
         settings = {"clients": [], "decryption": "none"}
         stream = {"network": "ws", "security": "tls", "wsSettings": {"path": _path(o["path"])},
@@ -606,6 +623,7 @@ def custom_from(kind: str, options: dict[str, Any], edited: Any) -> dict[str, An
 
 # kind of a foreign inbound: by protocol, then network and security; the first one of the protocol otherwise
 _IMPORT_KINDS = [("vless", "tcp", "reality", "vless_reality"), ("vless", "raw", "reality", "vless_reality"),
+                 ("vless", "tcp", "tls", "vless_tcp_tls"), ("vless", "raw", "tls", "vless_tcp_tls"),
                  ("vless", "xhttp", "reality", "vless_xhttp_reality"), ("vless", "ws", "tls", "vless_ws_tls"),
                  ("trojan", "grpc", "tls", "trojan_grpc_tls"), ("vmess", "ws", "tls", "vmess_ws_tls")]
 _IMPORT_FIRST = {"vless": "vless_reality", "trojan": "trojan_grpc_tls", "vmess": "vmess_ws_tls",
@@ -688,7 +706,8 @@ def _form_of(kind: str, inbound: dict[str, Any]) -> dict[str, Any]:
     reality = stream.get("realitySettings") if isinstance(stream.get("realitySettings"), dict) else {}
     tls = stream.get("tlsSettings") if isinstance(stream.get("tlsSettings"), dict) else {}
     found = {
-        "sni": ", ".join(n for n in reality.get("serverNames") or [] if isinstance(n, str)),
+        "sni": ", ".join(n for n in reality.get("serverNames") or [] if isinstance(n, str))
+        if reality else tls.get("serverName"),
         "fingerprint": ((reality.get("settings") or tls.get("settings") or {}) or {}).get("fingerprint"),
         "path": next((v.get("path") for k in ("wsSettings", "xhttpSettings", "httpupgradeSettings")
                       if isinstance(v := stream.get(k), dict) and v.get("path")), None),
@@ -869,12 +888,13 @@ async def _attach(xui: XUIClient, items: list[dict[str, Any]], records: list[dic
         + (f"; ошибки: {'; '.join(errors[:5])}" if errors else ""))
     for note in skipped:
         log(f"Не добавлены в {note}")
-    if any(i["kind"] == "vless_reality" and i["options"].get("flow") and _tcp_stream(i) for i in items):
+    if any(i["kind"] in ("vless_reality", "vless_tcp_tls") and i["options"].get("flow") and _tcp_stream(i)
+           for i in items):
         await _vision(xui, [e for e in by_email if e in attached], log)
 
 
 def _tcp_stream(item: dict[str, Any]) -> bool:
-    """Vision works over TCP only: an own JSON may have moved REALITY to another network."""
+    """Vision works over TCP only: an own JSON may have moved the connection to another network."""
     network = ((item["options"].get("custom") or {}).get("streamSettings") or {}).get("network")
     return network in (None, AUTO, "tcp", "raw")
 
@@ -891,7 +911,7 @@ async def _vision(xui: XUIClient, emails: list[str], log: Any) -> None:
             except XUIError as exc:
                 log(f"Не удалось включить xtls-rprx-vision пользователю {record['email']}: {exc}")
     if changed:
-        log(f"Пользователям без flow включён xtls-rprx-vision для REALITY: {changed}")
+        log(f"Пользователям без flow включён xtls-rprx-vision для VLESS по TCP: {changed}")
 
 
 async def rollout(xui: XUIClient, node_id: int, items: list[dict[str, Any]], target: Target,

@@ -19,7 +19,7 @@ const OPTION_LABELS: Record<string, { label: string; hint?: string }> = {
   fingerprint: { label: "Отпечаток TLS-клиента (fingerprint)" },
   flow: {
     label: "Flow для пользователей",
-    hint: "В 3x-ui v3 flow хранится у пользователя: xtls-rprx-vision включается тем, у кого он ещё не задан. 3x-ui применяет его только к REALITY по TCP",
+    hint: "В 3x-ui v3 flow хранится у пользователя: xtls-rprx-vision включается тем, у кого он ещё не задан. 3x-ui применяет его только к VLESS по TCP (REALITY и TLS)",
   },
   short_ids: { label: "Сколько shortId выдать", hint: "От 1 до 8" },
   mode: { label: "Режим XHTTP" },
@@ -47,6 +47,16 @@ const OPTION_LABELS: Record<string, { label: string; hint?: string }> = {
   uplink: { label: "Как клиент отправляет данные" },
 };
 
+// the same option means something else in another kind
+const KIND_OPTION_LABELS: Record<string, Record<string, { label: string; hint?: string }>> = {
+  vless_tcp_tls: {
+    sni: {
+      label: "SNI (домен)",
+      hint: "Пусто: домен сервера, на который выпущен его сертификат, — так клиенты проверяют настоящий сертификат. Свой домен нужен, только если он тоже указывает на сервер и есть в его сертификате, иначе клиенты его не примут (на сервере без домена их выручает закреплённый отпечаток сертификата)",
+    },
+  },
+};
+
 const CHOICE_LABELS: Record<string, Record<string, string>> = {
   flow: { "xtls-rprx-vision": "xtls-rprx-vision", "": "без flow" },
   variant: { classic: "Классические: AmneziaVPN, Mihomo, роутеры Keenetic", full: "AmneziaWG 3.1: только приложения AmneziaVPN/AmneziaWG" },
@@ -68,6 +78,8 @@ function summary(t: ConnectionTemplate): string {
       return `${o.sni} · ${o.fingerprint}${o.flow ? ` · ${o.flow}` : ""}`;
     case "vless_xhttp_reality":
       return `${o.sni} · ${o.mode}${o.path ? ` · ${o.path}` : ""}`;
+    case "vless_tcp_tls":
+      return `${o.sni || "домен сервера"} · ${o.fingerprint}${o.flow ? ` · ${o.flow}` : ""}`;
     case "vless_ws_tls":
     case "vmess_ws_tls":
       return `путь ${o.path || "случайный"} · ${o.fingerprint}`;
@@ -686,7 +698,7 @@ function TemplateDialog({
         </small>
 
         {Object.entries(kind.options).map(([name, spec]) => {
-          const meta = OPTION_LABELS[name] ?? { label: name };
+          const meta = KIND_OPTION_LABELS[kindId]?.[name] ?? OPTION_LABELS[name] ?? { label: name };
           const value = options[name];
           if (name === "cdn_account_id") {
             return (
