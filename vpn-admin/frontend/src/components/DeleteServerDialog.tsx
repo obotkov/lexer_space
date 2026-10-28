@@ -2,7 +2,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import { api, type HosterInfo, type HosterServer, type ServerDeletePlan } from "../api";
 
 /** Delete a hosting's server: first the connections of the node it runs (inbounds in the main panel), then the
- * node, then the server itself. */
+ * node, then the server itself. A hosting that cannot delete through its API keeps the server: it is only
+ * taken out of the admin and the user deletes it in the hosting's panel. */
 export function DeleteServerDialog({
   hoster,
   server,
@@ -32,6 +33,7 @@ export function DeleteServerDialog({
   }, [hoster.id, server.id]);
 
   const inbounds = plan?.nodes.reduce((n, node) => n + node.inbounds.length, 0) ?? 0;
+  const kept = !!plan?.kept || !server.deletable;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -50,7 +52,7 @@ export function DeleteServerDialog({
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && !busy && onClose()}>
       <form className="modal" onSubmit={submit}>
         <div className="modal-head">
-          <h2>Удалить сервер «{server.name}»</h2>
+          <h2>{kept ? `Убрать «${server.name}» из админки` : `Удалить сервер «${server.name}»`}</h2>
           <button type="button" className="btn btn-small" onClick={onClose} disabled={busy}>
             ✕
           </button>
@@ -79,13 +81,22 @@ export function DeleteServerDialog({
                 )}
               </li>
             ))}
-            <li>
-              Удалить сервер {server.ipv4[0] ?? ""} у {providerTitle}: он будет уничтожен вместе с данными, плата за него прекратится.
-              {plan.jobs.length > 0 && " Его задание в блоке «Новые серверы» отметится как удалённое, A-запись Cloudflare, если была, удалится."}
-            </li>
+            {kept ? (
+              plan.jobs.length > 0 && <li>Убрать его задание из блока «Новые серверы»; A-запись Cloudflare, если была, удалится.</li>
+            ) : (
+              <li>
+                Удалить сервер {server.ipv4[0] ?? ""} у {providerTitle}: он будет уничтожен вместе с данными, плата за него прекратится.
+                {plan.jobs.length > 0 && " Его задание в блоке «Новые серверы» отметится как удалённое, A-запись Cloudflare, если была, удалится."}
+              </li>
+            )}
           </ol>
         )}
-        {plan && plan.nodes.length === 0 && (
+        {plan && kept && (
+          <div className="notice notice-warn small">
+            Сам сервер {server.ipv4[0] ?? ""} останется работать и стоить денег: {plan.kept} Админка уберёт только то, что настроено у неё.
+          </div>
+        )}
+        {plan && !kept && plan.nodes.length === 0 && (
           <div className="muted small">Узлом основной панели этот сервер не подключён: удалится только сам сервер.</div>
         )}
 
@@ -96,7 +107,7 @@ export function DeleteServerDialog({
             Отмена
           </button>
           <button className="btn btn-danger" disabled={!plan || busy}>
-            {busy ? (inbounds ? "Удаляю подключения, узел и сервер…" : "Удаляю…") : "Удалить сервер"}
+            {busy ? (inbounds ? (kept ? "Удаляю подключения и узел…" : "Удаляю подключения, узел и сервер…") : "Удаляю…") : kept ? "Убрать из админки" : "Удалить сервер"}
           </button>
         </div>
       </form>

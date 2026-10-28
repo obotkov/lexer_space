@@ -107,6 +107,8 @@ export function Provisions({
           );
           const canReinstall = !replacedBy && !!p.server_id && (p.state === "done" || (p.state === "failed" && !p.replaces));
           const [badgeClass, badgeText] = STATE_BADGE[p.state];
+          // NetGrid and OVHcloud VPS: the API cannot delete the server, only take it out of the admin
+          const kept = account?.servers.find((s) => s.id === p.server_id)?.deletable === false;
           const c = creds[p.id];
           return (
             <section key={p.id} className="card provision">
@@ -115,6 +117,7 @@ export function Provisions({
                   <div className="strong">
                     {p.name}
                     {p.replaces > 0 && <span className="muted small"> · переустановка</span>}
+                    {p.adopted && <span className="muted small"> · с нуля на существующем сервере</span>}
                   </div>
                   <div className="provision-source small">
                     {account ? (
@@ -156,7 +159,9 @@ export function Provisions({
               {p.in_place && p.state === "failed" && (
                 <div className="muted small">
                   {p.step === "rebuild"
-                    ? "Нажмите «Повторить» или «Переустановить с нуля» на карточке прежнего задания: там можно выбрать и новый сервер вместо переустановки на месте."
+                    ? p.adopted
+                      ? "Нажмите «Повторить». Чтобы выбрать другую систему, уберите задание из списка и снова нажмите «0» у сервера в аккаунте хостинга."
+                      : "Нажмите «Повторить» или «Переустановить с нуля» на карточке прежнего задания: там можно выбрать и новый сервер вместо переустановки на месте."
                     : "Система на сервере уже переустановлена: нажмите «Повторить», чтобы продолжить с этого шага."}
                 </div>
               )}
@@ -262,20 +267,22 @@ export function Provisions({
                     Переустановить с нуля
                   </button>
                 )}
-                {(p.state === "done" || (p.state === "failed" && !p.in_place)) && p.server_id && replacedBy?.state !== "running" && (
+                {(p.state === "done" || (p.state === "failed" && (!p.in_place || p.adopted))) && p.server_id && replacedBy?.state !== "running" && (
                   <button
                     className="btn btn-small btn-danger"
                     disabled={busy === p.id}
                     onClick={() =>
                       confirm(
-                        `Удалить сервер «${p.name}»${p.ip ? ` (${p.ip})` : ""} у хостинга? Он будет уничтожен вместе с данными, плата за него прекратится.` +
+                        kept
+                          ? `Убрать сервер «${p.name}»${p.ip ? ` (${p.ip})` : ""} из админки? Из основной панели удалятся подключения (инбаунды) этого узла и сам узел, задание уйдёт из списка. Клиенты останутся в панели.\n\nСам сервер ${providers[account?.provider ?? ""]?.title ?? ""} через API не удалить: удалите его в панели хостинга, иначе он продолжит стоить денег.`
+                          : `Удалить сервер «${p.name}»${p.ip ? ` (${p.ip})` : ""} у хостинга? Он будет уничтожен вместе с данными, плата за него прекратится.` +
                           (p.state === "done"
                             ? "\n\nVPN на этом сервере перестанет работать. Сначала из основной панели удалятся подключения (инбаунды) этого узла и сам узел, затем сервер. Клиенты останутся в панели."
                             : ""),
                       ) && act(p.id, () => api.deleteProvisionServer(p.id))
                     }
                   >
-                    {p.state === "done" ? "Удалить сервер" : "Удалить сервер у хостинга"}
+                    {kept ? "Убрать из админки" : p.state === "done" ? "Удалить сервер" : "Удалить сервер у хостинга"}
                   </button>
                 )}
                 {p.state !== "running" && (

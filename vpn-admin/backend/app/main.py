@@ -327,8 +327,10 @@ async def _hoster_check(provider: str, credentials: dict[str, str]) -> dict:
 
 @app.get("/api/hosters/providers", dependencies=[Depends(require_admin)])
 async def hosters_providers():
-    # rebuild: the hosting reinstalls the OS of a server in place, keeping its IP
-    return {key: {**info, "rebuild": getattr(hosters.CLIENTS[key], "rebuild", False)}
+    # rebuild: the hosting reinstalls the OS of a server in place, keeping its IP; adopt: also on a server
+    # the admin did not create
+    return {key: {**info, "rebuild": getattr(hosters.CLIENTS[key], "rebuild", False),
+                  "adopt": provision.adoptable(key)}
             for key, info in hosters.PROVIDERS.items()}
 
 
@@ -399,6 +401,23 @@ async def hosters_server_delete(hoster_id: int, body: HosterServerIn):
     """The server's connections (its node's inbounds), then the node, then the server at the hosting."""
     try:
         return await provision.delete_hosted_server(_stored_hoster(hoster_id), body.server_id)
+    except (provision.ProvisionError, hosters.HosterError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/hosters/{hoster_id}/servers/adopt-plan", dependencies=[Depends(require_admin)])
+async def hosters_server_adopt_plan(hoster_id: int, body: HosterServerIn):
+    try:
+        return await provision.adopt_plan(_stored_hoster(hoster_id), body.server_id)
+    except (provision.ProvisionError, hosters.HosterError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/hosters/{hoster_id}/servers/adopt", dependencies=[Depends(require_admin)])
+async def hosters_server_adopt(hoster_id: int, body: provision.AdoptIn):
+    """From zero on a server the admin did not create: the hosting reinstalls its OS, the install follows."""
+    try:
+        return await provision.adopt(_stored_hoster(hoster_id), body)
     except (provision.ProvisionError, hosters.HosterError) as exc:
         raise HTTPException(400, str(exc)) from exc
 

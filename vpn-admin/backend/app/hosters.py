@@ -158,11 +158,13 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 
 def _server(*, id: Any, name: str, status: str, status_label: str, region: str, plan: str, ipv4: list[str],
             ipv6: list[str], created_at: str = "", kind: str = "", specs: str = "", price: str = "",
-            project: str = "", deletable: bool = True) -> dict:
-    """`project`: what delete_server needs besides the id (OVHcloud's Public Cloud project)."""
+            project: str = "", deletable: bool = True, plan_id: Any = "", region_id: Any = "") -> dict:
+    """`project`: what delete_server needs besides the id (OVHcloud's Public Cloud project). `plan_id`,
+    `region_id`: the hosting's own ids where they differ from what is shown, for a reinstall (VDSina)."""
     return {"id": str(id), "name": name, "status": status, "status_label": status_label, "region": region,
             "plan": plan, "specs": specs, "price": price, "ipv4": ipv4, "ipv6": ipv6, "created_at": created_at,
-            "kind": kind, "project": project, "deletable": deletable}
+            "kind": kind, "project": project, "deletable": deletable,
+            "plan_id": str(plan_id or ""), "region_id": str(region_id or "")}
 
 
 # Systems a new server can get; the install is the same on all of them
@@ -897,6 +899,7 @@ class VDSina:
             status=self.status_map.get(status, "unknown"),
             status_label=s.get("status_text") or self.status_labels.get(status, status),
             region=self._dc_label(s.get("datacenter")), plan=self._obj(s.get("server-plan")).get("name", ""),
+            plan_id=self._obj(s.get("server-plan")).get("id"), region_id=self._obj(s.get("datacenter")).get("id"),
             specs=self._specs(s.get("data")),
             ipv4=[a for a, kind in addresses if kind == "4"],
             ipv6=[a for a, kind in addresses if kind == "6"],
@@ -1434,8 +1437,7 @@ class NetGrid:
     os_names = {"ubuntu-24.04": ("ubuntu", "24.04"), "ubuntu-22.04": ("ubuntu", "22.04"),
                 "debian-13": ("debian", "13"), "debian-12": ("debian", "12")}
     delete_hint = ("NetGrid не даёт удалять серверы через API: удалите сервер в личном кабинете NetGrid "
-                   "(Виртуальные серверы → сервер → Удалить). Когда он пропадёт из списка, удаление здесь уберёт "
-                   "его узел и подключения из основной панели")
+                   "(Виртуальные серверы → сервер → Удалить).")
     # BILLmanager service state: 1 — being created, 2 — active (then vm_state tells the machine's own), 3 — suspended
     service_states = {1: "new", 2: "active", 3: "suspended"}
     status_map = {"active": "running", "running": "running", "new": "pending", "creating": "pending",
@@ -1527,6 +1529,8 @@ class NetGrid:
             id=s.get("id"), name=s.get("name") or s.get("hostname") or "", kind="VPS", deletable=False,
             status=self.status_map.get(status, "unknown"), status_label=self.status_labels.get(status, status),
             region=region, plan=(plan.get("name", "") if isinstance(plan, dict) else str(plan or "")),
+            plan_id=plan.get("id") if isinstance(plan, dict) else s.get("plan_id"),
+            region_id=dc.get("id") if isinstance(dc, dict) else s.get("dc_id"),
             specs=str(s.get("os") or s.get("os_name") or ""),
             price=f"{_money(float(price), 'EUR')}/мес" if isinstance(price, (int, float)) and period in (None, 1) else "",
             ipv4=[a for a in ips if a and ":" not in a], ipv6=ipv6, created_at=str(s.get("created_at") or ""),

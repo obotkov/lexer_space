@@ -246,7 +246,7 @@ tbody tr:hover { background: var(--bg-hover); }
 /* client management */
 .modal-wide { max-width: 720px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-.modal-head h2 { word-break: break-all; }
+.modal-head h2 { overflow-wrap: anywhere; } /* long server names break, words do not */
 .modal-section { display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--border); padding-top: 14px; }
 .modal-section h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .action-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -456,6 +456,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .hoster-error { max-width: none; }
 .hoster-servers .hoster-ipv6 { word-break: break-all; }
 .hoster-server-actions { text-align: right; white-space: nowrap; }
+.hoster-server-actions .btn + .btn { margin-left: 6px; }
+/* «0»: from zero, square like a key cap */
+.btn-zero { min-width: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .delete-steps { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 8px; }
 .delete-inbounds { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
 .hoster-card .table-wrap { margin: 0; }

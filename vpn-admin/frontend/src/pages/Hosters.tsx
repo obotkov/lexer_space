@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api, type CdnAccounts as CdnAccountsData, type DnsAccounts as DnsAccountsData, type HosterAccount, type HosterForm, type HosterInfo, type HosterProvider, type HosterServer, type PanelInfo, type Provision } from "../api";
+import { AdoptServerDialog } from "../components/AdoptServerDialog";
 import { CdnAccounts } from "../components/CdnAccounts";
 import { CreateServerDialog } from "../components/CreateServerDialog";
 import { DeleteServerDialog } from "../components/DeleteServerDialog";
@@ -45,6 +46,7 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
   const [editing, setEditing] = useState<HosterInfo | "new" | null>(null);
   const [creating, setCreating] = useState<HosterInfo | null>(null);
   const [deleting, setDeleting] = useState<{ hoster: HosterInfo; server: HosterServer } | null>(null);
+  const [adopting, setAdopting] = useState<{ hoster: HosterInfo; server: HosterServer } | null>(null);
   const [provisions, setProvisions] = useState<Provision[]>([]);
   const [dnsData, setDnsData] = useState<DnsAccountsData | null>(null);
   const [cdnData, setCdnData] = useState<CdnAccountsData | null>(null);
@@ -147,10 +149,12 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
             hoster={h}
             provider={providers[h.provider]}
             index={index}
+            jobs={provisions}
             onCreate={() => setCreating(h)}
             onEdit={() => setEditing(h)}
             onDelete={() => remove(h)}
             onDeleteServer={(server) => setDeleting({ hoster: h, server })}
+            onAdoptServer={(server) => setAdopting({ hoster: h, server })}
           />
         ))
       )}
@@ -187,6 +191,21 @@ export function Hosters({ panels, onChanged }: { panels: PanelInfo[]; onChanged:
         />
       )}
 
+      {adopting && (
+        <AdoptServerDialog
+          hoster={adopting.hoster}
+          server={adopting.server}
+          providerTitle={providers[adopting.hoster.provider]?.title ?? adopting.hoster.provider}
+          panels={panels}
+          onClose={() => setAdopting(null)}
+          onStarted={() => {
+            setAdopting(null);
+            loadProvisions();
+            window.scrollTo({ top: 0, behavior: "smooth" }); // the job shows up in «Новые серверы» on top
+          }}
+        />
+      )}
+
       {editing && (
         <HosterDialog
           providers={providers}
@@ -206,18 +225,22 @@ function AccountBlock({
   hoster: h,
   provider,
   index,
+  jobs,
   onCreate,
   onEdit,
   onDelete,
   onDeleteServer,
+  onAdoptServer,
 }: {
   hoster: HosterInfo;
   provider: HosterProvider | undefined;
   index: Map<string, string>;
+  jobs: Provision[];
   onCreate: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onDeleteServer: (server: HosterServer) => void;
+  onAdoptServer: (server: HosterServer) => void;
 }) {
   return (
     <section className="card hoster-card">
@@ -277,6 +300,8 @@ function AccountBlock({
             <tbody>
               {h.servers.map((s) => {
                 const where = [...s.ipv4, ...s.ipv6].map((ip) => index.get(ip)).find(Boolean);
+                // made (or taken over) by the admin: reinstalled from its card in «Новые серверы»
+                const job = jobs.find((p) => p.hoster_id === h.id && p.server_id === s.id && p.state !== "deleted");
                 return (
                   <tr key={s.id}>
                     <td>
@@ -300,15 +325,24 @@ function AccountBlock({
                     <td className="small">{s.created_at ? new Date(s.created_at).toLocaleDateString("ru-RU") : "—"}</td>
                     <td>{where ? <span className="badge badge-main">{where}</span> : <span className="muted">—</span>}</td>
                     <td className="hoster-server-actions">
-                      {s.deletable ? (
-                        <button className="btn btn-small btn-danger" onClick={() => onDeleteServer(s)}>
-                          Удалить
+                      {!job && provider?.adopt && (
+                        <button
+                          className="btn btn-small btn-zero"
+                          disabled={!s.ipv4.length}
+                          title="Установить с нуля через админку: переустановка ОС на этом же сервере, 3x-ui и узел основной панели, как у нового сервера"
+                          aria-label={`Установить «${s.name}» с нуля`}
+                          onClick={() => onAdoptServer(s)}
+                        >
+                          0
                         </button>
-                      ) : (
-                        <span className="muted small" title={h.provider === "netgrid" ? "NetGrid не даёт удалять серверы через API: удалите сервер в кабинете NetGrid" : "VPS OVHcloud удаляется только в панели OVHcloud: расторжение подтверждается по почте"}>
-                          в панели хостинга
-                        </span>
                       )}
+                      <button
+                        className="btn btn-small btn-danger"
+                        title={s.deletable ? undefined : `${provider?.title ?? h.provider} не даёт удалить сервер через API: админка уберёт его узел и подключения, сам сервер удалите в панели хостинга`}
+                        onClick={() => onDeleteServer(s)}
+                      >
+                        Удалить
+                      </button>
                     </td>
                   </tr>
                 );

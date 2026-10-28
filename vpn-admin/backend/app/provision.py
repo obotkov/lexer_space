@@ -19,6 +19,10 @@ reinstall the OS (DigitalOcean, OVHcloud, VDSina, NetGrid) it does so on the sam
 and the IP stays; elsewhere a fresh server is ordered and the old one removed.
 Either way the same node of the main panel switches over to the new install.
 
+A server the admin did not create can be taken over the same way, in place, where the OS reinstall lets
+the admin in without its cloud-init script (VDSina takes its key, NetGrid gives the root password). If the
+server already runs a node of a main panel, that node switches over to the new install.
+
 Steps run in a background task and are saved after each one, so an admin restart
 resumes the job where it stopped.
 """
@@ -49,7 +53,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from . import cdn, connections, db, dns, hosters, nodes, probe, site
 from .aggregator import overview_cache, pool
-from .xui import XUIClient, XUIError
+from .xui import XUIClient, XUIError, parse_json_field
 
 log = logging.getLogger("vpn-admin.provision")
 
@@ -82,6 +86,19 @@ def _site_template(value: str) -> str:
     return value
 
 
+def _known_os(value: str) -> str:
+    if value not in hosters.OS_LABELS:
+        raise ValueError(f"Система: одна из {', '.join(hosters.OS_LABELS.values())}")
+    return value
+
+
+def _domain_name(value: str) -> str:
+    value = value.strip().lower().rstrip(".")
+    if value and not re.fullmatch(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", value):
+        raise ValueError("Домен: например vpn1.example.com, без http:// и пути")
+    return value
+
+
 class ProvisionIn(BaseModel):
     hoster_id: int
     panel_id: int
@@ -105,9 +122,7 @@ class ProvisionIn(BaseModel):
     @field_validator("os")
     @classmethod
     def known_os(cls, value: str) -> str:
-        if value not in hosters.OS_LABELS:
-            raise ValueError(f"Система: одна из {', '.join(hosters.OS_LABELS.values())}")
-        return value
+        return _known_os(value)
 
     @field_validator("site_template")
     @classmethod
@@ -117,10 +132,7 @@ class ProvisionIn(BaseModel):
     @field_validator("domain")
     @classmethod
     def domain_name(cls, value: str) -> str:
-        value = value.strip().lower().rstrip(".")
-        if value and not re.fullmatch(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", value):
-            raise ValueError("Домен: например vpn1.example.com, без http:// и пути")
-        return value
+        return _domain_name(value)
 
     @field_validator("name")
     @classmethod
@@ -141,6 +153,32 @@ class ReinstallIn(BaseModel):
     @classmethod
     def known_template(cls, value: str | None) -> str | None:
         return value if value is None else _site_template(value)
+
+
+class AdoptIn(BaseModel):
+    """From zero on a server of the hosting account the admin did not create."""
+    server_id: str
+    panel_id: int = 0  # main panel for a server that is no node yet; a node stays in its own panel
+    os: str = hosters.DEFAULT_OS
+    domain: str = ""  # panel address with a Let's Encrypt certificate; its A record is the user's
+    site_template: str = ""
+    connections: bool = True  # only for a server that is no node yet: a node keeps its inbounds
+    connection_ids: list[int] | None = None
+
+    @field_validator("os")
+    @classmethod
+    def known_os(cls, value: str) -> str:
+        return _known_os(value)
+
+    @field_validator("domain")
+    @classmethod
+    def domain_name(cls, value: str) -> str:
+        return _domain_name(value)
+
+    @field_validator("site_template")
+    @classmethod
+    def known_template(cls, value: str) -> str:
+        return _site_template(value)
 
 
 # ---------- what the new server gets ----------
@@ -393,7 +431,7 @@ docker run --rm --entrypoint /app/x-ui -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/
 
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
   stage "Открываю порты в ufw"
-  ufw allow {p.port}/tcp{f"; ufw allow {p.sub_port}/tcp" if p.sub_port else ""}{"".join(f"; ufw allow {r}" for r in connections.ufw_rules(p.connections))}
+  ufw allow {p.port}/tcp{f"; ufw allow {p.sub_port}/tcp" if p.sub_port else ""}{"".join(f"; ufw allow {r}" for r in connections.ufw_rules(p.connections) + p.labels.get("ports", "").split())}
 fi
 {extra}stage "Установка на сервере закончена"
 """
@@ -1135,7 +1173,7 @@ async def delete_server(provision_id: int) -> dict:
         raise ProvisionError("Задание не найдено")
     if p.state == "running":
         raise ProvisionError("Задание ещё выполняется: дождитесь ошибки или окончания")
-    if p.in_place and p.state != "done":
+    if p.in_place and p.replaces and p.state != "done":
         raise ProvisionError("Это переустановка на том же сервере: повторите её или удалите сервер с карточки "
                              "прежнего задания")
     if any(other.replaces == p.id and other.state == "running" for other in db.list_provisions()):
@@ -1147,7 +1185,8 @@ async def delete_server(provision_id: int) -> dict:
         await delete_hosted_server(hoster, p.server_id)
     else:  # nothing was ordered
         _set(p, state="deleted")
-    return public(db.get_provision(p.id))
+    left = db.get_provision(p.id)  # gone when the hosting keeps the server: only the admin let go of it
+    return public(left) if left else {"id": p.id, "state": "forgotten"}
 
 
 # ---------- deleting a server ----------
@@ -1178,26 +1217,23 @@ def _job_node(p: db.Provision) -> tuple[int, int] | None:
     return None
 
 
-async def delete_plan(hoster: db.Hoster, server_id: str) -> dict:
-    """What deleting the server takes: the main panels' nodes that run on it and their inbounds. A server that
-    is a main panel itself is not deleted from here."""
-    server = await hosters.find_server(hoster, server_id)
-    jobs = _server_jobs(hoster.id, server_id)
-    if not server and not jobs:
-        raise ProvisionError("Сервер не найден у хостинга: обновите список")
-    if server and not server["deletable"]:
-        raise ProvisionError(getattr(hosters.CLIENTS.get(hoster.provider), "delete_hint", "")
-                             or "Этот сервер через API не удалить: VPS OVHcloud удаляется в панели OVHcloud "
-                                "(расторжение подтверждается по почте)")
-    if any(p.state == "running" for p in jobs):
-        raise ProvisionError("С этим сервером сейчас идёт задание в блоке «Новые серверы»: дождитесь его окончания")
-    ips = set(server["ipv4"] + server["ipv6"]) if server else {p.ip for p in jobs if p.ip}
-    known = {n for n in map(_job_node, jobs) if n}
+OWN_CERTS = {"/root/cert/le.crt", "/root/cert/panel.crt"}  # where the install puts them; the same after a reinstall
+
+
+def _cert_files(inbound: dict) -> list[str]:
+    tls = parse_json_field(inbound.get("streamSettings")).get("tlsSettings") or {}
+    return [c["certificateFile"] for c in tls.get("certificates") or []
+            if isinstance(c, dict) and c.get("certificateFile")]
+
+
+async def _nodes_on(ips: set[str], known: set[tuple[int, int]], doing: str) -> list[dict]:
+    """The main panels' nodes that run on a server with these addresses (or are known to), with their
+    inbounds. A server that is a main panel itself is left alone: it is managed in «Серверы»."""
     found = []
     for panel in db.list_panels():
         if ips & await _addresses(urlsplit(panel.url).hostname or ""):
-            raise ProvisionError(f"На этом сервере основная панель «{panel.name}»: удалите её сначала в разделе "
-                                 "«Серверы»")
+            raise ProvisionError(f"На этом сервере основная панель «{panel.name}»: {doing} её отсюда нельзя, она "
+                                 "управляется в разделе «Серверы»")
         xui = await pool.get(panel)
         try:
             await xui.ensure_ready()
@@ -1211,11 +1247,34 @@ async def delete_plan(hoster: db.Hoster, server_id: str) -> dict:
             if (panel.id, node["id"]) in known or ips & await _addresses(node.get("address") or ""):
                 found.append({
                     "panel_id": panel.id, "panel_name": panel.name, "node_id": node["id"], "name": node.get("name", ""),
+                    "address": node.get("address") or "",
                     "inbounds": [{"id": i["id"], "remark": i.get("remark") or i.get("tag") or "",
-                                  "protocol": i.get("protocol", ""), "port": i.get("port")}
+                                  "protocol": i.get("protocol", ""), "port": i.get("port"),
+                                  "nets": connections.inbound_nets(i), "cert_files": _cert_files(i)}
                                  for i in inbounds if i.get("nodeId") == node["id"]],
                 })
-    return {"server": server, "nodes": found, "jobs": [p.id for p in jobs]}
+    return found
+
+
+async def delete_plan(hoster: db.Hoster, server_id: str) -> dict:
+    """What deleting the server takes: the main panels' nodes that run on it and their inbounds. A server that
+    is a main panel itself is not deleted from here. Where the hosting does not delete servers through its API
+    (NetGrid, OVHcloud VPS) only the nodes go: `kept` says why the server stays."""
+    server = await hosters.find_server(hoster, server_id)
+    jobs = _server_jobs(hoster.id, server_id)
+    if not server and not jobs:
+        raise ProvisionError("Сервер не найден у хостинга: обновите список")
+    kept = ""
+    if server and not server["deletable"]:
+        kept = (getattr(hosters.CLIENTS.get(hoster.provider), "delete_hint", "")
+                or "VPS OVHcloud удаляется только в панели OVHcloud: расторжение подтверждается по почте.")
+    if any(p.state == "running" for p in jobs):
+        raise ProvisionError("С этим сервером сейчас идёт задание в блоке «Новые серверы»: дождитесь его окончания")
+    ips = set(server["ipv4"] + server["ipv6"]) if server else {p.ip for p in jobs if p.ip}
+    found = await _nodes_on(ips, {n for n in map(_job_node, jobs) if n}, "удалить")
+    if kept and not found and not jobs:
+        raise ProvisionError(f"Сервер не подключён к админке, а удалить его отсюда нельзя. {kept}")
+    return {"server": server, "nodes": found, "jobs": [p.id for p in jobs], "kept": kept}
 
 
 async def delete_hosted_server(hoster: db.Hoster, server_id: str) -> dict:
@@ -1243,11 +1302,15 @@ async def delete_hosted_server(hoster: db.Hoster, server_id: str) -> dict:
         note(f"Узел «{node['name']}» удалён из основной панели")
     overview_cache.invalidate()
 
-    if plan["server"]:
+    if plan["kept"]:
+        hosters.invalidate(hoster.id)
+        note(f"Сервер {name} убран из админки, но остаётся у хостинга: {plan['kept']}")
+    elif plan["server"]:
         await hosters.delete_server(hoster, server_id, plan["server"]["project"] or None)
+        note(f"Сервер {name} удалён у хостинга")
     else:
         hosters.invalidate(hoster.id)
-    note(f"Сервер {name} удалён у хостинга")
+        note(f"Сервер {name} удалён у хостинга")
     for p in jobs:
         _set(p, state="deleted")
         records = [(p.dns_record_id, f"A-запись {p.domain}")] if p.dns_record_id else []
@@ -1265,8 +1328,101 @@ async def delete_hosted_server(hoster: db.Hoster, server_id: str) -> dict:
                 _log(p, f"Cloudflare: {what} удалена")
             except dns.DNSError as exc:  # the server is gone already; a stale record is only a leftover
                 _log(p, f"Cloudflare: {what} не удалена: {exc}")
+        if plan["kept"]:  # the server lives on outside the admin: its job has nothing left to show
+            db.delete_provision(p.id)
     return {"server": name, "nodes": [n["name"] for n in plan["nodes"]],
-            "inbounds": sum(len(n["inbounds"]) for n in plan["nodes"])}
+            "inbounds": sum(len(n["inbounds"]) for n in plan["nodes"]), "kept": plan["kept"]}
+
+
+# ---------- from zero on a server the admin did not create ----------
+
+def adoptable(provider: str) -> bool:
+    """The OS reinstall must let the admin in by itself: VDSina takes its key, NetGrid gives the root
+    password. Cloud-init hostings run again the user data the server was created with, which has no key of
+    the admin, and UpCloud and Scaleway do not reinstall in place here at all."""
+    client_class = hosters.CLIENTS.get(provider)
+    return bool(getattr(client_class, "rebuild", False)) and getattr(client_class, "setup", "") in ("ssh", "password")
+
+
+def _job_name(server: dict) -> str:
+    name = re.sub(r"[^a-zA-Z0-9.-]+", "-", server.get("name") or "").strip("-.")[:63].rstrip("-.")
+    return name or f"server-{server['id']}"[:63]
+
+
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+async def adopt_plan(hoster: db.Hoster, server_id: str) -> dict:
+    """What taking the server over from zero means: the node of a main panel it already runs (switched over,
+    its inbounds kept), or none (a new node); and inbounds whose certificate files the reinstall wipes."""
+    title = hosters.PROVIDERS.get(hoster.provider, {}).get("title", hoster.provider)
+    if not adoptable(hoster.provider):
+        raise ProvisionError(f"{title}: переустановка ОС не пустит админку на сервер, созданный не через неё, — "
+                             "такой сервер можно только заменить новым, созданным из админки")
+    if _server_jobs(hoster.id, server_id):
+        raise ProvisionError("Этот сервер уже в блоке «Новые серверы»: переустановите его с карточки задания")
+    server = await hosters.find_server(hoster, server_id)
+    if not server:
+        raise ProvisionError("Сервер не найден у хостинга: обновите список")
+    if not server["ipv4"]:
+        raise ProvisionError("У сервера нет IPv4-адреса: установке не к чему подключаться")
+    found = await _nodes_on(set(server["ipv4"] + server["ipv6"]), set(), "переустановить")
+    if len(found) > 1:
+        raise ProvisionError("Сервер подключён узлом к нескольким основным панелям ("
+                             + ", ".join(f"«{n['name']}» в «{n['panel_name']}»" for n in found)
+                             + "): оставьте один узел и повторите")
+    node = found[0] if found else None
+    if node:
+        for i in node["inbounds"]:
+            i["foreign_certs"] = [c for c in i["cert_files"] if c not in OWN_CERTS]
+    domain = node["address"].lower() if node and not _is_ip(node["address"]) else ""
+    return {"server": server, "node": node, "name": _job_name(server), "domain": domain}
+
+
+def _free_ports(taken: set[int]) -> tuple[int, int]:
+    pool_ = [n for n in range(20000, 60000) if n not in taken]
+    port, sub_port = secrets.SystemRandom().sample(pool_, 2)
+    return port, sub_port
+
+
+async def adopt(hoster: db.Hoster, body: AdoptIn) -> dict:
+    plan = await adopt_plan(hoster, body.server_id)
+    server, node = plan["server"], plan["node"]
+    panel_id = node["panel_id"] if node else body.panel_id
+    try:
+        await nodes.main_panel(panel_id)
+    except nodes.NodeError as exc:
+        raise ProvisionError(f"Основная панель: {exc}") from exc
+    client = hosters.client_for(hoster)
+    try:  # the list may lack what the reinstall needs (VDSina's plan id)
+        details = await client.get_server(server["id"], server["project"] or None)
+    finally:
+        await client.close()
+    kept = node["inbounds"] if node else []
+    port, sub_port = _free_ports({i["port"] for i in kept if isinstance(i.get("port"), int)})
+    p = _new_job(hoster_id=hoster.id, panel_id=panel_id, name=plan["name"],
+                 region=details.get("region_id") or server.get("region_id") or server["region"] or "-",
+                 plan=details.get("plan_id") or server.get("plan_id") or server["plan"] or "-",
+                 project=server["project"], domain=body.domain, site_template=body.site_template, os=body.os,
+                 in_place=1, step="rebuild", server_id=server["id"], ip=server["ipv4"][0],
+                 node_id=node["node_id"] if node else None, port=port, sub_port=sub_port,
+                 labels={"region": server["region"][:100], "plan": server["plan"][:100],
+                         # the inbounds the node keeps: the install opens their ports like its own
+                         "ports": " ".join(f"{i['port']}/{n}" for i in kept for n in i["nets"])})
+    if not node and body.connections:
+        chosen = connections.snapshot(connections.templates(), body.connection_ids)
+        _set(p, connections=connections.plan(chosen, _busy_ports(p)))
+    title = hosters.PROVIDERS.get(hoster.provider, {}).get("title", hoster.provider)
+    _log(p, f"Установка с нуля на сервер {p.ip}, созданный не через админку: {title} переустановит ОС, IP не изменится"
+         + (f"; узел «{node['name']}» основной панели «{node['panel_name']}» переключится на новую установку"
+            if node else ""))
+    _spawn(p.id)
+    return public(p)
 
 
 def forget(provision_id: int) -> None:
@@ -1295,6 +1451,8 @@ def public(p: db.Provision) -> dict[str, Any]:
                         for c in p.connections],
         # made before the admin kept its own SSH key: an OS reinstall re-runs the old cloud-init install
         "legacy_install": "service_key" not in p.secrets and p.state == "done",
+        # from zero on a server the admin did not create
+        "adopted": bool(p.in_place and not p.replaces),
     }
 
 

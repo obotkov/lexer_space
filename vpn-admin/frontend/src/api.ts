@@ -457,6 +457,8 @@ export interface HosterProvider {
   help_urls?: Record<string, string>;
   /** the hosting reinstalls a server's OS in place, keeping its IP */
   rebuild?: boolean;
+  /** …and the admin gets in after that also on a server it did not create */
+  adopt?: boolean;
 }
 
 export interface HosterServer {
@@ -473,21 +475,55 @@ export interface HosterServer {
   created_at: string;
   /** Droplet, VPS, Public Cloud… */
   kind: string;
-  /** false: the hosting's API cannot delete it (an OVHcloud VPS) */
-  deletable: boolean;
+  /** false: the hosting's API cannot delete it (an OVHcloud VPS, NetGrid) */
+  deletable: boolean;  /** the hosting's own region id where it differs from what is shown (VDSina, NetGrid) */
+  region_id?: string;
+}
+
+/** A main panel's node that runs on a hosting's server, with its inbounds. */
+export interface ServerNode {
+  panel_id: number;
+  panel_name: string;
+  node_id: number;
+  name: string;
+  address: string;
+  inbounds: {
+    id: number;
+    remark: string;
+    protocol: string;
+    port: number;
+    /** certificate files of the inbound's TLS that the install does not make (adopt plan only) */
+    foreign_certs?: string[];
+  }[];
 }
 
 /** What deleting a hosting's server takes: the nodes of main panels that run on it, with their inbounds. */
 export interface ServerDeletePlan {
   server: HosterServer | null;
-  nodes: {
-    panel_id: number;
-    panel_name: string;
-    node_id: number;
-    name: string;
-    inbounds: { id: number; remark: string; protocol: string; port: number }[];
-  }[];
+  nodes: ServerNode[];
   jobs: number[];
+  /** the hosting cannot delete it through its API: only the nodes go, this says why the server stays */
+  kept: string;
+}
+
+/** From zero on a server the admin did not create: the node it already runs, if any, switches over. */
+export interface AdoptPlan {
+  server: HosterServer;
+  node: ServerNode | null;
+  /** job name made of the server's name */
+  name: string;
+  /** the node's address when it is a domain */
+  domain: string;
+}
+
+export interface AdoptForm {
+  server_id: string;
+  panel_id: number;
+  os: string;
+  domain: string;
+  site_template: string;
+  connections: boolean;
+  connection_ids: number[];
 }
 
 export interface Hoster {
@@ -753,6 +789,8 @@ export interface Provision {
   sub_port: number;
   /** made before the admin kept its own SSH key: an OS reinstall re-runs the old cloud-init install */
   legacy_install: boolean;
+  /** from zero on a server the admin did not create */
+  adopted: boolean;
   connections: ProvisionConnection[];
   /** system installed on the server; a reinstall keeps it */
   os: string;
@@ -873,7 +911,10 @@ export const api = {
   serverDeletePlan: (hosterId: number, serverId: string) =>
     request<ServerDeletePlan>("POST", `/api/hosters/${hosterId}/servers/delete-plan`, { server_id: serverId }),
   deleteHostedServer: (hosterId: number, serverId: string) =>
-    request<{ server: string; nodes: string[]; inbounds: number }>("POST", `/api/hosters/${hosterId}/servers/delete`, { server_id: serverId }),
+    request<{ server: string; nodes: string[]; inbounds: number; kept: string }>("POST", `/api/hosters/${hosterId}/servers/delete`, { server_id: serverId }),
+  serverAdoptPlan: (hosterId: number, serverId: string) =>
+    request<AdoptPlan>("POST", `/api/hosters/${hosterId}/servers/adopt-plan`, { server_id: serverId }),
+  adoptServer: (hosterId: number, form: AdoptForm) => request<Provision>("POST", `/api/hosters/${hosterId}/servers/adopt`, form),
   hosterOptions: (id: number, project?: string | null) =>
     request<CreateOptions>("GET", `/api/hosters/${id}/options${project ? `?project=${encodeURIComponent(project)}` : ""}`),
   provisions: () => request<Provision[]>("GET", "/api/provisions"),

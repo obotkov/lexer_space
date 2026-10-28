@@ -4,7 +4,7 @@ import { formatPrice } from "../format";
 import { StubTemplateSelect } from "./StubTemplateSelect";
 
 /** A template's remark as the new server will show it; mirrors connections.macros on the backend. */
-function fillRemark(remark: string, server: string, regionLabel: string): string {
+export function fillRemark(remark: string, server: string, regionLabel: string): string {
   let label = regionLabel.split(" — ")[0].trim();
   let flag = "";
   for (const ch of Array.from(label)) {
