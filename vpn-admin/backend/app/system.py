@@ -26,7 +26,7 @@ STATUS_FILE = settings.data_dir / "update.status"
 LOG_FILE = settings.data_dir / "update.log"
 UPDATER_MARKER = settings.data_dir / "updater.enabled"
 
-CHECK_TTL = 1800  # GitHub allows 60 unauthenticated requests per hour per IP
+CHECK_TTL = 300  # each check costs 2 GitHub API calls; GitHub allows 60 unauthenticated requests per hour per IP
 STALE_AFTER = 1800  # an update that has not finished in 30 minutes is considered dead
 
 

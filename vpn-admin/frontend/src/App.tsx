@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Overview as OverviewData, type UpdateCheck } from "./api";
 import { ThemeSwitch } from "./components/ThemeSwitch";
+import { VersionBadge } from "./components/VersionBadge";
 import { Login, Shield } from "./pages/Login";
 import { Connections } from "./pages/Connections";
 import { ConnectionTemplates } from "./pages/ConnectionTemplates";
@@ -71,10 +72,10 @@ export function App() {
     return () => clearInterval(timer);
   }, [user, load]);
 
-  // background check (cached on the server for 30 minutes) to show the "new version" badge
+  // checked on every visit to the overview, like the 3x-ui dashboard (the server caches it for 5 minutes)
   useEffect(() => {
-    if (user) api.checkUpdate().then(setUpdateCheck, () => undefined);
-  }, [user]);
+    if (user && tab === "overview") api.checkUpdate().then(setUpdateCheck, () => undefined);
+  }, [user, tab]);
 
   const refreshOverview = useCallback(() => load(true), [load]);
 
@@ -123,7 +124,10 @@ export function App() {
 
       <main className="content">
         <header className="topbar">
-          <h1>{TABS.find((t) => t.id === tab)?.title}</h1>
+          <div className="topbar-left">
+            <h1>{TABS.find((t) => t.id === tab)?.title}</h1>
+            {tab === "overview" && <VersionBadge check={updateCheck} onUpdate={() => go("system")} />}
+          </div>
           <div className="topbar-right" hidden={tab === "system" || tab === "hosters" || tab === "templates"}>
             {data && <span className="muted small">обновлено {new Date(data.generated_at * 1000).toLocaleTimeString("ru-RU")}</span>}
             <button className="btn" onClick={() => load(true)} disabled={loading}>
