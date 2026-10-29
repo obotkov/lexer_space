@@ -73,7 +73,6 @@ export function System({ check, onCheck }: { check: UpdateCheck | null; onCheck:
   };
 
   const startUpdate = async () => {
-    if (!confirm("Скачать новую версию и перезапустить админку? На минуту-две она будет недоступна; VPN и 3x-ui это не затронет.")) return;
     setError("");
     startedTree.current = version?.tree ?? null;
     try {
@@ -142,6 +141,9 @@ export function System({ check, onCheck }: { check: UpdateCheck | null; onCheck:
               </button>
             )}
           </div>
+          {check?.update_available && version?.updater && !active && (
+            <div className="muted small">Обновление начнётся сразу: админка будет недоступна минуту-две, VPN и 3x-ui это не затронет.</div>
+          )}
           {version && !version.updater && (
             <div className="muted small">
               Обновление из админки не настроено на сервере. Обновите вручную: <code>sudo /opt/lexer_space/vpn-admin/update.sh</code>, после этого кнопка
