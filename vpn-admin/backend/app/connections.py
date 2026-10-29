@@ -71,7 +71,7 @@ KINDS: dict[str, dict[str, Any]] = {
                    "note": "для сетей, где проходит только DNS: трафик идёт DNS-запросами через резолвер; очень медленный; "
                            "нужен домен Cloudflare сервера"},
     "vless_xhttp_cdn": {"title": "VLESS XHTTP через CDN", "protocol": "vless", "net": "tcp", "tls": True, "port": 0,
-                        "remark": "CDN",
+                        "remark": "CDN {cdn}",
                         "note": "для белых списков: клиенты ходят через CDN (Yandex Cloud, VK Cloud, Beget), IP сервера не виден; "
                                 "медленнее остальных"},
 }
@@ -345,6 +345,17 @@ def macros(server: str, region: str = "") -> dict[str, str]:
             "{region}": " ".join(filter(None, [flag, f"{country}, {city}" if rest else country]))}
 
 
+# {cdn}: which cloud serves a CDN connection, as clients see it in the connection's name
+CDN_NAMES = {"yandex": "Yandex", "vk": "VK Cloud", "beget": "Beget"}
+
+
+def item_macros(item: dict[str, Any], values: dict[str, str]) -> dict[str, str]:
+    """The server's macros plus the connection's own: {cdn} for a CDN connection, empty for the rest."""
+    account_id = item.get("cdn_account_id") or (item.get("options") or {}).get("cdn_account_id")
+    account = db.get_cdn_account(account_id) if account_id else None
+    return {**values, "{cdn}": CDN_NAMES.get(account.provider, account.provider) if account else ""}
+
+
 def fill(text: str, values: dict[str, str]) -> str:
     for macro, value in values.items():
         text = text.replace(macro, value)
@@ -354,7 +365,7 @@ def fill(text: str, values: dict[str, str]) -> str:
 def item_public(item: dict[str, Any], values: dict[str, str]) -> dict[str, Any]:
     kind = KINDS.get(item.get("kind", ""), {})
     return {"template_id": item.get("template_id"), "kind": item.get("kind"), "title": kind.get("title", item.get("kind")),
-            "remark": fill(str(item.get("remark", "")), values), "port": item.get("port"),
+            "remark": fill(str(item.get("remark", "")), item_macros(item, values)), "port": item.get("port"),
             "net": kind.get("net", "tcp"), "inbound_id": item.get("inbound_id"), "error": item.get("error", ""),
             "cdn_domain": item.get("cdn_domain", ""), "cdn_address": item.get("cdn_address", "")}
 
@@ -556,7 +567,7 @@ def build(item: dict[str, Any], t: Target, node_id: int) -> dict[str, Any]:
         _xdns_names(sections["streamSettings"], item["xdns_domain"])
         # on 0.0.0.0:53 it would clash with systemd-resolved's stub on 127.0.0.53
         listen = t.ip
-    return {"enable": True, "remark": fill(item["remark"], t.macros), "listen": listen, "port": item["port"],
+    return {"enable": True, "remark": fill(item["remark"], item_macros(item, t.macros)), "listen": listen, "port": item["port"],
             "protocol": KINDS[kind]["protocol"], "settings": json.dumps(sections["settings"]),
             "streamSettings": json.dumps(sections["streamSettings"]), "sniffing": json.dumps(sections["sniffing"]),
             "expiryTime": 0, "total": 0, "nodeId": node_id}
@@ -1015,7 +1026,7 @@ async def rollout(xui: XUIClient, node_id: int, items: list[dict[str, Any]], tar
     for item in items:
         if item.get("inbound_id"):
             continue
-        name = f"{fill(item['remark'], target.macros)} ({KINDS[item['kind']]['title']}, порт {item['port']})"
+        name = f"{fill(item['remark'], item_macros(item, target.macros))} ({KINDS[item['kind']]['title']}, порт {item['port']})"
         try:
             created = await xui.v3_add_inbound(build(item, target, node_id))
             item.update(inbound_id=created.get("id"), error="")
@@ -1030,7 +1041,7 @@ async def rollout(xui: XUIClient, node_id: int, items: list[dict[str, Any]], tar
     try:
         records = chosen_clients(await xui.v3_clients(), users())
         if records:
-            await _attach(xui, [{**i, "remark": fill(i["remark"], target.macros)} for i in fresh], records, log)
+            await _attach(xui, [{**i, "remark": fill(i["remark"], item_macros(i, target.macros))} for i in fresh], records, log)
         else:
             log("Пользователей для подключений не выбрано: подключения созданы пустыми")
     except XUIError as exc:

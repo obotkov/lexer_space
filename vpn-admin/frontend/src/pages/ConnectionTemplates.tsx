@@ -139,6 +139,8 @@ const REMARK_MACROS: [string, string][] = [
   ["{country}", "страна"],
   ["{city}", "город"],
 ];
+// a CDN connection's own: the cloud that serves it
+const CDN_MACRO: [string, string] = ["{cdn}", "облако CDN: Yandex, VK Cloud или Beget"];
 
 export function ConnectionTemplates() {
   const [data, setData] = useState<ConnectionsData | null>(null);
@@ -675,7 +677,7 @@ function TemplateDialog({
           <span id="conn-remark">Название</span>
           <input aria-labelledby="conn-remark" className="input" required maxLength={100} value={remark} onChange={(e) => setRemark(e.target.value)} />
           <div className="conn-macros">
-            {REMARK_MACROS.map(([macro, hint]) => (
+            {(kindId === "vless_xhttp_cdn" ? [...REMARK_MACROS, CDN_MACRO] : REMARK_MACROS).map(([macro, hint]) => (
               <button
                 key={macro}
                 type="button"
@@ -688,7 +690,8 @@ function TemplateDialog({
             ))}
           </div>
           <small className="muted">
-            Макросы заменяются данными сервера при раскатке, так в приложениях видно, какой это сервер: {REMARK_MACROS.map(([m, h]) => `${m} — ${h}`).join(", ")}
+            Макросы заменяются данными сервера при раскатке, так в приложениях видно, какой это сервер:{" "}
+            {(kindId === "vless_xhttp_cdn" ? [...REMARK_MACROS, CDN_MACRO] : REMARK_MACROS).map(([m, h]) => `${m} — ${h}`).join(", ")}
           </small>
         </div>
 
