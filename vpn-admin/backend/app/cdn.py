@@ -425,16 +425,24 @@ class VKCloud:
     async def create_resource(self, domain: str, origin: str, allow_post: bool) -> str:
         """XHTTP must not be cached and must reach the node under the name the client asked for (its inbound
         checks Host); HTTPS is switched on by the Let's Encrypt certificate once it is issued."""
-        methods = ["GET", "HEAD", "OPTIONS"] + (["POST"] if allow_post else [])
-        resource = await self._request("POST", "/resources", json_body={
-            "cname": domain, "origin": origin, "originProtocol": "HTTPS", "active": True, "secondaryHostnames": [],
-            "options": {
-                "edge_cache_settings": {"enabled": True, "value": "0s", "default": "0s"},
-                "browser_cache_settings": {"enabled": True, "value": "0s"},
-                "forward_host_header": {"enabled": True, "value": True},
-                "allowedHttpMethods": {"enabled": True, "value": methods},
-            },
-        })
+        # VK Cloud lets a resource have GET and HEAD only ("some value of allowed_http_methods option is
+        # forbidden" for OPTIONS or POST): what XHTTP needs with uploads in GET headers
+        methods = ["GET", "HEAD"] + (["POST"] if allow_post else [])
+        try:
+            resource = await self._request("POST", "/resources", json_body={
+                "cname": domain, "origin": origin, "originProtocol": "HTTPS", "active": True, "secondaryHostnames": [],
+                "options": {
+                    "edge_cache_settings": {"enabled": True, "value": "0s", "default": "0s"},
+                    "browser_cache_settings": {"enabled": True, "value": "0s"},
+                    "forward_host_header": {"enabled": True, "value": True},
+                    "allowedHttpMethods": {"enabled": True, "value": methods},
+                },
+            })
+        except CDNError as exc:
+            if allow_post and "allowed_http_methods" in str(exc):
+                raise CDNError("VK Cloud не разрешает POST для CDN-ресурса: выберите в шаблоне отправку через GET "
+                               "(«Как клиент отправляет данные»)") from exc
+            raise
         resource_id = (resource or {}).get("id")
         if not resource_id:
             raise CDNError("VK Cloud не вернул ID CDN-ресурса")
