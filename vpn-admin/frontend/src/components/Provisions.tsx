@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ReinstallDialog } from "./ReinstallDialog";
-import { api, type HosterInfo, type HosterProvider, type Provision, type ProvisionCredentials, type ProvisionStep } from "../api";
+import { api, type ConnectionsOffer, type HosterInfo, type HosterProvider, type Provision, type ProvisionCredentials, type ProvisionStep } from "../api";
 
 const STEPS: { id: ProvisionStep; title: string }[] = [
   { id: "create", title: "Заказ сервера" },
@@ -54,6 +54,7 @@ export function Provisions({
   const [creds, setCreds] = useState<Record<number, ProvisionCredentials>>({});
   const [openLog, setOpenLog] = useState<number | null>(null);
   const [reinstalling, setReinstalling] = useState<Provision | null>(null);
+  const [applying, setApplying] = useState<Provision | null>(null);
   const reinstallAccount = reinstalling && accounts.find((a) => a.id === reinstalling.hoster_id);
 
   const act = async (id: number, action: () => Promise<unknown>) => {
@@ -256,8 +257,8 @@ export function Provisions({
                   <button
                     className="btn btn-small"
                     disabled={busy === p.id}
-                    title="Добавить на этот сервер включённые подключения из раздела «Подключения», которых на нём ещё нет"
-                    onClick={() => act(p.id, () => api.applyProvisionConnections(p.id))}
+                    title="Выбрать из включённых подключений раздела «Подключения» те, которых на сервере ещё нет, и добавить их"
+                    onClick={() => setApplying(p)}
                   >
                     {busy === p.id ? "Раскатываю…" : "Раскатать подключения"}
                   </button>
@@ -305,6 +306,17 @@ export function Provisions({
           );
         })}
       </div>
+      {applying && (
+        <ApplyConnectionsDialog
+          job={applying}
+          onClose={() => setApplying(null)}
+          onApply={(ids) => {
+            const job = applying;
+            setApplying(null);
+            act(job.id, () => api.applyProvisionConnections(job.id, ids));
+          }}
+        />
+      )}
       {reinstalling && reinstallAccount && (
         <ReinstallDialog
           job={reinstalling}
@@ -319,5 +331,76 @@ export function Provisions({
         />
       )}
     </>
+  );
+}
+
+const NET_NAMES: Record<string, string> = { tcp: "TCP", udp: "UDP", both: "TCP+UDP" };
+
+/** The enabled templates the server lacks, all ticked: untick the ones it should not get, then go on. */
+function ApplyConnectionsDialog({ job, onClose, onApply }: { job: Provision; onClose: () => void; onApply: (ids: number[]) => void }) {
+  const [offer, setOffer] = useState<ConnectionsOffer | null>(null);
+  const [chosen, setChosen] = useState<number[]>([]);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.provisionConnectionsOffer(job.id).then(
+      (o) => {
+        setOffer(o);
+        setChosen(o.missing.map((c) => c.template_id));
+      },
+      (e) => setError((e as Error).message),
+    );
+  }, [job.id]);
+
+  const toggle = (id: number) => setChosen((c) => (c.includes(id) ? c.filter((x) => x !== id) : [...c, id]));
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-head">
+          <h2>Раскатать подключения на {job.title || job.name}</h2>
+          <button type="button" className="btn btn-small" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        {!offer && !error && <div className="muted small">Смотрю, каких подключений на сервере нет…</div>}
+        {error && <div className="notice notice-bad small">{error}</div>}
+        {offer && offer.missing.length === 0 && (
+          <div className="notice notice-info small">На сервере уже есть все включённые подключения из раздела «Подключения».</div>
+        )}
+        {offer && offer.missing.length > 0 && (
+          <>
+            <div className="muted small">Включённые подключения, которых на сервере ещё нет. Снимите галочку с тех, что ему не нужны.</div>
+            <div className="apply-list">
+              {offer.missing.map((c) => (
+                <label key={c.template_id} className="checkbox apply-row">
+                  <input type="checkbox" checked={chosen.includes(c.template_id)} onChange={() => toggle(c.template_id)} />
+                  <span>
+                    <span className="strong">{c.remark || c.title}</span>
+                    <span className="muted small">
+                      {" "}
+                      — {c.title}, порт {c.port || "случайный"}
+                      {c.net !== "tcp" ? ` (${NET_NAMES[c.net] ?? c.net})` : ""}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </>
+        )}
+        {offer && offer.present.length > 0 && (
+          <div className="muted small">Уже на сервере: {offer.present.map((c) => c.remark || c.title).join(", ")}</div>
+        )}
+        <div className="modal-actions">
+          <span className="spacer" />
+          <button type="button" className="btn" onClick={onClose}>
+            Отмена
+          </button>
+          <button type="button" className="btn btn-primary" disabled={!offer || chosen.length === 0} onClick={() => onApply(chosen)}>
+            Продолжить{offer && offer.missing.length > 0 ? ` (${chosen.length})` : ""}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

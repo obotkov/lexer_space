@@ -938,10 +938,22 @@ async def provisions_reinstall(provision_id: int, body: provision.ReinstallIn):
         raise HTTPException(400, str(exc)) from exc
 
 
-@app.post("/api/provisions/{provision_id}/connections", dependencies=[Depends(require_admin)])
-async def provisions_connections(provision_id: int):
+class ApplyConnectionsIn(BaseModel):
+    template_ids: list[int] | None = None  # None: every enabled template the server lacks
+
+
+@app.get("/api/provisions/{provision_id}/connections", dependencies=[Depends(require_admin)])
+async def provisions_connections_offer(provision_id: int):
     try:
-        return await provision.apply_connections(provision_id)
+        return await provision.connections_offer(provision_id)
+    except provision.ProvisionError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/provisions/{provision_id}/connections", dependencies=[Depends(require_admin)])
+async def provisions_connections(provision_id: int, body: ApplyConnectionsIn | None = None):
+    try:
+        return await provision.apply_connections(provision_id, body.template_ids if body else None)
     except provision.ProvisionError as exc:
         raise HTTPException(400, str(exc)) from exc
 

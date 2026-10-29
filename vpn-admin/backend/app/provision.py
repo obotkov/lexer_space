@@ -1053,8 +1053,8 @@ async def _step_connections(p: db.Provision) -> None:
     await _roll_out(p)
 
 
-async def apply_connections(provision_id: int) -> dict:
-    """Add the enabled templates this node does not have yet; what it has stays untouched."""
+async def _connections_state(provision_id: int) -> tuple[db.Provision, list[dict], list[dict], list[dict]]:
+    """The job, the node's inbounds, the connections it still has and the enabled templates it lacks."""
     p = db.get_provision(provision_id)
     if not p:
         raise ProvisionError("Задание не найдено")
@@ -1069,8 +1069,27 @@ async def apply_connections(provision_id: int) -> dict:
     kept = [c for c in p.connections if c.get("inbound_id") in alive]
     have = {c["template_id"] for c in kept}
     missing = [t for t in connections.snapshot(connections.templates()) if t["template_id"] not in have]
+    return p, existing, kept, missing
+
+
+async def connections_offer(provision_id: int) -> dict:
+    """What «Раскатать подключения» offers: the enabled templates the node lacks, and what it has already."""
+    p, _, kept, missing = await _connections_state(provision_id)
+    values = _target(p).macros
+    return {"missing": [connections.item_public(t, values) for t in missing],
+            "present": [connections.item_public(c, values) for c in kept]}
+
+
+async def apply_connections(provision_id: int, template_ids: list[int] | None = None) -> dict:
+    """Add the enabled templates this node does not have yet (only `template_ids` of them, if given); what it
+    has stays untouched."""
+    p, existing, kept, missing = await _connections_state(provision_id)
     if not missing:
         raise ProvisionError("На сервере уже есть все включённые подключения")
+    if template_ids is not None:
+        missing = [t for t in missing if t["template_id"] in template_ids]
+        if not missing:
+            raise ProvisionError("Не выбрано ни одного подключения")
     taken = _busy_ports(p) | {(i.get("port"), n) for i in existing for n in connections.inbound_nets(i)}
     planned = connections.plan(missing, taken)
     # a CDN connection that did not get its inbound last time keeps what its CDN already has (certificate,

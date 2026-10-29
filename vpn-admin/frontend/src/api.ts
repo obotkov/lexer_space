@@ -759,6 +759,12 @@ export interface ProvisionConnection {
   cdn_address: string;
 }
 
+/** What «Раскатать подключения» offers for a server: enabled templates it lacks, and the ones it has. */
+export interface ConnectionsOffer {
+  missing: ProvisionConnection[];
+  present: ProvisionConnection[];
+}
+
 export type ConnectionOptionValue = string | number | boolean;
 
 /** Sections of an inbound in 3x-ui as a template builds them */
@@ -1017,7 +1023,9 @@ export const api = {
   reinstallProvision: (id: number, body: { in_place: boolean; plan: string; plan_label: string; site_template: string }) =>
     request<Provision>("POST", `/api/provisions/${id}/reinstall`, body),
   deleteProvisionServer: (id: number) => request<Provision>("POST", `/api/provisions/${id}/delete-server`),
-  applyProvisionConnections: (id: number) => request<Provision>("POST", `/api/provisions/${id}/connections`),
+  provisionConnectionsOffer: (id: number) => request<ConnectionsOffer>("GET", `/api/provisions/${id}/connections`),
+  applyProvisionConnections: (id: number, templateIds?: number[]) =>
+    request<Provision>("POST", `/api/provisions/${id}/connections`, templateIds ? { template_ids: templateIds } : undefined),
   connections: () => request<ConnectionsData>("GET", "/api/connections"),
   createConnection: (form: ConnectionTemplateForm) => request<ConnectionTemplate>("POST", "/api/connections", form),
   updateConnection: (id: number, form: ConnectionTemplateForm) => request<ConnectionTemplate>("PUT", `/api/connections/${id}`, form),
