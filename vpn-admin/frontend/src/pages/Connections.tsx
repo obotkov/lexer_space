@@ -2,11 +2,12 @@ import { useMemo, useState } from "react";
 import { api, SUPPORTED_PROTOCOLS, type Node, type Overview } from "../api";
 import { CreateClientDialog } from "../components/CreateClientDialog";
 import { Switch } from "../components/NodeDialog";
-import { Empty, PanelFilter, TrafficBar } from "../components/ui";
+import { Empty, TrafficBar } from "../components/ui";
 import { formatBytes, formatExpiry, formatLimit } from "../format";
 
 export function Connections({ data, onChanged }: { data: Overview; onChanged: () => void }) {
-  const [panelId, setPanelId] = useState(0);
+  // "" or "<panel_id>:<node_id>": a panel's own server or one of its v3 nodes
+  const [server, setServer] = useState("");
   const [addingTo, setAddingTo] = useState<Node | null>(null);
   const [query, setQuery] = useState("");
   // switched here but not yet back in the overview data: key -> the new state
@@ -31,20 +32,36 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
     }
   };
 
+  const serverKey = (n: Node) => `${n.panel_id}:${n.node_id}`;
+  const servers = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const n of data.nodes) if (!seen.has(serverKey(n))) seen.set(serverKey(n), n.node_id ? `${n.server} (${n.panel_name})` : n.server);
+    return [...seen].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [data.nodes]);
+
   const nodes = useMemo(() => {
     const q = query.trim().toLowerCase();
     return data.nodes.filter(
       (n) =>
-        (!panelId || n.panel_id === panelId) &&
-        (!q || [n.remark, n.protocol, String(n.port), n.network].some((v) => v.toLowerCase().includes(q))),
+        (!server || serverKey(n) === server) &&
+        (!q || [n.remark, n.server, n.protocol, String(n.port), n.network].some((v) => v.toLowerCase().includes(q))),
     );
-  }, [data.nodes, panelId, query]);
+  }, [data.nodes, server, query]);
 
   return (
     <>
       <div className="toolbar">
-        <input className="input" placeholder="Поиск: название, протокол, порт" value={query} onChange={(e) => setQuery(e.target.value)} />
-        <PanelFilter panels={data.panels} value={panelId} onChange={setPanelId} />
+        <input className="input" placeholder="Поиск: название, сервер, протокол, порт" value={query} onChange={(e) => setQuery(e.target.value)} />
+        {servers.length > 1 && (
+          <select className="input" value={server} onChange={(e) => setServer(e.target.value)}>
+            <option value="">Все серверы</option>
+            {servers.map(([key, name]) => (
+              <option key={key} value={key}>
+                {name}
+              </option>
+            ))}
+          </select>
+        )}
         <span className="muted">{nodes.length} шт.</span>
       </div>
       {error && <div className="notice notice-bad small">{error}</div>}
@@ -83,7 +100,10 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
                     />
                   </td>
                   <td className="strong">{n.remark || `#${n.id}`}</td>
-                  <td>{n.panel_name}</td>
+                  <td>
+                    {n.server}
+                    {n.node_id > 0 && <div className="muted small">узел панели {n.panel_name}</div>}
+                  </td>
                   <td>
                     <span className="tag">{n.protocol}</span>
                   </td>

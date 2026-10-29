@@ -131,6 +131,10 @@ export interface ChildNode extends XNode {
 export interface Node {
   panel_id: number;
   panel_name: string;
+  /** v3 node hosting the inbound, 0 when it runs on the panel's own server */
+  node_id: number;
+  /** the server the inbound runs on: the node's name, or the panel's for its own inbounds */
+  server: string;
   id: number;
   remark: string;
   protocol: string;

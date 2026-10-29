@@ -227,12 +227,17 @@ def build_overview(fetched: list[dict[str, Any]]) -> dict[str, Any]:
             for inbound_id in r["inbound_ids"]:
                 per_inbound.setdefault(inbound_id, []).append(r)
 
+        # a v3 main panel runs inbounds on its nodes too: name the server that actually hosts each one
+        node_names = {n.get("id"): n.get("name") or f"узел #{n.get('id')}" for n in item["children"]}
         for inbound in item["inbounds"]:
             stream = parse_json_field(inbound.get("streamSettings"))
             attached = per_inbound.get(inbound.get("id"), [])
+            node_id = inbound.get("nodeId") or 0
             nodes.append({
                 "panel_id": panel.id,
                 "panel_name": panel.name,
+                "node_id": node_id,
+                "server": node_names.get(node_id, f"узел #{node_id}") if node_id else panel.name,
                 "id": inbound.get("id"),
                 "remark": inbound.get("remark", ""),
                 "protocol": inbound.get("protocol", ""),

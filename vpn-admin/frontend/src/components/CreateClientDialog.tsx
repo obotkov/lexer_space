@@ -109,7 +109,7 @@ export function CreateClientDialog({
                 <label key={nodeKey(n)} className={`checkbox node-option ${n.enable ? "" : "row-muted"}`}>
                   <input type="checkbox" checked={selected.has(nodeKey(n))} onChange={() => toggle(nodeKey(n))} />
                   <span>
-                    {multiPanel && <span className="muted">{n.panel_name} · </span>}
+                    {(multiPanel || n.node_id > 0) && <span className="muted">{n.server} · </span>}
                     {n.remark || `#${n.id}`} <span className="tag">{n.protocol}</span>
                     <span className="muted small">:{n.port}</span>
                     {!n.enable && <span className="muted small"> (выключен)</span>}
