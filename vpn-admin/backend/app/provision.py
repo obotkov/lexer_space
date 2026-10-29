@@ -460,6 +460,8 @@ docker run --rm --entrypoint /app/x-ui -v /opt/3x-ui/db:/etc/x-ui -v /opt/3x-ui/
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
   stage "Открываю порты в ufw"
   ufw allow {p.port}/tcp{f"; ufw allow {p.sub_port}/tcp" if p.sub_port else ""}{"".join(f"; ufw allow {r}" for r in connections.ufw_rules(p.connections) + p.labels.get("ports", "").split())}
+  # connections rolled out later get random ports from this range, and the admin has no access to the server then
+  ufw allow {connections.PORT_RANGE[0]}:{connections.PORT_RANGE[1]}/tcp; ufw allow {connections.PORT_RANGE[0]}:{connections.PORT_RANGE[1]}/udp
 fi
 {extra}stage "Установка на сервере закончена"
 """
@@ -996,6 +998,7 @@ async def _roll_out(p: db.Provision) -> None:
     await _cdn_names(p)
     await _xdns_names(p)
     _, xui = await nodes.main_panel(p.panel_id)
+    before = {c.get("inbound_id") for c in p.connections if c.get("inbound_id")}
     try:
         await connections.rollout(xui, p.node_id, p.connections, _target(p), lambda m: _log(p, m),
                                   lambda items: _set(p, connections=items))
@@ -1004,6 +1007,42 @@ async def _roll_out(p: db.Provision) -> None:
     finally:
         overview_cache.invalidate()
         probe.kick()  # the new connects get the service client and their first check
+    fresh = [c for c in (db.get_provision(p.id) or p).connections if c.get("inbound_id") and c.get("inbound_id") not in before]
+    task = asyncio.create_task(_check_ports(p, fresh))  # nobody waits for it: the result goes into the job's log
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+PORT_CHECK_WAIT, PORT_CHECK_EVERY = 90, 10  # the node takes a new inbound from the main panel within a minute
+
+
+async def _port_open(host: str, port: int) -> bool:
+    try:
+        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), 5)
+    except (OSError, asyncio.TimeoutError):
+        return False
+    writer.close()
+    return True
+
+
+async def _check_ports(p: db.Provision, items: list[dict]) -> None:
+    """New TCP connections must be reachable from outside (a CDN reaches its source the same way): a port the
+    server's firewall keeps closed is named in the log with the command that opens it."""
+    ports = sorted({c["port"] for c in items if "tcp" in connections.ufw_nets(c["kind"]) and c.get("port")})
+    if not ports or not p.ip:
+        return
+    closed, deadline = ports, time.time() + PORT_CHECK_WAIT
+    while closed and time.time() < deadline:
+        await asyncio.sleep(PORT_CHECK_EVERY)
+        checked = await asyncio.gather(*(_port_open(p.ip, port) for port in closed))
+        closed = [port for port, ok in zip(closed, checked) if not ok]
+    if closed:
+        commands = "; ".join(f"ufw allow {port}/tcp" for port in closed)
+        _log(p, f"Порты {', '.join(map(str, closed))} не отвечают снаружи: скорее всего их закрывает файрвол сервера. "
+                f"Откройте их на сервере: {commands} (на серверах, поставленных до 0.43.0, — один раз "
+                f"ufw allow {connections.PORT_RANGE[0]}:{connections.PORT_RANGE[1]}/tcp и то же для udp)")
+    else:
+        _log(p, f"Порты новых подключений отвечают снаружи: {', '.join(map(str, ports))}")
 
 
 async def _step_connections(p: db.Provision) -> None:

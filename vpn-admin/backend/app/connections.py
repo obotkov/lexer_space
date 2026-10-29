@@ -359,6 +359,10 @@ def item_public(item: dict[str, Any], values: dict[str, str]) -> dict[str, Any]:
             "cdn_domain": item.get("cdn_domain", ""), "cdn_address": item.get("cdn_address", "")}
 
 
+def ufw_nets(kind: str) -> list[str]:
+    return _nets(KINDS[kind]["net"]) if kind in KINDS else []
+
+
 def ufw_rules(items: list[dict[str, Any]]) -> list[str]:
     return [f"{i['port']}/{n}" for i in items for n in _nets(KINDS[i["kind"]]["net"])]
 
