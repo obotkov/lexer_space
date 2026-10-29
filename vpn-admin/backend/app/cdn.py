@@ -432,8 +432,9 @@ class VKCloud:
             resource = await self._request("POST", "/resources", json_body={
                 "cname": domain, "origin": origin, "originProtocol": "HTTPS", "active": True, "secondaryHostnames": [],
                 "options": {
-                    "edge_cache_settings": {"enabled": True, "value": "0s", "default": "0s"},
-                    "browser_cache_settings": {"enabled": True, "value": "0s"},
+                    # "value" is the CDN's own caching time, 0s = none; "default" (the origin's headers) may not
+                    # come with it. Browsers get no setting: Xray's answers are not cached anyway
+                    "edge_cache_settings": {"enabled": True, "value": "0s"},
                     "forward_host_header": {"enabled": True, "value": True},
                     "allowedHttpMethods": {"enabled": True, "value": methods},
                 },
