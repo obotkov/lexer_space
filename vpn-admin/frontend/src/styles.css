@@ -215,7 +215,7 @@ tbody tr:hover { background: var(--bg-hover); }
 .modal h2 { margin: 0; }
 .modal-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
 .field { display: flex; flex-direction: column; gap: 6px; flex: 1; }
-.field > span { color: var(--muted); font-size: 12px; }
+.field > span, .field-head > span { color: var(--muted); font-size: 12px; }
 .field-row { display: flex; gap: 12px; }
 .notice { padding: 10px 12px; border-radius: 8px; margin-bottom: 4px; word-break: break-word; }
 .notice-ok { background: rgba(var(--good-rgb), 0.12); color: var(--good); }
@@ -262,6 +262,7 @@ tbody tr:hover { background: var(--bg-hover); }
   border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg);
 }
 .node-option { color: var(--text); padding: 3px 0; }
+.field-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 /* segmented control */
 .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; align-self: flex-start; }

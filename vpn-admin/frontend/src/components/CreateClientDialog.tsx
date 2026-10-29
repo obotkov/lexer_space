@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, SUPPORTED_PROTOCOLS, type Node, type OpResult, type PanelInfo } from "../api";
 import { DAY_MS, gbToBytes } from "../format";
 import { ResultsNotice } from "./ClientDialog";
@@ -41,6 +41,14 @@ export function CreateClientDialog({
       else next.add(key);
       return next;
     });
+
+  const allSelected = available.length > 0 && available.every((n) => selected.has(nodeKey(n)));
+  const someSelected = !allSelected && available.some((n) => selected.has(nodeKey(n)));
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(available.map(nodeKey)));
+  const allRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (allRef.current) allRef.current.indeterminate = someSelected;
+  }, [someSelected]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -100,7 +108,16 @@ export function CreateClientDialog({
         </label>
 
         <div className="field">
-          <span>Коннекты</span>
+          <div className="field-head">
+            <span>Коннекты</span>
+            {available.length > 1 && (
+              <label className="checkbox small">
+                <input ref={allRef} type="checkbox" checked={allSelected} onChange={toggleAll} />
+                Выбрать все ({selected.size ? `${available.filter((n) => selected.has(nodeKey(n))).length} из ` : ""}
+                {available.length})
+              </label>
+            )}
+          </div>
           {available.length === 0 ? (
             <div className="muted">Нет коннектов с поддерживаемыми протоколами (VLESS, VMess, Trojan, Shadowsocks)</div>
           ) : (
