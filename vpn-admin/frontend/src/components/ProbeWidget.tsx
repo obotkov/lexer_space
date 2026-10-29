@@ -141,8 +141,12 @@ function ProbePanelBlock({ name, error, items }: { name: string; error: string |
   );
 }
 
+const clock = (t: number) => new Date(t * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+
 function ProbeRow({ item: i }: { item: ProbeItem }) {
   const ok = i.status === "ok" && i.ms != null;
+  const failed = i.history.filter((h) => h.ms == null);
+  const last = failed[failed.length - 1];
   return (
     <div className="probe-row">
       <div className="probe-label">
@@ -156,6 +160,12 @@ function ProbeRow({ item: i }: { item: ProbeItem }) {
         {!ok && (
           <div className="error-text small probe-error" title={i.detail || i.error}>
             {i.error}
+          </div>
+        )}
+        {ok && last && (
+          <div className="warn-text small probe-error" title={failed.map((h) => `${clock(h.t)} — ${h.error || "не работал"}`).join("\n")}>
+            За час неудачных {failed.length} из {i.history.length}, последняя в {clock(last.t)}
+            {last.error ? `: ${last.error}` : ""}
           </div>
         )}
       </div>
@@ -186,7 +196,7 @@ function Sparkline({ history }: { history: ProbeItem["history"] }) {
     <svg className="probe-spark" width={SPARK_W} height={SPARK_H} role="img" aria-label={`За час: ${history.length} проверок, неудачных ${failed}`}>
       {history.map((h, n) => {
         const height = h.ms == null ? SPARK_H : Math.max(2, (h.ms / scale) * SPARK_H);
-        const time = new Date(h.t * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+        const time = clock(h.t);
         return (
           <rect
             key={h.t}
@@ -197,7 +207,7 @@ function Sparkline({ history }: { history: ProbeItem["history"] }) {
             height={height}
             rx={1}
           >
-            <title>{`${time} — ${h.ms == null ? "не работал" : `${h.ms} мс`}`}</title>
+            <title>{`${time} — ${h.ms == null ? `не работал${h.error ? `: ${h.error}` : ""}` : `${h.ms} мс`}`}</title>
           </rect>
         );
       })}

@@ -95,7 +95,8 @@ export interface ProbeItem {
   connect_ms?: number;
   error: string;
   detail?: string;
-  history: { t: number; ms: number | null }[];
+  /** the last hour of checks; a failed one has its reason */
+  history: { t: number; ms: number | null; error?: string }[];
 }
 
 export interface ProbePanel {

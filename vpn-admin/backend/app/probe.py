@@ -435,7 +435,10 @@ async def _panel(panel: db.Panel, now: int) -> dict[str, Any]:
         item["hoster"] = {**hosting, "title": _provider_title(hosting["provider"])} if hosting else None
         history = _history.setdefault(item["key"], deque(maxlen=HISTORY))
         if item["status"] in ("ok", "fail"):
-            history.append({"t": now, "ms": item.get("ms")})
+            point = {"t": now, "ms": item.get("ms")}
+            if item["status"] == "fail":  # why it failed, so an unstable connect shows its reasons afterwards
+                point["error"] = (item.get("error") or "")[:200]
+            history.append(point)
         item["history"] = list(history)
     order = {"main": 0, "node": 1}
     items.sort(key=lambda i: (order.get(i.get("server_kind"), 2), i.get("server") or "", i.get("port") or 0))

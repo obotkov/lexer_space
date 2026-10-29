@@ -549,3 +549,5 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .cdn-resources td { vertical-align: top; }
 .cdn-resources .mono { overflow-wrap: anywhere; }
+
+.warn-text { color: var(--warn); }
