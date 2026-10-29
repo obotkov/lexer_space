@@ -544,6 +544,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* a node's 3x-ui behind the latest release */
 .btn-update { margin-top: 4px; background: rgba(var(--warn-rgb), 0.15); color: var(--warn); border-color: transparent; }
 .btn-update:hover:not(:disabled) { background: rgba(var(--warn-rgb), 0.25); }
+/* nodes table: the panel version with its update button under it, centred */
+.col-panel { text-align: center; }
 .node-update-note { max-width: 220px; margin-top: 4px; }
 
 .toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; }

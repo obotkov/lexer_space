@@ -261,7 +261,7 @@ function PanelNodes({
                 <th className="num">CPU</th>
                 <th className="num">Память</th>
                 <th>Xray</th>
-                <th>Панель</th>
+                <th className="col-panel">Панель</th>
                 <th className="num">Аптайм</th>
                 <th className="num">Задержка</th>
                 <th className="num">Онлайн</th>
@@ -295,7 +295,7 @@ function PanelNodes({
                     <td className="num">{n.cpu != null && online ? `${n.cpu.toFixed(1)}%` : "—"}</td>
                     <td className="num">{n.mem != null && online ? `${n.mem.toFixed(1)}%` : "—"}</td>
                     <td>{n.xray_version || "—"}</td>
-                    <td>
+                    <td className="col-panel">
                       {n.panel_version || "—"}
                       <PanelUpdate node={n} latest={latest} started={updating[`${panel.panel_id}-${n.id}`]} busy={busy} onUpdate={() => onUpdate(n)} />
                     </td>
