@@ -215,6 +215,8 @@ _HINTS = [
     # the CDN answered, but its edge could not reach the node: the source port, its TLS or the node itself
     (r"bad status code: ?50[234]", "CDN не достучался до сервера-источника: закрыт порт подключения в файрволе "
                                    "сервера, не работает инбаунд или узел недоступен"),
+    (r"tls: internal error", "CDN не отдал сертификат на имя подключения: у облака он ещё не на всех серверах "
+                             "(сразу после выпуска) или выпуск не удался"),
     (r"i/o timeout|context deadline exceeded|timed? ?out", "нет ответа от сервера (таймаут)"),
     (r"connection refused", "порт закрыт: сервер отклонил подключение"),
     (r"no such host|lookup .* (server misbehaving|no such host)", "адрес сервера не найден в DNS"),

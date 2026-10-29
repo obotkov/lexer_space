@@ -1008,9 +1008,10 @@ async def _roll_out(p: db.Provision) -> None:
         overview_cache.invalidate()
         probe.kick()  # the new connects get the service client and their first check
     fresh = [c for c in (db.get_provision(p.id) or p).connections if c.get("inbound_id") and c.get("inbound_id") not in before]
-    task = asyncio.create_task(_check_ports(p, fresh))  # nobody waits for it: the result goes into the job's log
-    _background.add(task)
-    task.add_done_callback(_background.discard)
+    for check in (_check_ports(p, fresh), _check_cdn_tls(p, fresh)):  # nobody waits: the results go into the log
+        task = asyncio.create_task(check)
+        _background.add(task)
+        task.add_done_callback(_background.discard)
 
 
 PORT_CHECK_WAIT, PORT_CHECK_EVERY = 90, 10  # the node takes a new inbound from the main panel within a minute
@@ -1043,6 +1044,40 @@ async def _check_ports(p: db.Provision, items: list[dict]) -> None:
                 f"ufw allow {connections.PORT_RANGE[0]}:{connections.PORT_RANGE[1]}/tcp и то же для udp)")
     else:
         _log(p, f"Порты новых подключений отвечают снаружи: {', '.join(map(str, ports))}")
+
+
+CDN_TLS_TRIES, CDN_TLS_WAIT, CDN_TLS_EVERY = 10, 30 * 60, 60  # VK Cloud issues its certificate within half an hour
+
+
+async def _tls_ok(host: str, name: str) -> str:
+    """'' if `host`:443 shows a valid certificate for `name`, else why not."""
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, 443, ssl=ssl.create_default_context(), server_hostname=name), 10)
+    except (OSError, ssl.SSLError, asyncio.TimeoutError) as exc:
+        return str(exc) or type(exc).__name__
+    writer.close()
+    return ""
+
+
+async def _check_cdn_tls(p: db.Provision, items: list[dict]) -> None:
+    """A CDN can be up with its certificate on only some of its servers (VK Cloud right after issuing it):
+    connect a few times to its address with the connection's name and say in the log how many get through."""
+    for item in [c for c in items if c["kind"] == "vless_xhttp_cdn" and c.get("cdn_address") and c.get("cdn_domain")]:
+        address, name = item["cdn_address"], item["cdn_domain"]
+        deadline, good, why = time.time() + CDN_TLS_WAIT, 0, ""
+        while True:
+            results = [await _tls_ok(address, name) for _ in range(CDN_TLS_TRIES)]
+            good, why = sum(1 for r in results if not r), next((r for r in results if r), "")
+            if good == CDN_TLS_TRIES or time.time() + CDN_TLS_EVERY > deadline:
+                break
+            await asyncio.sleep(CDN_TLS_EVERY)
+        if good == CDN_TLS_TRIES:
+            _log(p, f"CDN {name}: сертификат отдаётся стабильно ({good} из {CDN_TLS_TRIES} подключений)")
+        else:
+            _log(p, f"CDN {name}: сертификат получили только {good} из {CDN_TLS_TRIES} подключений к {address} "
+                    f"за {CDN_TLS_WAIT // 60} минут ({why[:160]}). Подключение будет работать с перебоями: облако "
+                    "раздало сертификат не на все свои серверы — подождите или напишите в поддержку CDN")
 
 
 async def _step_connections(p: db.Provision) -> None:
