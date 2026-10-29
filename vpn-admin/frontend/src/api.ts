@@ -714,6 +714,10 @@ export interface CdnAccountChecked extends CdnAccount {
   error: string;
   resources: number;
   items: CdnResource[];
+  /** money on the account (Yandex: its billing accounts, VK Cloud: the project, Beget: the account) */
+  balance: { text: string; note: string } | null;
+  /** why there is no balance (no billing role and the like) */
+  balance_error: string;
 }
 
 export interface CdnProvider {

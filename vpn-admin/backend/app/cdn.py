@@ -29,11 +29,13 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from pydantic import BaseModel, Field
 
 from . import db
+from .hosters import _money
 
 YC_IAM_URL = os.getenv("YC_IAM_URL", "https://iam.api.cloud.yandex.net/iam/v1/tokens")
 YC_CDN_URL = os.getenv("YC_CDN_URL", "https://cdn.api.cloud.yandex.net/cdn/v1")
 YC_CM_URL = os.getenv("YC_CM_URL", "https://certificate-manager.api.cloud.yandex.net/certificate-manager/v1")
 YC_OPERATION_URL = os.getenv("YC_OPERATION_URL", "https://operation.api.cloud.yandex.net/operations")
+YC_BILLING_URL = os.getenv("YC_BILLING_URL", "https://billing.api.cloud.yandex.net/billing/v1")
 TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 POLL_EVERY = 15
 CERT_TIMEOUT = 40 * 60  # Let's Encrypt through Certificate Manager: usually minutes, sometimes half an hour
@@ -41,6 +43,8 @@ RESOURCE_TIMEOUT = 20 * 60  # Yandex: "creating a resource can take up to 15 min
 VK_IDENTITY_URL = os.getenv("VK_IDENTITY_URL", "https://msk.cloud.vk.ru/infra/identity/v3")
 VK_CDN_URL = os.getenv("VK_CDN_URL", "")  # empty: the "cdn" endpoint from the token's catalog
 VK_CDN_DEFAULT = "https://msk.cloud.vk.ru/api/cdn/api/v1"
+VK_BILLING_URL = os.getenv("VK_BILLING_URL", "https://msk.cloud.vk.ru/billing/public/v1")
+BEGET_HOSTING_API_URL = os.getenv("BEGET_HOSTING_API_URL", "https://api.beget.com/api")
 BEGET_API_URL = os.getenv("BEGET_API_URL", "https://api.beget.com")
 VK_CERT_WAIT = 3 * 60  # VK Cloud: "issuing can take up to 30 minutes"; it switches HTTPS on by itself
 
@@ -203,6 +207,20 @@ class YandexCloud:
         await self._request("GET", f"{YC_CM_URL}/certificates", params={"folderId": self.folder})
         return {"folder_id": self.folder, "resources": len(items), "items": items}
 
+    async def balance(self) -> dict:
+        """The billing accounts the service account sees; it needs billing.accounts.viewer on one."""
+        try:
+            data = await self._request("GET", f"{YC_BILLING_URL}/billingAccounts")
+        except CDNError as exc:
+            raise CDNError("нет доступа к платёжному аккаунту: выдайте сервисному аккаунту роль "
+                           "billing.accounts.viewer на платёжный аккаунт") from exc
+        accounts = [a for a in data.get("billingAccounts") or [] if isinstance(a, dict)]
+        if not accounts:
+            raise CDNError("сервисному аккаунту не виден ни один платёжный аккаунт: выдайте ему роль "
+                           "billing.accounts.viewer")
+        parts = [_money(float(a.get("balance") or 0), a.get("currency") or "RUB") for a in accounts]
+        return {"text": " · ".join(parts), "note": ", ".join(a.get("name") or a.get("id", "") for a in accounts)}
+
     async def resources(self) -> list[dict]:
         data = await self._request("GET", f"{YC_CDN_URL}/resources", params={"folderId": self.folder, "pageSize": 1000})
         try:
@@ -285,6 +303,7 @@ class VKCloud:
         if not self.project or not self.username or not self.password:
             raise CDNError("Укажите Project ID, логин и пароль VK Cloud")
         self.http = httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": "vpn-admin"})
+        self.pid = self.project
 
     async def close(self) -> None:
         await self.http.aclose()
@@ -307,6 +326,7 @@ class VKCloud:
     async def _token(self) -> tuple[str, str]:
         cached = _vk_tokens.get((self.username, self.project))
         if cached and time.time() < cached[2]:
+            self.pid = cached[3]
             return cached[0], cached[1]
         body = {"auth": {
             "identity": {"methods": ["password"], "password": {"user": {
@@ -333,7 +353,9 @@ class VKCloud:
                     url = next((e["url"] for e in service.get("endpoints") or []
                                 if e.get("interface") == "public" and e.get("url")), "")
             url = url or VK_CDN_DEFAULT
-        _vk_tokens[(self.username, self.project)] = (token, url.rstrip("/"), time.time() + 3000)  # lives ~an hour+
+        # the billing API names a project by its PID (mcs…), which Keystone keeps as the project's name
+        self.pid = str(((resp.json().get("token") or {}).get("project") or {}).get("name") or self.project)
+        _vk_tokens[(self.username, self.project)] = (token, url.rstrip("/"), time.time() + 3000, self.pid)  # ~an hour+
         return token, url.rstrip("/")
 
     async def _request(self, method: str, path: str, json_body: Any = None, ok_missing: bool = False) -> Any:
@@ -379,6 +401,19 @@ class VKCloud:
             origin=", ".join(sources.get(str(r.get("originGroup")), [])) or r.get("originGroup_name"),
             status={"active": "active" if r.get("active", True) else "off"}.get(r.get("status"), r.get("status") or ""),
             https=bool(r.get("sslEnabled")), created_at=r.get("created")) for r in rows if isinstance(r, dict)]
+
+    async def balance(self) -> dict:
+        token, _ = await self._token()
+        try:
+            resp = await self.http.get(f"{VK_BILLING_URL}/projects/{self.pid}/balances/amount", headers={"X-Auth-Token": token})
+        except httpx.HTTPError as exc:
+            raise CDNError(f"биллинг VK Cloud недоступен: {exc}") from exc
+        if resp.status_code >= 400:
+            raise CDNError(f"биллинг VK Cloud не ответил о балансе проекта {self.pid} ({self._message(resp)})")
+        data = resp.json() if resp.content else {}
+        base, bonus = float(data.get("base") or 0), float(data.get("bonus") or 0)
+        text = _money(base, "RUB") + (f" · бонусы {_money(bonus, 'RUB')}" if bonus > 0.005 else "")
+        return {"text": text, "note": f"проект {self.pid}"}
 
     async def address(self) -> str:
         """The account's own CDN name, the one every resource's domain points at (cl-….cdn.msk.vkcs.cloud)."""
@@ -513,6 +548,23 @@ class Beget:
             return resp.json() if resp.content else {}
         except ValueError:
             return {}
+
+    async def balance(self) -> dict:
+        """The account's money, from the hosting API (the cloud one has no method for it)."""
+        try:
+            resp = await self.http.post(f"{BEGET_HOSTING_API_URL}/user/getAccountInfo",
+                                        data={"login": self.login, "passwd": self.password, "output_format": "json"})
+            data = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise CDNError(f"Beget не ответил о балансе: {exc}") from exc
+        answer = data.get("answer") or {}
+        result = answer.get("result") if isinstance(answer, dict) else None
+        if data.get("status") != "success" or answer.get("status") != "success" or not isinstance(result, dict):
+            errors = (answer.get("errors") if isinstance(answer, dict) else None) or data.get("error_text") or data.get("errors")
+            raise CDNError(f"Beget не отдал баланс: {errors or 'вход в API хостинга не разрешён'}")
+        days = result.get("user_days_to_block")
+        return {"text": _money(float(result.get("user_balance") or 0), "RUB"),
+                "note": f"до блокировки {days} дн." if isinstance(days, int) and days < 10000 else ""}
 
     async def _services(self) -> list[dict]:
         data = await self._request("GET", "/v1/cloud", params={"limit": 9999})
@@ -669,13 +721,17 @@ async def check(provider: str, credentials: dict) -> dict:
 
 async def list_all() -> list[dict]:
     async def one(a: db.DnsAccount) -> dict:
-        out = {**public(a), "ok": False, "error": "", "resources": 0, "items": []}
+        out = {**public(a), "ok": False, "error": "", "resources": 0, "items": [], "balance": None, "balance_error": ""}
         try:
             checked = await _with(a, lambda c: c.check())
             owners = _owners(a.id)
             out["items"] = [{**r, "owner": owners.get(r["id"])} for r in checked.get("items") or []]
             out["resources"] = checked["resources"]
             out["ok"] = True
+            try:
+                out["balance"] = await _with(a, lambda c: c.balance())
+            except CDNError as exc:  # the CDN works without it: the card says why there is no balance
+                out["balance_error"] = str(exc)
         except CDNError as exc:
             out["error"] = str(exc)
         return out

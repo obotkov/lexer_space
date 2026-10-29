@@ -76,6 +76,11 @@ export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChan
                 ) : (
                   <span className="badge badge-expired">Ошибка</span>
                 )}
+                {a.balance && (
+                  <span className="badge badge-disabled" title={["Баланс по данным API облака", a.balance.note].filter(Boolean).join(": ")}>
+                    {a.balance.text}
+                  </span>
+                )}
                 <button className="btn btn-small" onClick={() => setEditing({ provider: a.provider, account: a })}>
                   Изменить
                 </button>
@@ -85,6 +90,7 @@ export function CdnAccounts({ data, onChanged }: { data: CdnAccountsData; onChan
               </div>
             </div>
             {!a.ok && <div className="error-text small hoster-error">{a.error}</div>}
+            {a.ok && a.balance_error && <div className="muted small">Баланс не показан: {a.balance_error}</div>}
             {a.ok && a.items.length === 0 && <div className="muted small">CDN-ресурсов пока нет.</div>}
             {a.items.length > 0 && <CdnResources items={a.items} />}
           </section>
