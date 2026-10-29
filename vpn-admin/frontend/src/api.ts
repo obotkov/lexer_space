@@ -67,6 +67,10 @@ export interface PingTarget {
   /** latency the main panel itself measures to this node (its heartbeat) */
   panel_ms: number | null;
   error: string;
+  /** the server's own 3x-ui panel */
+  url: string;
+  /** the hosting account the server's IP belongs to */
+  hoster: { id: number; name: string; provider: string; title: string } | null;
 }
 
 /** One connect checked through Xray-core with the admin's service client. */

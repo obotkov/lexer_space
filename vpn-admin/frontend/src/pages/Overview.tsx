@@ -76,7 +76,7 @@ export function Overview({ data, onGoServers }: { data: OverviewData; onGoServer
       <div className="overview-widgets">
         <section className="overview-widget">
           <h2 className="section-title">Пинг до серверов</h2>
-          <PingWidget multiPanel={data.panels.length > 1} />
+          <PingWidget />
         </section>
 
         {children.length > 0 && (

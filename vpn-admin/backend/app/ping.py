@@ -15,6 +15,7 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
+from . import probe
 from .aggregator import overview_cache
 
 COUNT = 4
@@ -140,6 +141,25 @@ async def _measure(target: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _node_url(node: dict[str, Any]) -> str:
+    """The node's own 3x-ui panel, as the main panel reaches it."""
+    port = f":{node['port']}" if node.get("port") else ""
+    path = "/" + (node.get("base_path") or "").strip("/")
+    return f"{node.get('scheme') or 'https'}://{node['address']}{port}{path.rstrip('/')}/"
+
+
+async def _with_hosting(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The hosting account each server's IP belongs to, as the connection check finds it."""
+    try:
+        by_ip = await probe.hosting_by_ip()
+    except Exception:  # noqa: BLE001 - the ping is shown without the hostings
+        by_ip = {}
+    for r in results:
+        hosting = by_ip.get(r["ip"])
+        r["hoster"] = {**hosting, "title": probe.provider_title(hosting["provider"])} if hosting else None
+    return results
+
+
 def _targets(overview: dict[str, Any]) -> list[dict[str, Any]]:
     targets = []
     for panel in overview["panels"]:
@@ -147,11 +167,11 @@ def _targets(overview: dict[str, Any]) -> list[dict[str, Any]]:
         if url.hostname:
             targets.append({"kind": "main", "panel": panel["name"], "name": panel["name"], "host": url.hostname,
                             "port": url.port or (443 if url.scheme == "https" else 80), "panel_ms": None,
-                            "enable": True})
+                            "enable": True, "url": panel["url"]})
         for node in panel.get("children") or []:
             if node.get("address"):
                 targets.append({"kind": "node", "panel": panel["name"], "name": node["name"], "host": node["address"],
-                                "port": node.get("port") or 0, "enable": node.get("enable", True),
+                                "port": node.get("port") or 0, "enable": node.get("enable", True), "url": _node_url(node),
                                 # the main panel's own heartbeat latency to this node, to compare
                                 "panel_ms": node.get("latency_ms") if node.get("status") == "online" else None})
     return targets
@@ -163,5 +183,6 @@ async def ping_all(force: bool = False) -> dict[str, Any]:
             return _cache["data"]
         targets = _targets(await overview_cache.get())
         results = await asyncio.gather(*(_measure(t) for t in targets))
+        results = await _with_hosting(list(results))
         _cache.update(at=time.time(), data={"checked_at": int(time.time()), "targets": list(results)})
         return _cache["data"]

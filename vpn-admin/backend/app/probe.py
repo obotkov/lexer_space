@@ -330,7 +330,7 @@ async def _ip(host: str) -> str:
     return ip
 
 
-async def _hosting_by_ip() -> dict[str, dict[str, Any]]:
+async def hosting_by_ip() -> dict[str, dict[str, Any]]:
     """IP -> hosting account, from the hostings' server lists, and from the created servers for the rest."""
     if time.monotonic() - _hosting["at"] >= WHERE_TTL:
         by_ip: dict[str, dict[str, Any]] = {}
@@ -351,7 +351,7 @@ async def _hosting_by_ip() -> dict[str, dict[str, Any]]:
     return by_ip
 
 
-def _provider_title(provider: str) -> str:
+def provider_title(provider: str) -> str:
     return hosters.PROVIDERS.get(provider, {}).get("title", provider)
 
 
@@ -429,12 +429,12 @@ async def _panel(panel: db.Panel, now: int) -> dict[str, Any]:
 
     hosts = sorted({i.get("server_host") or "" for i in items} - {""})
     ips = dict(zip(hosts, await asyncio.gather(*(_ip(h) for h in hosts))))
-    by_ip = await _hosting_by_ip()
+    by_ip = await hosting_by_ip()
     for item in items:
         ip = ips.get(item.pop("server_host", "") or "", "")
         hosting = by_ip.get(ip)
         item["server_ip"] = ip
-        item["hoster"] = {**hosting, "title": _provider_title(hosting["provider"])} if hosting else None
+        item["hoster"] = {**hosting, "title": provider_title(hosting["provider"])} if hosting else None
         history = _history.setdefault(item["key"], deque(maxlen=HISTORY))
         if item["status"] in ("ok", "fail"):
             point = {"t": now, "ms": item.get("ms")}

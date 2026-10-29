@@ -6,7 +6,7 @@ const REFRESH_MS = 30_000;
 const tone = (ms: number) => (ms < 80 ? "good" : ms < 200 ? "warn" : "bad");
 
 /** Ping from the admin's own server to each main panel and its nodes, refreshed while the page is open. */
-export function PingWidget({ multiPanel }: { multiPanel: boolean }) {
+export function PingWidget() {
   const [data, setData] = useState<PingResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -50,24 +50,51 @@ export function PingWidget({ multiPanel }: { multiPanel: boolean }) {
       {data && targets.length === 0 && <div className="muted small">Нет серверов с адресом для проверки.</div>}
       <div className="ping-rows">
         {targets.map((t, i) => (
-          <PingRow key={`${t.panel}-${t.kind}-${t.name}-${i}`} target={t} scale={scale} multiPanel={multiPanel} />
+          <PingRow key={`${t.panel}-${t.kind}-${t.name}-${i}`} target={t} scale={scale} />
         ))}
       </div>
     </div>
   );
 }
 
-function PingRow({ target: t, scale, multiPanel }: { target: PingTarget; scale: number; multiPanel: boolean }) {
-  const label = t.kind === "node" && multiPanel ? `${t.panel} › ${t.name}` : t.name;
+function PingRow({ target: t, scale }: { target: PingTarget; scale: number }) {
+  // main panel › hosting › server, then a line with the link to the server's panel and its IP
+  const label = [t.kind === "node" ? t.panel : "", t.hoster ? t.hoster.title : "", t.name].filter(Boolean).join(" › ");
   return (
     <div className={`ping-row ${t.enable ? "" : "row-muted"}`}>
       <div className="ping-label">
         <div className="ping-name" title={label}>
-          <span className="strong">{label}</span>{" "}
+          {t.kind === "node" && (
+            <>
+              <span className="strong">{t.panel}</span>
+              <span className="probe-sep">›</span>
+            </>
+          )}
+          {t.hoster && (
+            <>
+              <span className={`provider-badge provider-${t.hoster.provider}`} title={`Хостинг: ${t.hoster.name}`}>
+                {t.hoster.title}
+              </span>
+              <span className="probe-sep">›</span>
+            </>
+          )}
+          <span className="strong">{t.name}</span>
           <span className={`badge ${t.kind === "main" ? "badge-main" : "badge-node"}`}>{t.kind === "main" ? "основной" : "узел"}</span>
         </div>
-        <div className="muted small mono ping-host" title={t.ip && t.ip !== t.host ? `${t.host} → ${t.ip}` : t.host}>
-          {t.host}
+        <div className="muted small mono ping-host">
+          {t.url ? (
+            <a href={t.url} target="_blank" rel="noreferrer" title={`Открыть панель 3x-ui: ${t.url}`}>
+              {t.host}
+            </a>
+          ) : (
+            t.host
+          )}
+          {t.ip && t.ip !== t.host && (
+            <>
+              <span className="probe-sep"> › </span>
+              {t.ip}
+            </>
+          )}
         </div>
       </div>
       <div className="ping-track" title={t.min_ms != null ? `мин ${t.min_ms} · макс ${t.max_ms} мс` : ""}>
