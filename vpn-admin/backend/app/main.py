@@ -244,6 +244,20 @@ async def inbounds_enable(body: InboundEnableIn):
     return {"ok": True}
 
 
+@app.delete("/api/inbounds/{panel_id}/{inbound_id}", dependencies=[Depends(require_admin)])
+async def inbounds_delete(panel_id: int, inbound_id: int):
+    """Delete a connect; a node's connect goes through its main panel, which removes it from the node."""
+    panel = db.get_panel(panel_id)
+    if not panel:
+        raise HTTPException(404, "Сервер не найден")
+    try:
+        await (await pool.get(panel)).delete_inbound(inbound_id)
+    except XUIError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    overview_cache.invalidate()
+    return {"ok": True}
+
+
 # ---------- nodes (remote 3x-ui servers of a main v3 panel) ----------
 
 class NodeCreateIn(nodes.NodeIn):

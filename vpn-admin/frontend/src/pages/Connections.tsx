@@ -32,6 +32,31 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
     }
   };
 
+  const remove = async (n: Node) => {
+    const key = `${n.panel_id}-${n.id}`;
+    const v3 = data.panels.find((p) => p.id === n.panel_id)?.api_version === "v3";
+    const clients = !n.clients
+      ? "Клиентов в нём нет."
+      : v3
+        ? `Клиенты (${n.clients}) останутся, но этот коннект пропадёт из их подписок.`
+        : `Его клиенты (${n.clients}) удалятся вместе с ним.`;
+    if (!confirm(`Удалить коннект «${n.remark || `#${n.id}`}» на сервере ${n.server}? ${clients} Отменить нельзя.`)) return;
+    setPending((p) => ({ ...p, [key]: n.enable }));
+    setError("");
+    try {
+      await api.deleteInbound(n.panel_id, n.id);
+      await onChanged();
+    } catch (e) {
+      setError(`«${n.remark || `#${n.id}`}»: ${(e as Error).message}`);
+    } finally {
+      setPending((p) => {
+        const next = { ...p };
+        delete next[key];
+        return next;
+      });
+    }
+  };
+
   const serverKey = (n: Node) => `${n.panel_id}:${n.node_id}`;
   const servers = useMemo(() => {
     const seen = new Map<string, string>();
@@ -120,11 +145,16 @@ export function Connections({ data, onChanged }: { data: Overview; onChanged: ()
                   </td>
                   <td className="small">{formatExpiry(n.expiry_time)}</td>
                   <td>
-                    {SUPPORTED_PROTOCOLS.includes(n.protocol) && (
-                      <button className="btn btn-small" onClick={() => setAddingTo(n)}>
-                        + Клиент
+                    <div className="row-actions">
+                      {SUPPORTED_PROTOCOLS.includes(n.protocol) && (
+                        <button className="btn btn-small" onClick={() => setAddingTo(n)}>
+                          + Клиент
+                        </button>
+                      )}
+                      <button className="btn btn-small btn-danger" onClick={() => remove(n)} disabled={key in pending} title="Удалить коннект">
+                        Удалить
                       </button>
-                    )}
+                    </div>
                   </td>
                 </tr>
                 );

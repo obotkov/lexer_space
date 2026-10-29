@@ -973,6 +973,7 @@ export const api = {
   logout: () => request("POST", "/api/auth/logout"),
   setInboundEnable: (panelId: number, inboundId: number, enable: boolean) =>
     request<{ ok: boolean }>("POST", "/api/inbounds/enable", { panel_id: panelId, inbound_id: inboundId, enable }),
+  deleteInbound: (panelId: number, inboundId: number) => request<{ ok: boolean }>("DELETE", `/api/inbounds/${panelId}/${inboundId}`),
   netload: () => request<NetLoad>("GET", "/api/netload"),
   probe: () => request<ProbeResult>("GET", "/api/probe"),
   probeRun: () => request<ProbeResult>("POST", "/api/probe/run"),
