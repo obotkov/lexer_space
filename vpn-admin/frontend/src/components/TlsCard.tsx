@@ -93,7 +93,7 @@ export function TlsCard() {
   const showForm = editing || !status.enabled || !status.active;
 
   return (
-    <div className="card card-wide">
+    <div className="card">
       <div className="card-head">
         <div className="strong">HTTPS (Let's Encrypt)</div>
         {status.active ? (
@@ -166,7 +166,7 @@ export function TlsCard() {
               />
             </label>
             <label className="field">
-              <span>Email для уведомлений (необязательно)</span>
+              <span>Email (необязательно)</span>
               <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
             </label>
           </div>
