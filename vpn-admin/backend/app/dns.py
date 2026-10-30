@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field
 
-from . import db
+from . import db, egress
 from .neterrors import describe
 
 CF_API_URL = os.getenv("CF_API_URL", "https://api.cloudflare.com/client/v4")
@@ -47,7 +47,7 @@ class Cloudflare:
         token = token.strip()
         if not token:
             raise DNSError("Укажите API-токен Cloudflare")
-        self.http = httpx.AsyncClient(base_url=CF_API_URL, timeout=TIMEOUT,
+        self.http = httpx.AsyncClient(base_url=CF_API_URL, timeout=TIMEOUT, proxy=egress.proxy(),
                                       headers={"Authorization": f"Bearer {token}", "User-Agent": "vpn-admin"})
 
     async def close(self) -> None:
@@ -58,7 +58,7 @@ class Cloudflare:
         try:
             resp = await self.http.request(method, path, params=params, json=json)
         except httpx.HTTPError as exc:
-            raise DNSError(f"Cloudflare недоступен: {describe(exc)}") from exc
+            raise DNSError(f"Cloudflare недоступен: {describe(exc)}{egress.note()}") from exc
         try:
             data = resp.json()
         except ValueError:

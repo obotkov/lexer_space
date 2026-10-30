@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import (backup, cdn, clients, connections, db, dns, hosters, netload, nodes, passkeys, ping, probe, provision,
+from . import (backup, cdn, clients, connections, db, dns, egress, hosters, netload, nodes, passkeys, ping, probe, provision,
                site, system, tls)
 from .aggregator import overview_cache, pool
 from .config import settings
@@ -35,11 +35,14 @@ async def lifespan(_: FastAPI):
     renewal = asyncio.create_task(tls.renewal_loop())
     sampler = asyncio.create_task(netload.loop())
     checks = asyncio.create_task(probe.loop())
+    route = asyncio.create_task(egress.loop())
     provision.resume_all()
     yield
     renewal.cancel()
     sampler.cancel()
     checks.cancel()
+    route.cancel()
+    await egress.shutdown()
     await pool.close_all()
 
 
@@ -157,6 +160,30 @@ async def passkeys_delete(passkey_id: int):
     if not db.delete_passkey(passkey_id):
         raise HTTPException(404, "Ключ не найден")
     return {"ok": True}
+
+
+# ---------- outgoing route ----------
+
+class EgressIn(BaseModel):
+    panel_id: int = 0
+    inbound_id: int = 0  # 0: no route
+
+
+@app.get("/api/egress", dependencies=[Depends(require_admin)])
+async def egress_view():
+    return egress.view()
+
+
+@app.put("/api/egress", dependencies=[Depends(require_admin)])
+async def egress_choose(body: EgressIn):
+    await egress.choose(body.panel_id, body.inbound_id)
+    hosters.invalidate()
+    return egress.view()
+
+
+@app.post("/api/egress/check", dependencies=[Depends(require_admin)])
+async def egress_check():
+    return {"results": await egress.check()}
 
 
 # ---------- 3x-ui panels ----------

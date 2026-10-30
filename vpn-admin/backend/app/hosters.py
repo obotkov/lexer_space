@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field
 
-from . import db
+from . import db, egress
 from .neterrors import describe
 
 CACHE_TTL = 60
@@ -1465,7 +1465,7 @@ class NetGrid:
         if not token:
             raise HosterError("Укажите API-ключ NetGrid")
         self.user_key = credentials.get("ssh_public_key", "").strip()
-        self.http = httpx.AsyncClient(base_url=NETGRID_API_URL, timeout=TIMEOUT, headers={
+        self.http = httpx.AsyncClient(base_url=NETGRID_API_URL, timeout=TIMEOUT, proxy=egress.proxy(), headers={
             "Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": "vpn-admin"})
 
     async def close(self) -> None:
@@ -1475,7 +1475,7 @@ class NetGrid:
         try:
             resp = await self.http.request(method, path, params=params, json=json)
         except httpx.HTTPError as exc:
-            raise HosterError(f"NetGrid недоступен: {describe(exc)}") from exc
+            raise HosterError(f"NetGrid недоступен: {describe(exc)}{egress.note()}") from exc
         try:
             data = resp.json() if resp.content else {}
         except ValueError:

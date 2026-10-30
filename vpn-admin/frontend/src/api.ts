@@ -49,6 +49,34 @@ export interface NetLoad {
 }
 
 /** Ping from the admin's own server to a main panel or a node. */
+export interface EgressOption {
+  panel_id: number;
+  inbound_id: number;
+  remark: string;
+  server: string;
+  /** the latest connection check */
+  status: "ok" | "fail";
+  ms: number | null;
+}
+
+export interface EgressRoute {
+  selected: { panel_id: number; inbound_id: number } | null;
+  running: boolean;
+  error: string;
+  remark: string;
+  server: string;
+  started_at: number;
+  options: EgressOption[];
+}
+
+export interface EgressCheck {
+  name: string;
+  ok: boolean;
+  status?: number;
+  ms?: number;
+  error?: string;
+}
+
 export interface Passkey {
   id: number;
   name: string;
@@ -991,6 +1019,9 @@ export const api = {
   login: (username: string, password: string) =>
     request<{ username: string }>("POST", "/api/auth/login", { username, password }),
   logout: () => request("POST", "/api/auth/logout"),
+  egress: () => request<EgressRoute>("GET", "/api/egress"),
+  setEgress: (panelId: number, inboundId: number) => request<EgressRoute>("PUT", "/api/egress", { panel_id: panelId, inbound_id: inboundId }),
+  checkEgress: () => request<{ results: EgressCheck[] }>("POST", "/api/egress/check"),
   passkeyAvailable: () => request<{ available: boolean }>("GET", "/api/auth/passkey"),
   passkeyLoginOptions: () => request<PasskeyOptions>("POST", "/api/auth/passkey/options"),
   passkeyLogin: (challengeId: string, credential: unknown) =>

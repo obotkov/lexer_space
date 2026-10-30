@@ -140,10 +140,11 @@ def _free_ports(count: int) -> list[int]:
             s.close()
 
 
-def _config(links: list[Link], ports: list[int]) -> dict[str, Any]:
+def _config(links: list[Link], ports: list[int], accounts: list[dict[str, str]] | None = None) -> dict[str, Any]:
     inbounds, outbounds, rules = [], [{"tag": "block", "protocol": "blackhole"}], []
+    settings = {"accounts": accounts} if accounts else {}
     for n, (link, port) in enumerate(zip(links, ports)):
-        inbounds.append({"tag": f"in-{n}", "listen": "127.0.0.1", "port": port, "protocol": "http", "settings": {}})
+        inbounds.append({"tag": f"in-{n}", "listen": "127.0.0.1", "port": port, "protocol": "http", "settings": settings})
         outbounds.append({"tag": f"out-{n}", **link.outbound})
         rules.append({"type": "field", "inboundTag": [f"in-{n}"], "outboundTag": f"out-{n}"})
     return {"log": {"loglevel": "info"}, "inbounds": inbounds, "outbounds": outbounds,
@@ -151,11 +152,12 @@ def _config(links: list[Link], ports: list[int]) -> dict[str, Any]:
 
 
 class Xray:
-    def __init__(self, links: list[Link]):
+    def __init__(self, links: list[Link], accounts: list[dict[str, str]] | None = None):
         self.links = links
+        self.accounts = accounts
         self.ports = _free_ports(len(links))
         self.proc: asyncio.subprocess.Process | None = None
-        self.lines: list[str] = []
+        self.lines: deque[str] = deque(maxlen=20000)  # one of them lives as long as the admin (egress)
         self._reader: asyncio.Task | None = None
 
     async def start(self) -> str | None:
@@ -163,14 +165,14 @@ class Xray:
         self.proc = await asyncio.create_subprocess_exec(
             XRAY, "run", "-c", "stdin:", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT)
-        self.proc.stdin.write(json.dumps(_config(self.links, self.ports)).encode())
+        self.proc.stdin.write(json.dumps(_config(self.links, self.ports, self.accounts)).encode())
         self.proc.stdin.close()
         self._reader = asyncio.create_task(self._read())
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             if self.proc.returncode is not None:
                 await self._reader
-                return _start_error(self.lines)
+                return _start_error(list(self.lines))
             if all(_listening(p) for p in self.ports):
                 return None
             await asyncio.sleep(0.05)
