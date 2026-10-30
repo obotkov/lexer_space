@@ -14,6 +14,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from . import db
+from .neterrors import describe
 
 CF_API_URL = os.getenv("CF_API_URL", "https://api.cloudflare.com/client/v4")
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
@@ -57,7 +58,7 @@ class Cloudflare:
         try:
             resp = await self.http.request(method, path, params=params, json=json)
         except httpx.HTTPError as exc:
-            raise DNSError(f"Cloudflare недоступен: {exc}") from exc
+            raise DNSError(f"Cloudflare недоступен: {describe(exc)}") from exc
         try:
             data = resp.json()
         except ValueError:

@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 
 from .config import settings
+from .neterrors import describe
 
 VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
 REQUEST_FILE = settings.data_dir / "update.request"
@@ -64,7 +65,7 @@ class UpdateChecker:
         try:
             result.update(await self._fetch_latest(current))
         except (httpx.HTTPError, UpdateError, ValueError, KeyError) as exc:
-            result["error"] = f"Не удалось проверить обновления: {exc}"
+            result["error"] = f"Не удалось проверить обновления: {describe(exc)}"
         self._cache, self._at = result, time.time()
         return result
 

@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 
 from . import db
 from .hosters import _money
+from .neterrors import describe
 
 YC_IAM_URL = os.getenv("YC_IAM_URL", "https://iam.api.cloud.yandex.net/iam/v1/tokens")
 YC_CDN_URL = os.getenv("YC_CDN_URL", "https://cdn.api.cloud.yandex.net/cdn/v1")
@@ -158,7 +159,7 @@ class YandexCloud:
         try:
             resp = await self.http.post(YC_IAM_URL, json={"jwt": self._jwt()})
         except httpx.HTTPError as exc:
-            raise CDNError(f"Yandex Cloud недоступен: {exc}") from exc
+            raise CDNError(f"Yandex Cloud недоступен: {describe(exc)}") from exc
         if resp.status_code >= 400:
             raise CDNError(f"Yandex Cloud не выдал IAM-токен по ключу ({self._message(resp)}): проверьте, что ключ "
                            "не удалён и сервисный аккаунт существует")
@@ -179,7 +180,7 @@ class YandexCloud:
         try:
             resp = await self.http.request(method, url, params=params, json=json_body, headers=headers)
         except httpx.HTTPError as exc:
-            raise CDNError(f"Yandex Cloud недоступен: {exc}") from exc
+            raise CDNError(f"Yandex Cloud недоступен: {describe(exc)}") from exc
         if resp.status_code == 403:
             raise CDNError(f"Yandex Cloud: у сервисного аккаунта нет прав ({self._message(resp)}). Нужны роли "
                            "cdn.editor и certificate-manager.editor на каталог")
@@ -335,7 +336,7 @@ class VKCloud:
         try:
             resp = await self.http.post(f"{VK_IDENTITY_URL.rstrip('/')}/auth/tokens", json=body)
         except httpx.HTTPError as exc:
-            raise CDNError(f"VK Cloud недоступен: {exc}") from exc
+            raise CDNError(f"VK Cloud недоступен: {describe(exc)}") from exc
         if resp.status_code == 401:
             raise CDNError("VK Cloud не пустил: неверный логин или пароль, либо в проекте не включён доступ по API")
         if resp.status_code in (403, 404):
@@ -364,7 +365,7 @@ class VKCloud:
             resp = await self.http.request(method, f"{base}/projects/{self.project}{path}", json=json_body,
                                            headers={"X-Auth-Token": token})
         except httpx.HTTPError as exc:
-            raise CDNError(f"VK Cloud недоступен: {exc}") from exc
+            raise CDNError(f"VK Cloud недоступен: {describe(exc)}") from exc
         if resp.status_code == 401:
             _vk_tokens.pop((self.username, self.project), None)
             raise CDNError("VK Cloud: токен не принят, повторите")
@@ -407,7 +408,7 @@ class VKCloud:
         try:
             resp = await self.http.get(f"{VK_BILLING_URL}/projects/{self.pid}/balances/amount", headers={"X-Auth-Token": token})
         except httpx.HTTPError as exc:
-            raise CDNError(f"биллинг VK Cloud недоступен: {exc}") from exc
+            raise CDNError(f"биллинг VK Cloud недоступен: {describe(exc)}") from exc
         if resp.status_code >= 400:
             raise CDNError(f"биллинг VK Cloud не ответил о балансе проекта {self.pid} ({self._message(resp)})")
         data = resp.json() if resp.content else {}
@@ -528,7 +529,7 @@ class Beget:
             resp = await self.http.post(f"{BEGET_API_URL}/v1/auth",
                                         json={"login": self.login, "password": self.password, "saveMe": True})
         except httpx.HTTPError as exc:
-            raise CDNError(f"Beget недоступен: {exc}") from exc
+            raise CDNError(f"Beget недоступен: {describe(exc)}") from exc
         data = resp.json() if resp.content and "json" in resp.headers.get("content-type", "") else {}
         error = str(data.get("error") or "")
         if error.startswith("CODE_REQUIRED") or error == "INCORRECT_CODE":
@@ -545,7 +546,7 @@ class Beget:
             resp = await self.http.request(method, f"{BEGET_API_URL}{path}", json=json_body, params=params,
                                            headers={"Authorization": f"Bearer {await self._token()}"})
         except httpx.HTTPError as exc:
-            raise CDNError(f"Beget недоступен: {exc}") from exc
+            raise CDNError(f"Beget недоступен: {describe(exc)}") from exc
         if resp.status_code == 401 and retry:  # the year-long token was revoked: log in again
             _beget_tokens.pop(self.login, None)
             return await self._request(method, path, json_body, params, retry=False)
@@ -565,7 +566,7 @@ class Beget:
                                         data={"login": self.login, "passwd": self.password, "output_format": "json"})
             data = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
-            raise CDNError(f"Beget не ответил о балансе: {exc}") from exc
+            raise CDNError(f"Beget не ответил о балансе: {describe(exc)}") from exc
         answer = data.get("answer") or {}
         result = answer.get("result") if isinstance(answer, dict) else None
         if data.get("status") != "success" or answer.get("status") != "success" or not isinstance(result, dict):

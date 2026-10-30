@@ -22,6 +22,8 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
+from .neterrors import describe
+
 
 class XUIError(Exception):
     pass
@@ -104,7 +106,7 @@ class XUIClient:
             resp = await self._http.post("/login", data={"username": self.username, "password": self.password},
                                          headers=headers)
         except httpx.HTTPError as exc:
-            raise XUIError(f"Панель недоступна: {exc.__class__.__name__}: {exc}") from exc
+            raise XUIError(f"Панель недоступна: {describe(exc)}") from exc
         data = self._parse(resp)
         if data is None:
             raise XUIError(f"Неожиданный ответ на /login (HTTP {resp.status_code}). Проверьте URL и webBasePath")
@@ -135,7 +137,7 @@ class XUIClient:
             try:
                 resp = await self._http.request(method, path, headers=headers, **kwargs)
             except httpx.HTTPError as exc:
-                raise XUIError(f"Панель недоступна: {exc.__class__.__name__}: {exc}") from exc
+                raise XUIError(f"Панель недоступна: {describe(exc)}") from exc
             if self.api_token and resp.status_code == 401:
                 raise XUIError(TOKEN_REJECTED)
             if resp.status_code == 403 and self._csrf and attempt == 0:

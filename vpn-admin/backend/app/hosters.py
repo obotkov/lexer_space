@@ -19,6 +19,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from . import db
+from .neterrors import describe
 
 CACHE_TTL = 60
 HOURS_PER_MONTH = 730  # how hosting companies turn an hourly rate into a month
@@ -342,7 +343,7 @@ class DigitalOcean:
         try:
             resp = await self.http.request(method, path, params=params, json=json)
         except httpx.HTTPError as exc:
-            raise HosterError(f"DigitalOcean недоступен: {exc}") from exc
+            raise HosterError(f"DigitalOcean недоступен: {describe(exc)}") from exc
         if resp.status_code >= 400:
             raise _http_error(resp, self.title)
         return resp.json() if resp.content else {}
@@ -486,7 +487,7 @@ class OVHcloud:
         try:
             return await self.http.request(method, url, headers=headers, content=content or None)
         except httpx.HTTPError as exc:
-            raise HosterError(f"OVHcloud недоступен: {exc}") from exc
+            raise HosterError(f"OVHcloud недоступен: {describe(exc)}") from exc
 
     async def _timestamp(self) -> int:
         # signatures carry the API server's clock, so local clock skew does not break them
@@ -813,7 +814,7 @@ class VDSina:
         try:
             resp = await self.http.request(method, path, json=json)
         except httpx.HTTPError as exc:
-            raise HosterError(f"VDSina недоступна: {exc}") from exc
+            raise HosterError(f"VDSina недоступна: {describe(exc)}") from exc
         try:
             data = resp.json()
         except ValueError:
@@ -1046,7 +1047,7 @@ class UpCloud:
         try:
             resp = await self.http.request(method, path, params=params, json=json)
         except httpx.HTTPError as exc:
-            raise HosterError(f"UpCloud недоступен: {exc}") from exc
+            raise HosterError(f"UpCloud недоступен: {describe(exc)}") from exc
         if resp.status_code < 400:
             return resp.json() if resp.content else None
         try:  # {"error": {"error_code": "SERVER_NOT_FOUND", "error_message": "..."}}
@@ -1237,7 +1238,7 @@ class Scaleway:
         try:
             resp = await self.http.request(method, path, params=params, json=json, content=content, headers=headers)
         except httpx.HTTPError as exc:
-            raise HosterError(f"Scaleway недоступен: {exc}") from exc
+            raise HosterError(f"Scaleway недоступен: {describe(exc)}") from exc
         if resp.status_code == 404:
             raise HosterError("Scaleway: не найдено", "NOT_FOUND")
         if resp.status_code >= 400:
@@ -1474,7 +1475,7 @@ class NetGrid:
         try:
             resp = await self.http.request(method, path, params=params, json=json)
         except httpx.HTTPError as exc:
-            raise HosterError(f"NetGrid недоступен: {exc}") from exc
+            raise HosterError(f"NetGrid недоступен: {describe(exc)}") from exc
         try:
             data = resp.json() if resp.content else {}
         except ValueError:

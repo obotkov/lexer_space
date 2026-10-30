@@ -262,6 +262,8 @@ sudo /opt/lexer_space/vpn-admin/update.sh
 
 ## Обслуживание
 
+Если хостинг, Cloudflare, CDN или панель показаны как недоступные, в тексте ошибки указаны адрес и причина: таймаут подключения или ответа (с лимитом в секундах), DNS, закрытый порт, нет маршрута, сертификат. Запросы идут с сервера админки, поэтому проверять сеть нужно на нём, например `curl -m 15 -sS -o /dev/null -w '%{http_code} %{time_connect}s %{time_total}s\n' https://api.cloudflare.com/client/v4/`.
+
 ```bash
 cd /opt/lexer_space/vpn-admin
 docker compose logs -f app      # логи
