@@ -9,7 +9,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import backup, cdn, clients, connections, db, dns, hosters, netload, nodes, ping, probe, provision, site, system, tls
+from . import (backup, cdn, clients, connections, db, dns, hosters, netload, nodes, passkeys, ping, probe, provision,
+               site, system, tls)
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -52,6 +53,11 @@ class LoginIn(BaseModel):
     password: str
 
 
+def _start_session(response: Response, username: str) -> None:
+    response.set_cookie(SESSION_COOKIE, make_session(username), max_age=settings.session_hours * 3600,
+                        httponly=True, samesite="strict", secure=settings.cookie_secure or tls.is_active())
+
+
 @app.post("/api/auth/login")
 async def login(body: LoginIn, request: Request, response: Response):
     ip = request.client.host if request.client else "?"
@@ -61,8 +67,7 @@ async def login(body: LoginIn, request: Request, response: Response):
         login_throttle.fail(ip)
         raise HTTPException(401, "Неверный логин или пароль")
     login_throttle.reset(ip)
-    response.set_cookie(SESSION_COOKIE, make_session(body.username), max_age=settings.session_hours * 3600,
-                        httponly=True, samesite="strict", secure=settings.cookie_secure or tls.is_active())
+    _start_session(response, body.username)
     return {"username": body.username}
 
 
@@ -78,6 +83,80 @@ async def me(request: Request):
     if not user:
         raise HTTPException(401, "Не авторизован")
     return {"username": user}
+
+
+# ---------- passkeys ----------
+
+class PasskeyLoginIn(BaseModel):
+    challenge_id: str
+    credential: dict[str, Any]
+
+
+class PasskeyAddIn(PasskeyLoginIn):
+    name: str = Field("", max_length=100)
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "?"
+
+
+@app.get("/api/auth/passkey")
+async def passkey_available(request: Request):
+    """For the login page: whether to offer a passkey on this domain."""
+    return {"available": passkeys.available(request)}
+
+
+@app.post("/api/auth/passkey/options")
+async def passkey_login_options(request: Request):
+    if login_throttle.is_blocked(_client_ip(request)):
+        raise HTTPException(429, "Слишком много попыток. Подождите 5 минут")
+    try:
+        return passkeys.login_options(request)
+    except passkeys.PasskeyError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/auth/passkey/login")
+async def passkey_login(body: PasskeyLoginIn, request: Request, response: Response):
+    ip = _client_ip(request)
+    if login_throttle.is_blocked(ip):
+        raise HTTPException(429, "Слишком много попыток. Подождите 5 минут")
+    try:
+        passkeys.login(request, body.challenge_id, body.credential)
+    except passkeys.PasskeyError as exc:
+        login_throttle.fail(ip)
+        raise HTTPException(401, str(exc)) from exc
+    login_throttle.reset(ip)
+    _start_session(response, settings.admin_username)
+    return {"username": settings.admin_username}
+
+
+@app.get("/api/passkeys", dependencies=[Depends(require_admin)])
+async def passkeys_list(request: Request):
+    return {"items": [k.public() for k in db.list_passkeys()], "host": request.url.hostname or ""}
+
+
+@app.post("/api/passkeys/options", dependencies=[Depends(require_admin)])
+async def passkeys_options(request: Request):
+    try:
+        return passkeys.registration_options(request)
+    except passkeys.PasskeyError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/passkeys", dependencies=[Depends(require_admin)])
+async def passkeys_add(body: PasskeyAddIn, request: Request):
+    try:
+        return passkeys.register(request, body.challenge_id, body.name, body.credential).public()
+    except passkeys.PasskeyError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.delete("/api/passkeys/{passkey_id}", dependencies=[Depends(require_admin)])
+async def passkeys_delete(passkey_id: int):
+    if not db.delete_passkey(passkey_id):
+        raise HTTPException(404, "Ключ не найден")
+    return {"ok": True}
 
 
 # ---------- 3x-ui panels ----------

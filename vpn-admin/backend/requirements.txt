@@ -6,3 +6,4 @@ itsdangerous==2.2.0
 certbot==5.8.0
 acme==5.8.0
 asyncssh==2.24.0
+webauthn==3.0.1

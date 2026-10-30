@@ -87,6 +87,17 @@ CREATE TABLE IF NOT EXISTS cdn_accounts (
     credentials_enc TEXT    NOT NULL,
     created_at      INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS passkeys (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL,
+    credential_id TEXT    NOT NULL UNIQUE,
+    public_key    TEXT    NOT NULL,
+    sign_count    INTEGER NOT NULL DEFAULT 0,
+    rp_id         TEXT    NOT NULL,
+    created_at    INTEGER NOT NULL,
+    last_used_at  INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # Columns added after a table first shipped: table -> [(name, definition)]
@@ -515,4 +526,51 @@ def update_provision(provision_id: int, **fields) -> None:
 def delete_provision(provision_id: int) -> bool:
     with connect() as conn:
         cur = conn.execute("DELETE FROM provisions WHERE id = ?", (provision_id,))
+    return cur.rowcount > 0
+
+
+@dataclass
+class Passkey:
+    id: int
+    name: str
+    credential_id: str
+    public_key: str
+    sign_count: int
+    rp_id: str
+    created_at: int
+    last_used_at: int
+
+    def public(self) -> dict:
+        return {"id": self.id, "name": self.name, "rp_id": self.rp_id, "created_at": self.created_at,
+                "last_used_at": self.last_used_at}
+
+
+def list_passkeys() -> list[Passkey]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM passkeys ORDER BY id").fetchall()
+    return [Passkey(**dict(r)) for r in rows]
+
+
+def get_passkey_by_credential(credential_id: str) -> Passkey | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM passkeys WHERE credential_id = ?", (credential_id,)).fetchone()
+    return Passkey(**dict(row)) if row else None
+
+
+def create_passkey(name: str, credential_id: str, public_key: str, sign_count: int, rp_id: str) -> Passkey:
+    with connect() as conn:
+        conn.execute("INSERT INTO passkeys (name, credential_id, public_key, sign_count, rp_id, created_at) "
+                     "VALUES (?, ?, ?, ?, ?, ?)", (name, credential_id, public_key, sign_count, rp_id, int(time.time())))
+    return get_passkey_by_credential(credential_id)
+
+
+def touch_passkey(passkey_id: int, sign_count: int) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE passkeys SET sign_count = ?, last_used_at = ? WHERE id = ?",
+                     (sign_count, int(time.time()), passkey_id))
+
+
+def delete_passkey(passkey_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM passkeys WHERE id = ?", (passkey_id,))
     return cur.rowcount > 0

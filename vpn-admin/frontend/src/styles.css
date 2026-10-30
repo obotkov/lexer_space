@@ -562,3 +562,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .apply-list { display: grid; gap: 8px; margin: 4px 0; }
 .apply-row { align-items: flex-start; color: var(--text); }
 .apply-row input { margin-top: 3px; }
+
+.passkey-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.passkey-info { min-width: 0; overflow-wrap: anywhere; }
+.passkey-add { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
+.passkey-add .input { flex: 1 1 160px; width: auto; }

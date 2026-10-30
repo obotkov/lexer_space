@@ -49,6 +49,22 @@ export interface NetLoad {
 }
 
 /** Ping from the admin's own server to a main panel or a node. */
+export interface Passkey {
+  id: number;
+  name: string;
+  /** the domain it works on */
+  rp_id: string;
+  created_at: number;
+  /** 0 until first used */
+  last_used_at: number;
+}
+
+export interface PasskeyOptions {
+  challenge_id: string;
+  // WebAuthn options as JSON: binary fields in base64url
+  options: Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+}
+
 export interface PingTarget {
   kind: "main" | "node";
   panel: string;
@@ -975,6 +991,15 @@ export const api = {
   login: (username: string, password: string) =>
     request<{ username: string }>("POST", "/api/auth/login", { username, password }),
   logout: () => request("POST", "/api/auth/logout"),
+  passkeyAvailable: () => request<{ available: boolean }>("GET", "/api/auth/passkey"),
+  passkeyLoginOptions: () => request<PasskeyOptions>("POST", "/api/auth/passkey/options"),
+  passkeyLogin: (challengeId: string, credential: unknown) =>
+    request<{ username: string }>("POST", "/api/auth/passkey/login", { challenge_id: challengeId, credential }),
+  passkeys: () => request<{ items: Passkey[]; host: string }>("GET", "/api/passkeys"),
+  passkeyOptions: () => request<PasskeyOptions>("POST", "/api/passkeys/options"),
+  addPasskey: (challengeId: string, name: string, credential: unknown) =>
+    request<Passkey>("POST", "/api/passkeys", { challenge_id: challengeId, name, credential }),
+  deletePasskey: (id: number) => request("DELETE", `/api/passkeys/${id}`),
   setInboundEnable: (panelId: number, inboundId: number, enable: boolean) =>
     request<{ ok: boolean }>("POST", "/api/inbounds/enable", { panel_id: panelId, inbound_id: inboundId, enable }),
   deleteInbound: (panelId: number, inboundId: number) => request<{ ok: boolean }>("DELETE", `/api/inbounds/${panelId}/${inboundId}`),

@@ -1,11 +1,30 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api";
+import { passkeyError, passkeysSupported, signInWithPasskey } from "../passkey";
 
 export function Login({ onLogin }: { onLogin: (username: string) => void }) {
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const [canPasskey, setCanPasskey] = useState(false);
+
+  useEffect(() => {
+    if (passkeysSupported()) api.passkeyAvailable().then((r) => setCanPasskey(r.available), () => undefined);
+  }, []);
+
+  const passkey = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      onLogin((await signInWithPasskey()).username);
+    } catch (err) {
+      setError(passkeyError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -39,6 +58,11 @@ export function Login({ onLogin }: { onLogin: (username: string) => void }) {
         <button className="btn btn-primary wide" disabled={busy}>
           Войти
         </button>
+        {canPasskey && (
+          <button type="button" className="btn wide" onClick={passkey} disabled={busy}>
+            Войти с Passkey
+          </button>
+        )}
       </form>
     </div>
   );
