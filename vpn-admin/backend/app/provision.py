@@ -888,25 +888,41 @@ async def _step_connect(p: db.Provision) -> None:
     _log(p, "Узел добавлен в основную панель")
 
 
-def _record_replacement(p: db.Provision, old_id: int, old_ip: str, started_at: int, replaced_at: int) -> None:
-    """For the statistics of replacements: the old job goes away, and so would all that is known of the old server."""
+def _adopted(p: db.Provision) -> bool:
+    """Set up on a server the admin did not create (see adopt: only those jobs keep the node's ports in the labels)."""
+    return bool(p.in_place) and "ports" in p.labels
+
+
+def _record_gone(p: db.Provision, gone_at: int, new_ip: str = "") -> None:
+    """For the statistics of replaced servers: one the admin created, that worked and is deleted now. Only a job that
+    never got through its install stays out: that is a failed order, not a server that was in use."""
+    if not p.server_id or _adopted(p) or (p.step != "done" and not p.server_since):
+        return
+    _add_replacement(p, p.id, p.server_id, p.ip, new_ip, p.server_since or p.created_at, gone_at)
+
+
+def _add_replacement(p: db.Provision, job_id: int, server_id: str, ip: str, new_ip: str, started_at: int,
+                     gone_at: int) -> None:
     hoster = db.get_hoster(p.hoster_id)
     db.add_server_replacement(
-        old_provision_id=old_id, hoster_id=p.hoster_id, hoster_name=hoster.name if hoster else "",
-        provider=hoster.provider if hoster else "", panel_id=p.panel_id, name=p.name,
-        region=p.labels.get("region") or p.region, old_ip=old_ip, new_ip=p.ip, started_at=started_at,
-        replaced_at=replaced_at)
+        old_provision_id=job_id, hoster_id=p.hoster_id, hoster_name=hoster.name if hoster else "",
+        provider=hoster.provider if hoster else "", panel_id=p.panel_id, name=_title(p), server_id=server_id,
+        region=p.labels.get("region") or p.region, old_ip=ip, new_ip=new_ip, started_at=started_at,
+        replaced_at=gone_at)
 
 
 def restore_replacement_history() -> None:
-    """Replacements made before they were recorded: the job of the new server still has them in its log, except
-    for how long the old server worked (started_at 0). Earlier ones of the same server are gone with their jobs."""
-    for p in db.list_provisions():
-        if not p.replaces or p.in_place or not p.server_id or db.get_provision(p.replaces):
-            continue
-        old_ip = next((m.group(1) for e in p.log if (m := re.search(r"новый сервер заменит (\d[\d.:a-f]*)", e["msg"]))), "")
-        done = next((e["t"] for e in p.log if "его задание убрано из списка" in e["msg"]), p.updated_at)
-        _record_replacement(p, p.replaces, old_ip, 0, done)
+    """Servers deleted before they were recorded. A deleted job stays in the list until the user removes it, so all is
+    known of those. Of a server replaced by a new one only the new job's log is left, without how long it worked
+    (started_at 0), and earlier replacements of that server are gone with their jobs."""
+    for p in sorted(db.list_provisions(), key=lambda j: j.id):
+        if p.state == "deleted":
+            _record_gone(p, p.updated_at)
+        elif p.replaces and not p.in_place and p.server_id and not db.get_provision(p.replaces):
+            old_ip = next((m.group(1) for e in p.log
+                           if (m := re.search(r"новый сервер заменит (\d[\d.:a-f]*)", e["msg"]))), "")
+            done = next((e["t"] for e in p.log if "его задание убрано из списка" in e["msg"]), p.updated_at)
+            _add_replacement(p, p.replaces, "", old_ip, p.ip, 0, done)
 
 
 async def _step_retire(p: db.Provision) -> None:
@@ -925,7 +941,7 @@ async def _step_retire(p: db.Provision) -> None:
             elif exc.code != "NOT_FOUND":  # already deleted in the hosting's own panel
                 raise
     if not p.in_place:
-        _record_replacement(p, old.id, old.ip, old.server_since or old.created_at, int(time.time()))
+        _record_gone(old, int(time.time()), p.ip)
     db.delete_provision(old.id)
     _log(p, "Прежнее задание этого сервера убрано из списка" if p.in_place
          else "Старый сервер удалён, его задание убрано из списка")
@@ -1530,6 +1546,8 @@ async def delete_hosted_server(hoster: db.Hoster, server_id: str) -> dict:
     else:
         hosters.invalidate(hoster.id)
         note(f"Сервер {name} удалён у хостинга")
+    for p in sorted(jobs, key=lambda j: j.id):  # the first job of a server knows when it began
+        _record_gone(p, int(time.time()))
     for p in jobs:
         _set(p, state="deleted")
         records = [(p.dns_record_id, f"A-запись {p.domain}")] if p.dns_record_id else []

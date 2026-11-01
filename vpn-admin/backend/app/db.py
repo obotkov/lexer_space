@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS passkeys (
 # Columns added after a table first shipped: table -> [(name, definition)]
 MIGRATIONS = {
     "panels": [("api_token_enc", "TEXT NOT NULL DEFAULT ''")],
+    "server_replacements": [("server_id", "TEXT NOT NULL DEFAULT ''")],
     "provisions": [("labels", "TEXT NOT NULL DEFAULT '{}'"), ("domain", "TEXT NOT NULL DEFAULT ''"),
                    ("cert_mode", "TEXT NOT NULL DEFAULT ''"), ("replaces", "INTEGER NOT NULL DEFAULT 0"),
                    ("in_place", "INTEGER NOT NULL DEFAULT 0"), ("dns_account_id", "INTEGER NOT NULL DEFAULT 0"),
@@ -594,8 +595,13 @@ def delete_passkey(passkey_id: int) -> bool:
 
 
 def add_server_replacement(**fields) -> None:
-    """One per replaced job: repeating the last step of a reinstall or the restoring of old ones adds nothing."""
+    """One per job and one per server of the hosting: repeating a step, restoring old ones and a server's second job
+    (a failed reinstall) add nothing."""
     with connect() as conn:
+        if fields.get("server_id") and conn.execute(
+                "SELECT 1 FROM server_replacements WHERE hoster_id = ? AND server_id = ?",
+                (fields["hoster_id"], fields["server_id"])).fetchone():
+            return
         conn.execute(f"INSERT OR IGNORE INTO server_replacements ({', '.join(fields)}) "
                      f"VALUES ({', '.join('?' * len(fields))})", tuple(fields.values()))
 

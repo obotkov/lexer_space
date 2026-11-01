@@ -12,7 +12,7 @@ const days = (n: number) => `${n} ${plural(n, "день", "дня", "дней")}
 /** Whole days the old server worked; null when that is not known. */
 const workedDays = (r: ServerReplacement) => (r.started_at ? Math.floor((r.replaced_at - r.started_at) / 86400) : null);
 
-/** Servers replaced with a new one, from what the admin recorded at each replacement. */
+/** Servers created through the admin and deleted later, from what it recorded when each one went. */
 export function Replacements() {
   const [items, setItems] = useState<ServerReplacement[] | null>(null);
   const [error, setError] = useState("");
@@ -27,7 +27,7 @@ export function Replacements() {
     return (
       <Empty>
         <p>Замен пока нет.</p>
-        <p className="muted small">Здесь появится каждый сервер, заменённый новым кнопкой «Переустановить с нуля» в «VPN API Hoster».</p>
+        <p className="muted small">Здесь появится каждый сервер, созданный через админку и затем удалённый.</p>
       </Empty>
     );
   }
@@ -189,7 +189,7 @@ function ReplacedServers({ items }: { items: ServerReplacement[] }) {
               <thead>
                 <tr>
                   <th>Сервер</th>
-                  <th>Заменён</th>
+                  <th>Удалён</th>
                   <th className="num">Проработал</th>
                   <th>Заведённые IP</th>
                 </tr>
@@ -206,14 +206,14 @@ function ReplacedServers({ items }: { items: ServerReplacement[] }) {
                       </td>
                       <td className="small">{formatDateTime(r.replaced_at * 1000)}</td>
                       <td className="num">
-                        {worked === null ? <span className="muted" title="Замена сделана до того, как админка начала хранить срок работы">нет данных</span> : worked === 0 ? "меньше дня" : days(worked)}
+                        {worked === null ? <span className="muted" title="Сервер заменён до того, как админка начала хранить срок работы">нет данных</span> : worked === 0 ? "меньше дня" : days(worked)}
                       </td>
                       <td className="mono small ip-chain">
                         {chain.length === 0 && "—"}
                         {chain.map((ip, i) => (
                           <span key={ip}>
                             {i > 0 && <span className="muted"> → </span>}
-                            <span className={ip === r.old_ip ? "ip-replaced" : "muted"} title={ip === r.old_ip ? "IP заменённого сервера" : undefined}>
+                            <span className={ip === r.old_ip ? "ip-replaced" : "muted"} title={ip === r.old_ip ? "IP удалённого сервера" : undefined}>
                               {ip}
                             </span>
                           </span>
