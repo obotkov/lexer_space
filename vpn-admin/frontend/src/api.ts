@@ -151,7 +151,7 @@ export interface ProbeItem {
   enable?: boolean;
   address?: string;
   /** ok: works; fail: no traffic through it; skip: cannot be checked (MTProto, WireGuard…); off: disabled */
-  status: "ok" | "fail" | "skip" | "off";
+  status: "ok" | "fail" | "skip";
   /** answer through the open tunnel */
   ms: number | null;
   /** tunnel set up plus the first answer */

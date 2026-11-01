@@ -99,7 +99,7 @@ function ProbePanelBlock({ name, error, items }: { name: string; error: string |
       )}
       {groups.map((g) => {
         const checked = g.items.filter((i) => i.status === "ok" || i.status === "fail");
-        const rest = g.items.filter((i) => i.status === "skip" || i.status === "off");
+        const rest = g.items.filter((i) => i.status === "skip");
         return (
           <section key={g.server} className="probe-group">
             <div className="probe-group-head">
@@ -131,7 +131,7 @@ function ProbePanelBlock({ name, error, items }: { name: string; error: string |
             ))}
             {rest.length > 0 && (
               <div className="muted small probe-rest">
-                {rest.map((i) => `${i.remark} — ${i.status === "off" ? "выключен" : "не проверяется"}`).join(" · ")}
+                {rest.map((i) => `${i.remark} — не проверяется`).join(" · ")}
               </div>
             )}
           </section>

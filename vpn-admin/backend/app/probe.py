@@ -391,6 +391,8 @@ async def _panel(panel: db.Panel, now: int) -> dict[str, Any]:
                           "error": str(exc), "server": "", "server_kind": "main", "protocol": scheme})
             continue
         inbound = _match(link, inbounds)
+        if inbound and not inbound.get("enable", True):
+            continue  # the panel keeps giving links to a connect switched off: nothing answers on them
         view = _inbound_view(panel, inbound, nodes) if inbound else {
             "inbound_id": None, "remark": link.remark, "protocol": link.protocol, "network": link.network,
             "security": link.security, "port": link.port, "server": link.host, "server_host": link.host,
@@ -415,13 +417,11 @@ async def _panel(panel: db.Panel, now: int) -> dict[str, Any]:
         items.append(item)
 
     for inbound in inbounds:
-        if inbound.get("id") in seen:
+        if inbound.get("id") in seen or not inbound.get("enable", True):
             continue
         view = _inbound_view(panel, inbound, nodes)
         item = {**view, "key": f"{panel.id}:{inbound.get('id')}:0", "ms": None}
-        if not view["enable"]:
-            item.update(status="off", error="коннект выключен")
-        elif view["protocol"] not in CHECKED:
+        if view["protocol"] not in CHECKED:
             item.update(status="skip", error=SKIP_REASONS.get(view["protocol"], f"{view['protocol']} не проверяется"))
         elif inbound.get("id") in refused:
             item.update(status="fail", error=f"служебный клиент не добавлен: {refused[inbound['id']]}")
