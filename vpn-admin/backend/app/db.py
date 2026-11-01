@@ -88,6 +88,21 @@ CREATE TABLE IF NOT EXISTS cdn_accounts (
     created_at      INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS server_replacements (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    old_provision_id INTEGER NOT NULL UNIQUE,
+    hoster_id        INTEGER NOT NULL,
+    hoster_name      TEXT    NOT NULL,
+    provider         TEXT    NOT NULL,
+    panel_id         INTEGER NOT NULL,
+    name             TEXT    NOT NULL,
+    region           TEXT    NOT NULL DEFAULT '',
+    old_ip           TEXT    NOT NULL DEFAULT '',
+    new_ip           TEXT    NOT NULL DEFAULT '',
+    started_at       INTEGER NOT NULL DEFAULT 0,
+    replaced_at      INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS passkeys (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     name          TEXT    NOT NULL,
@@ -108,7 +123,8 @@ MIGRATIONS = {
                    ("in_place", "INTEGER NOT NULL DEFAULT 0"), ("dns_account_id", "INTEGER NOT NULL DEFAULT 0"),
                    ("dns_zone_id", "TEXT NOT NULL DEFAULT ''"), ("dns_record_id", "TEXT NOT NULL DEFAULT ''"),
                    ("site_template", "TEXT NOT NULL DEFAULT ''"), ("sub_port", "INTEGER NOT NULL DEFAULT 0"),
-                   ("connections", "TEXT NOT NULL DEFAULT '[]'"), ("os", "TEXT NOT NULL DEFAULT 'ubuntu-24.04'")],
+                   ("connections", "TEXT NOT NULL DEFAULT '[]'"), ("os", "TEXT NOT NULL DEFAULT 'ubuntu-24.04'"),
+                   ("server_since", "INTEGER NOT NULL DEFAULT 0")],
 }
 
 
@@ -475,6 +491,7 @@ class Provision:
     # inbound_id?, error?}]
     connections: list = field(default_factory=list)
     os: str = "ubuntu-24.04"  # system installed on the server (hosters.OS_LABELS); a reinstall keeps it
+    server_since: int = 0  # an OS reinstall starts a new job on the same server: when the server began; 0 = created_at
 
 
 _JSON_FIELDS = {"ssh_keys", "log", "labels", "connections"}
@@ -574,3 +591,16 @@ def delete_passkey(passkey_id: int) -> bool:
     with connect() as conn:
         cur = conn.execute("DELETE FROM passkeys WHERE id = ?", (passkey_id,))
     return cur.rowcount > 0
+
+
+def add_server_replacement(**fields) -> None:
+    """One per replaced job: repeating the last step of a reinstall or the restoring of old ones adds nothing."""
+    with connect() as conn:
+        conn.execute(f"INSERT OR IGNORE INTO server_replacements ({', '.join(fields)}) "
+                     f"VALUES ({', '.join('?' * len(fields))})", tuple(fields.values()))
+
+
+def list_server_replacements() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM server_replacements ORDER BY replaced_at DESC, id DESC").fetchall()
+    return [dict(r) for r in rows]

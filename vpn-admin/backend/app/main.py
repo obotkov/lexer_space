@@ -32,6 +32,7 @@ def seed_panel_from_env() -> None:
 async def lifespan(_: FastAPI):
     db.init_db()
     seed_panel_from_env()
+    provision.restore_replacement_history()
     renewal = asyncio.create_task(tls.renewal_loop())
     sampler = asyncio.create_task(netload.loop())
     checks = asyncio.create_task(probe.loop())
@@ -160,6 +161,15 @@ async def passkeys_delete(passkey_id: int):
     if not db.delete_passkey(passkey_id):
         raise HTTPException(404, "Ключ не найден")
     return {"ok": True}
+
+
+# ---------- statistics of server replacements ----------
+
+@app.get("/api/replacements", dependencies=[Depends(require_admin)])
+async def replacements():
+    accounts = {h.id: h.name for h in db.list_hosters()}
+    return {"items": [{**r, "hoster_name": accounts.get(r["hoster_id"]) or r["hoster_name"] or f"аккаунт #{r['hoster_id']}",
+                       "provider_title": probe.provider_title(r["provider"])} for r in db.list_server_replacements()]}
 
 
 # ---------- outgoing route ----------

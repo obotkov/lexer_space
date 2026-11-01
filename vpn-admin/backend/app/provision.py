@@ -888,6 +888,27 @@ async def _step_connect(p: db.Provision) -> None:
     _log(p, "Узел добавлен в основную панель")
 
 
+def _record_replacement(p: db.Provision, old_id: int, old_ip: str, started_at: int, replaced_at: int) -> None:
+    """For the statistics of replacements: the old job goes away, and so would all that is known of the old server."""
+    hoster = db.get_hoster(p.hoster_id)
+    db.add_server_replacement(
+        old_provision_id=old_id, hoster_id=p.hoster_id, hoster_name=hoster.name if hoster else "",
+        provider=hoster.provider if hoster else "", panel_id=p.panel_id, name=p.name,
+        region=p.labels.get("region") or p.region, old_ip=old_ip, new_ip=p.ip, started_at=started_at,
+        replaced_at=replaced_at)
+
+
+def restore_replacement_history() -> None:
+    """Replacements made before they were recorded: the job of the new server still has them in its log, except
+    for how long the old server worked (started_at 0). Earlier ones of the same server are gone with their jobs."""
+    for p in db.list_provisions():
+        if not p.replaces or p.in_place or not p.server_id or db.get_provision(p.replaces):
+            continue
+        old_ip = next((m.group(1) for e in p.log if (m := re.search(r"новый сервер заменит (\d[\d.:a-f]*)", e["msg"]))), "")
+        done = next((e["t"] for e in p.log if "его задание убрано из списка" in e["msg"]), p.updated_at)
+        _record_replacement(p, p.replaces, old_ip, 0, done)
+
+
 async def _step_retire(p: db.Provision) -> None:
     """Reinstall: the node already runs on the new server, so the old one goes (it keeps costing money)."""
     old = db.get_provision(p.replaces) if p.replaces else None
@@ -903,6 +924,8 @@ async def _step_retire(p: db.Provision) -> None:
                         "API. Удалите его в панели хостинга, иначе он продолжит стоить денег")
             elif exc.code != "NOT_FOUND":  # already deleted in the hosting's own panel
                 raise
+    if not p.in_place:
+        _record_replacement(p, old.id, old.ip, old.server_since or old.created_at, int(time.time()))
     db.delete_provision(old.id)
     _log(p, "Прежнее задание этого сервера убрано из списка" if p.in_place
          else "Старый сервер удалён, его задание убрано из списка")
@@ -1310,7 +1333,7 @@ def _in_place_job(old: db.Provision, ssh_install: bool) -> db.Provision:
                 project=old.project, ssh_keys=old.ssh_keys, domain=old.domain, labels=old.labels,
                 node_id=old.node_id, replaces=old.id, in_place=1, server_id=old.server_id, ip=old.ip,
                 site_template=old.site_template, step="rebuild", connections=old.connections, os=old.os,
-                **_dns_fields(old))
+                server_since=old.server_since or old.created_at, **_dns_fields(old))
     if "service_key" in old.secrets:  # its cloud-init lets the same key in again: the usual install from zero
         return _new_job(service_key=old.secrets["service_key"], **same)
     if ssh_install:  # VDSina takes a key with the reinstall

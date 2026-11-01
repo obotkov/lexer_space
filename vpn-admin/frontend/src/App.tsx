@@ -12,6 +12,7 @@ import { Overview } from "./pages/Overview";
 import { Servers } from "./pages/Servers";
 import { Subscriptions } from "./pages/Subscriptions";
 import { System } from "./pages/System";
+import { Replacements } from "./pages/Replacements";
 import { Users } from "./pages/Users";
 
 const TABS = [
@@ -22,6 +23,7 @@ const TABS = [
   { id: "users", title: "Пользователи" },
   { id: "servers", title: "Серверы 3x-ui" },
   { id: "hosters", title: "VPN API Hoster" },
+  { id: "replacements", title: "Замены серверов" },
   { id: "templates", title: "Подключения" },
   { id: "backup", title: "Бекап" },
   { id: "system", title: "Система" },
@@ -130,7 +132,7 @@ export function App() {
             <h1>{TABS.find((t) => t.id === tab)?.title}</h1>
             {tab === "overview" && <VersionBadge check={updateCheck} onUpdate={() => go("system")} />}
           </div>
-          <div className="topbar-right" hidden={tab === "system" || tab === "hosters" || tab === "templates" || tab === "backup"}>
+          <div className="topbar-right" hidden={tab === "system" || tab === "hosters" || tab === "templates" || tab === "backup" || tab === "replacements"}>
             {data && <span className="muted small">обновлено {new Date(data.generated_at * 1000).toLocaleTimeString("ru-RU")}</span>}
             <button className="btn" onClick={() => load(true)} disabled={loading}>
               {loading ? "Обновление…" : "Обновить"}
@@ -144,6 +146,8 @@ export function App() {
           <Backup onRestored={refreshOverview} />
         ) : tab === "templates" ? (
           <ConnectionTemplates />
+        ) : tab === "replacements" ? (
+          <Replacements />
         ) : error && !data ? (
           <div className="notice notice-bad">{error}</div>
         ) : !data ? (

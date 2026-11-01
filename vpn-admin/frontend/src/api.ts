@@ -49,6 +49,21 @@ export interface NetLoad {
 }
 
 /** Ping from the admin's own server to a main panel or a node. */
+export interface ServerReplacement {
+  id: number;
+  hoster_id: number;
+  hoster_name: string;
+  provider: string;
+  provider_title: string;
+  name: string;
+  region: string;
+  old_ip: string;
+  new_ip: string;
+  /** when the old server began; 0 when unknown (replaced before the history was kept) */
+  started_at: number;
+  replaced_at: number;
+}
+
 export interface EgressOption {
   panel_id: number;
   inbound_id: number;
@@ -1019,6 +1034,7 @@ export const api = {
   login: (username: string, password: string) =>
     request<{ username: string }>("POST", "/api/auth/login", { username, password }),
   logout: () => request("POST", "/api/auth/logout"),
+  replacements: () => request<{ items: ServerReplacement[] }>("GET", "/api/replacements"),
   egress: () => request<EgressRoute>("GET", "/api/egress"),
   setEgress: (panelId: number, inboundId: number) => request<EgressRoute>("PUT", "/api/egress", { panel_id: panelId, inbound_id: inboundId }),
   checkEgress: () => request<{ results: EgressCheck[] }>("POST", "/api/egress/check"),

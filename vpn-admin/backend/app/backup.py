@@ -35,10 +35,11 @@ SECTIONS: dict[str, dict[str, Any]] = {
     "cdn": {"title": "CDN", "tables": ["cdn_accounts"]},
     "templates": {"title": "Подключения", "tables": ["connection_templates"], "settings": "connections."},
     "provisions": {"title": "Созданные серверы", "tables": ["provisions"], "needs": ["panels", "hosters"]},
+    "replacements": {"title": "История замен серверов", "tables": ["server_replacements"]},
     "site": {"title": "Свой шаблон сайта-заглушки", "tables": []},
 }
 NAME_COLUMNS = {"panels": "name", "hosters": "name", "dns_accounts": "name", "cdn_accounts": "name",
-                "connection_templates": "remark", "provisions": "name"}
+                "connection_templates": "remark", "provisions": "name", "server_replacements": "name"}
 
 
 class BackupError(Exception):
