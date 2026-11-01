@@ -1101,7 +1101,7 @@ export const api = {
   startProvision: (form: ProvisionForm) => request<Provision>("POST", "/api/provisions", form),
   retryProvision: (id: number) => request<Provision>("POST", `/api/provisions/${id}/retry`),
   restartProvisionInstall: (id: number) => request<Provision>("POST", `/api/provisions/${id}/restart-install`),
-  reinstallProvision: (id: number, body: { in_place: boolean; plan: string; plan_label: string; site_template: string }) =>
+  reinstallProvision: (id: number, body: { in_place: boolean; plan: string; plan_label: string; site_template?: string }) =>
     request<Provision>("POST", `/api/provisions/${id}/reinstall`, body),
   deleteProvisionServer: (id: number) => request<Provision>("POST", `/api/provisions/${id}/delete-server`),
   provisionConnectionsOffer: (id: number) => request<ConnectionsOffer>("GET", `/api/provisions/${id}/connections`),

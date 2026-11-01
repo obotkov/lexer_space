@@ -573,6 +573,34 @@ def build(item: dict[str, Any], t: Target, node_id: int) -> dict[str, Any]:
             "expiryTime": 0, "total": 0, "nodeId": node_id}
 
 
+def follow_server(inbound: dict[str, Any], t: Target, old_ip: str) -> bool:
+    """A kept inbound on a freshly installed server: what it took from the old install follows the new one (the IP it
+    listens on, the certificate's files and pin). Says whether anything changed; other inbound settings stay."""
+    changed = False
+    if old_ip and t.ip and t.ip != old_ip and inbound.get("listen") == old_ip:
+        inbound["listen"] = t.ip
+        changed = True
+    raw = inbound.get("streamSettings")
+    stream = parse_stream(raw)
+    tls = stream.get("tlsSettings")
+    own = {"/root/cert/le.crt", "/root/cert/panel.crt"}
+    certificates = (tls or {}).get("certificates") or []
+    if not t.cert_file or not any(c.get("certificateFile") in own for c in certificates):
+        return changed  # no TLS, or a certificate of its own the install has nothing to do with
+    before = json.dumps(tls, sort_keys=True)
+    for c in certificates:
+        if c.get("certificateFile") in own:
+            c.update(certificateFile=t.cert_file, keyFile=t.key_file)
+    settings = tls.setdefault("settings", {})
+    settings.pop("pinnedPeerCertSha256", None)
+    if t.pin_hex and not stream.get("externalProxy"):  # behind a CDN clients see the CDN's certificate, no pin
+        settings["pinnedPeerCertSha256"] = [t.pin_hex]
+    if json.dumps(tls, sort_keys=True) == before:
+        return changed
+    inbound["streamSettings"] = json.dumps(stream) if isinstance(raw, str) else stream
+    return True
+
+
 # ---------- own JSON of a template ----------
 
 AUTO = "{auto}"  # in a template's JSON: the value the server gets (generated keys, its certificate…)

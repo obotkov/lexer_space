@@ -1119,7 +1119,43 @@ async def _check_cdn_tls(p: db.Provision, items: list[dict]) -> None:
                     "раздало сертификат не на все свои серверы — подождите или напишите в поддержку CDN")
 
 
+async def _follow_new_server(p: db.Provision) -> None:
+    """A reinstall keeps the node's inbounds in the main panel, but some took things from the old install: the IP a DNS
+    tunnel listens on and is delegated to, a self-signed certificate's pin. Before the old server goes, they move."""
+    old = db.get_provision(p.replaces)
+    old_ip = old.ip if old else ""
+    try:
+        _, xui = await nodes.main_panel(p.panel_id)
+        target = _target(p)
+        changed = 0
+        for inbound in await xui.inbounds():
+            if inbound.get("nodeId") == p.node_id and connections.follow_server(inbound, target, old_ip):
+                await xui.update_inbound(inbound)
+                changed += 1
+    except (nodes.NodeError, XUIError) as exc:
+        raise ProvisionError(f"Подключения не переведены на новую установку: {exc}") from exc
+    if changed:
+        overview_cache.invalidate()
+        _log(p, f"Подключения переведены на новую установку (адрес, сертификат): {changed} шт.")
+    if p.in_place or not old_ip or old_ip == p.ip:
+        return
+    for item in p.connections:
+        if item.get("xdns_domain") and p.dns_account_id:
+            first, _, rest = item["xdns_domain"].partition(".")
+            name = f"{first}-ns.{rest}"
+            try:
+                await dns.put_record(p.dns_account_id, p.dns_zone_id, "A", name, p.ip, f"vpn-admin: DNS-туннель {p.name}")
+                _log(p, f"Cloudflare: {name} → {p.ip} (DNS-туннель)")
+            except dns.DNSError as exc:
+                raise ProvisionError(f"DNS-туннель {item['xdns_domain']} не переведён на {p.ip}: {exc}") from exc
+        elif item.get("cdn_resource_id") and not p.domain:
+            _log(p, f"CDN-подключение {item.get('cdn_domain')}: источник ресурса остался на старом IP {old_ip}, у сервера "
+                    "нет домена. Такое подключение работать не будет: раскатайте его заново")
+
+
 async def _step_connections(p: db.Provision) -> None:
+    if p.replaces:
+        await _follow_new_server(p)
     pending = [c for c in p.connections if not c.get("inbound_id") and not c.get("error")]
     if not pending or not p.node_id:
         return  # nothing planned, or a reinstall: the node keeps the inbounds it had

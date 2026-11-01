@@ -251,6 +251,11 @@ class XUIClient:
         inbound.pop("clientStats", None)  # traffic rows are not part of the inbound's settings
         await self._call("POST", f"/panel/api/inbounds/update/{inbound_id}", json={**inbound, "enable": enable})
 
+    async def update_inbound(self, inbound: dict) -> None:
+        """Put back a whole inbound from inbounds(); a node's goes through its main panel to the node."""
+        body = {k: v for k, v in inbound.items() if k != "clientStats"}  # traffic rows are not settings
+        await self._call("POST", f"/panel/api/inbounds/update/{inbound['id']}", json=body)
+
     async def delete_inbound(self, inbound_id: int) -> None:
         await self._call("POST", f"/panel/api/inbounds/del/{inbound_id}")
 

@@ -117,7 +117,7 @@ export function Provisions({
                 <div>
                   <div className="strong">
                     {p.title || p.name}
-                    {p.replaces > 0 && <span className="muted small"> · переустановка</span>}
+                    {p.replaces > 0 && <span className="muted small"> · {p.in_place ? "переустановка" : "замена"}</span>}
                     {p.adopted && <span className="muted small"> · с нуля на существующем сервере</span>}
                   </div>
                   <div className="provision-source small">
@@ -266,6 +266,19 @@ export function Provisions({
                 {canReinstall && (
                   <button className="btn btn-small" disabled={busy === p.id} onClick={() => setReinstalling(p)}>
                     Переустановить с нуля
+                  </button>
+                )}
+                {canReinstall && (
+                  <button
+                    className="btn btn-small"
+                    disabled={busy === p.id}
+                    onClick={() =>
+                      confirm(
+                        `Заменить сервер «${p.title || p.name}»${p.ip ? ` (${p.ip})` : ""}?\n\n${providers[account?.provider ?? ""]?.title ?? "Хостинг"} создаст новый сервер с теми же регионом и тарифом. На него перейдёт узел с теми же подключениями и клиентами, затем старый сервер ${kept ? "уберётся из админки: удалите его в панели хостинга, иначе он продолжит стоить денег" : "будет удалён"}. Если новый сервер не заработает, старый останется.\n\nIP сменится. ${p.domain ? `Домен ${p.domain} останется, A-запись ${p.dns ? "перейдёт на новый IP сама" : "нужно будет поменять вручную"}.` : "Домена у сервера нет: клиентам понадобится обновить подписку."}`,
+                      ) && act(p.id, () => api.reinstallProvision(p.id, { in_place: false, plan: "", plan_label: "" }))
+                    }
+                  >
+                    Заменить
                   </button>
                 )}
                 {(p.state === "done" || (p.state === "failed" && (!p.in_place || p.adopted))) && p.server_id && replacedBy?.state !== "running" && (
