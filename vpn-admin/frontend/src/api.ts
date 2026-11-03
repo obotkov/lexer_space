@@ -49,6 +49,15 @@ export interface NetLoad {
 }
 
 /** Ping from the admin's own server to a main panel or a node. */
+export interface TrafficDaily {
+  /** seconds between the admin's readings of the counters */
+  interval: number;
+  /** when the admin began counting; 0 = not yet */
+  started_at: number;
+  /** growth of the counters per hour (UTC hour start) and server */
+  hours: { t: number; panel_id: number; node_id: number; server: string; up: number; down: number }[];
+}
+
 export interface ServerReplacement {
   id: number;
   hoster_id: number;
@@ -1037,6 +1046,7 @@ export const api = {
   login: (username: string, password: string) =>
     request<{ username: string }>("POST", "/api/auth/login", { username, password }),
   logout: () => request("POST", "/api/auth/logout"),
+  trafficDaily: (days: number) => request<TrafficDaily>("GET", `/api/traffic/daily?days=${days}`),
   replacements: () => request<{ items: ServerReplacement[] }>("GET", "/api/replacements"),
   egress: () => request<EgressRoute>("GET", "/api/egress"),
   setEgress: (panelId: number, inboundId: number) => request<EgressRoute>("PUT", "/api/egress", { panel_id: panelId, inbound_id: inboundId }),

@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import (backup, cdn, clients, connections, db, dns, egress, hosters, netload, nodes, passkeys, ping, probe, provision,
-               site, system, tls)
+               site, system, tls, traffic)
 from .aggregator import overview_cache, pool
 from .config import settings
 from .security import (SESSION_COOKIE, check_credentials, login_throttle, make_session, read_session,
@@ -37,12 +37,14 @@ async def lifespan(_: FastAPI):
     sampler = asyncio.create_task(netload.loop())
     checks = asyncio.create_task(probe.loop())
     route = asyncio.create_task(egress.loop())
+    counting = asyncio.create_task(traffic.loop())
     provision.resume_all()
     yield
     renewal.cancel()
     sampler.cancel()
     checks.cancel()
     route.cancel()
+    counting.cancel()
     await egress.shutdown()
     await pool.close_all()
 
@@ -161,6 +163,13 @@ async def passkeys_delete(passkey_id: int):
     if not db.delete_passkey(passkey_id):
         raise HTTPException(404, "Ключ не найден")
     return {"ok": True}
+
+
+# ---------- traffic by day ----------
+
+@app.get("/api/traffic/daily", dependencies=[Depends(require_admin)])
+async def traffic_daily(days: int = 30):
+    return traffic.history(max(1, min(days, traffic.KEEP_DAYS)))
 
 
 # ---------- statistics of server replacements ----------

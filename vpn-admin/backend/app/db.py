@@ -103,6 +103,24 @@ CREATE TABLE IF NOT EXISTS server_replacements (
     replaced_at      INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS traffic_hourly (
+    hour     INTEGER NOT NULL,
+    panel_id INTEGER NOT NULL,
+    node_id  INTEGER NOT NULL,
+    server   TEXT    NOT NULL,
+    up       INTEGER NOT NULL DEFAULT 0,
+    down     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (hour, panel_id, node_id)
+);
+
+CREATE TABLE IF NOT EXISTS traffic_counters (
+    panel_id   INTEGER NOT NULL,
+    inbound_id INTEGER NOT NULL,
+    up         INTEGER NOT NULL,
+    down       INTEGER NOT NULL,
+    PRIMARY KEY (panel_id, inbound_id)
+);
+
 CREATE TABLE IF NOT EXISTS passkeys (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     name          TEXT    NOT NULL,
@@ -610,3 +628,42 @@ def list_server_replacements() -> list[dict]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM server_replacements ORDER BY replaced_at DESC, id DESC").fetchall()
     return [dict(r) for r in rows]
+
+
+def traffic_counters() -> dict[tuple[int, int], tuple[int, int]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM traffic_counters").fetchall()
+    return {(r["panel_id"], r["inbound_id"]): (r["up"], r["down"]) for r in rows}
+
+
+def set_traffic_counters(counters: dict[tuple[int, int], tuple[int, int]]) -> None:
+    """The inbounds' totals as last seen; a panel that did not answer keeps its old ones."""
+    with connect() as conn:
+        conn.executemany("INSERT INTO traffic_counters (panel_id, inbound_id, up, down) VALUES (?, ?, ?, ?) "
+                         "ON CONFLICT(panel_id, inbound_id) DO UPDATE SET up = excluded.up, down = excluded.down",
+                         [(*key, *value) for key, value in counters.items()])
+        if "traffic.started_at" not in {r["key"] for r in conn.execute("SELECT key FROM app_settings")}:
+            conn.execute("INSERT INTO app_settings (key, value) VALUES ('traffic.started_at', ?)", (str(int(time.time())),))
+
+
+def add_traffic(hour: int, rows: list[tuple[int, int, str, int, int]]) -> None:
+    with connect() as conn:
+        conn.executemany("INSERT INTO traffic_hourly (hour, panel_id, node_id, server, up, down) VALUES (?, ?, ?, ?, ?, ?) "
+                         "ON CONFLICT(hour, panel_id, node_id) DO UPDATE SET up = up + excluded.up, "
+                         "down = down + excluded.down, server = excluded.server",
+                         [(hour, *row) for row in rows])
+
+
+def traffic_since(since: int) -> list[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute("SELECT * FROM traffic_hourly WHERE hour >= ? ORDER BY hour", (since,)).fetchall()
+
+
+def traffic_started() -> int:
+    value = get_app_setting("traffic.started_at")
+    return int(value) if value else 0
+
+
+def prune_traffic(before: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM traffic_hourly WHERE hour < ?", (before,))

@@ -583,3 +583,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .replaced-group th:nth-child(3) { width: 13%; }
 .ip-chain { overflow-wrap: anywhere; }
 .ip-replaced { font-weight: 600; color: var(--text); }
+
+.traffic-days { gap: 12px; }
+.traffic-days-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.traffic-days .days-bar { max-width: 22px; }
+.days-max { position: absolute; top: 0; left: 0; pointer-events: none; }
