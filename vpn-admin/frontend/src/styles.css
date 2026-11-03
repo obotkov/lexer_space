@@ -369,6 +369,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* a third of the page is narrow: the bar goes under the name and the value */
 .overview-widget .ping-row { grid-template-columns: minmax(0, 1fr) auto; }
 .overview-widget .ping-track { grid-column: 1 / -1; grid-row: 2; }
+.overview-pair { grid-template-columns: repeat(auto-fit, minmax(min(480px, 100%), 1fr)); }
+/* side by side the shorter card stretches to its neighbour: the day chart takes the spare height */
+.overview-pair .traffic-days .days-chart { flex: 1; min-height: 160px; height: auto; }
 .overview-widget .traffic-row { grid-template-columns: minmax(70px, 140px) 1fr auto; }
 
 /* overview: ping from the admin to each server */

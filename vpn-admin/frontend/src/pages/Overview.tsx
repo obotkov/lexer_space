@@ -68,11 +68,16 @@ export function Overview({ data, onGoServers }: { data: OverviewData; onGoServer
         </table>
       </div>
 
-      <h2 className="section-title">Сетевая нагрузка</h2>
-      <NetLoadWidget multiPanel={data.panels.length > 1} />
-
-      <h2 className="section-title">Трафик по дням</h2>
-      <TrafficDaysWidget />
+      <div className="overview-widgets overview-pair">
+        <section className="overview-widget">
+          <h2 className="section-title">Сетевая нагрузка</h2>
+          <NetLoadWidget multiPanel={data.panels.length > 1} />
+        </section>
+        <section className="overview-widget">
+          <h2 className="section-title">Трафик по дням</h2>
+          <TrafficDaysWidget />
+        </section>
+      </div>
 
       <h2 className="section-title">Проверка коннектов</h2>
       <ProbeWidget />
