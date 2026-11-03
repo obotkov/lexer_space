@@ -166,6 +166,9 @@ export interface ProbePanel {
   panel_id: number;
   panel: string;
   error: string | null;
+  /** the main panel's own server, to head its block when it does not answer */
+  server_ip?: string;
+  hoster?: ProbeItem["hoster"];
   items: ProbeItem[];
 }
 

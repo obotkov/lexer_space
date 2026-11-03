@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type ProbeItem, type ProbeResult } from "../api";
+import { api, type ProbeItem, type ProbePanel, type ProbeResult } from "../api";
 
 const REFRESH_MS = 30_000;
 const SPARK_W = 120;
@@ -74,13 +74,14 @@ export function ProbeWidget() {
       {!data && !error && <div className="muted small">Загрузка…</div>}
       {data && !data.error && data.checked_at === 0 && <div className="muted small">Первая проверка начнётся через несколько секунд после запуска админки…</div>}
       {panels.map((p) => (
-        <ProbePanelBlock key={p.panel_id} name={p.panel} error={p.error} items={p.items} />
+        <ProbePanelBlock key={p.panel_id} panel={p} />
       ))}
     </div>
   );
 }
 
-function ProbePanelBlock({ name, error, items }: { name: string; error: string | null; items: ProbeItem[] }) {
+function ProbePanelBlock({ panel }: { panel: ProbePanel }) {
+  const { panel: name, error, items } = panel;
   const groups: { server: string; kind: string; ip: string; hoster: ProbeItem["hoster"]; items: ProbeItem[] }[] = [];
   for (const item of items) {
     const last = groups[groups.length - 1];
@@ -93,9 +94,35 @@ function ProbePanelBlock({ name, error, items }: { name: string; error: string |
   return (
     <div className="probe-panel">
       {error && (
-        <div className="error-text small">
-          {name}: {error}
-        </div>
+        <section className="probe-group">
+          <div className="probe-group-head">
+            {panel.hoster && (
+              <>
+                <span className={`provider-badge provider-${panel.hoster.provider}`} title={`Хостинг: ${panel.hoster.name}`}>
+                  {panel.hoster.title}
+                </span>
+                <span className="probe-sep">›</span>
+              </>
+            )}
+            <span className="strong">{name}</span>
+            <span className="badge badge-main">основной</span>
+            {panel.server_ip && (
+              <>
+                <span className="probe-sep">›</span>
+                <span className="probe-ip">{panel.server_ip}</span>
+              </>
+            )}
+          </div>
+          <div className="probe-row">
+            <div className="probe-label">
+              <div className="probe-name">
+                <span className="dot dot-off" aria-hidden />
+                <span className="strong">Коннекты не проверены</span>
+              </div>
+              <div className="error-text small">{error}</div>
+            </div>
+          </div>
+        </section>
       )}
       {groups.map((g) => {
         const checked = g.items.filter((i) => i.status === "ok" || i.status === "fail");

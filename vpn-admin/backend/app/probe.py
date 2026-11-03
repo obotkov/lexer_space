@@ -358,7 +358,11 @@ def provider_title(provider: str) -> str:
 
 
 async def _panel(panel: db.Panel, now: int) -> dict[str, Any]:
-    out: dict[str, Any] = {"panel_id": panel.id, "panel": panel.name, "error": None, "items": []}
+    # where the main panel itself is: its block heads with it even when the panel does not answer
+    ip = await _ip(urlsplit(panel.url).hostname or "")
+    hosting = (await hosting_by_ip()).get(ip)
+    out: dict[str, Any] = {"panel_id": panel.id, "panel": panel.name, "error": None, "items": [], "server_ip": ip,
+                           "hoster": {**hosting, "title": provider_title(hosting["provider"])} if hosting else None}
     xui = await pool.get(panel)
     try:
         await xui.ensure_ready()
