@@ -61,7 +61,12 @@ export function NetLoadWidget({ multiPanel }: { multiPanel: boolean }) {
     return () => clearInterval(timer);
   }, [load]);
 
-  const points = data?.points ?? [];
+  const windowSec = data?.window ?? 300;
+  // samples are kept by count, and a slow round stretches them past the window: only the window is drawn, with the one
+  // point before it so the lines still reach the left edge (the plot is clipped there)
+  const all = data?.points ?? [];
+  const first = all.findIndex((p) => p.t >= all[all.length - 1].t - windowSec);
+  const points = first > 0 ? all.slice(first - 1) : all;
   // the color follows the server (its place in the list), never its current speed
   const named = (data?.series ?? []).map((s) => ({ ...s, label: s.kind === "node" && multiPanel ? `${s.panel} › ${s.name}` : s.name }));
   const lines: Line[] = named.slice(0, named.length > SLOTS ? SLOTS - 1 : SLOTS).map((s, i) => ({
@@ -92,7 +97,6 @@ export function NetLoadWidget({ multiPanel }: { multiPanel: boolean }) {
   const scale = niceScale(Math.max(0, ...lines.flatMap((l) => l.values.map((v) => (v == null ? 0 : toMbit(v))))));
   const yMax = scale.max;
   const now = points.length ? points[points.length - 1].t : 0;
-  const windowSec = data?.window ?? 300;
   const x = (t: number) => PAD.left + plotW * (1 - (now - t) / windowSec);
   const y = (v: number) => PAD.top + plotH * (1 - toMbit(v) / yMax);
 
@@ -114,9 +118,10 @@ export function NetLoadWidget({ multiPanel }: { multiPanel: boolean }) {
     if (!points.length) return;
     const box = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - box.left + PAD.left;
-    let best = 0;
+    let best = points.length - 1;
     points.forEach((p, i) => {
-      if (Math.abs(x(p.t) - px) < Math.abs(x(points[best].t) - px)) best = i;
+      // the point left of the window only carries the lines to the edge
+      if (x(p.t) >= PAD.left && Math.abs(x(p.t) - px) < Math.abs(x(points[best].t) - px)) best = i;
     });
     setHover(best);
   };
@@ -178,9 +183,14 @@ export function NetLoadWidget({ multiPanel }: { multiPanel: boolean }) {
                   {m === 0 ? "сейчас" : `−${m} мин`}
                 </text>
               ))}
-              {lines.map((l) => (
-                <path key={l.key} d={path(l.values)} fill="none" stroke={l.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-              ))}
+              <clipPath id="netload-clip">
+                <rect x={PAD.left} y={0} width={plotW} height={PAD.top + plotH + 2} />
+              </clipPath>
+              <g clipPath="url(#netload-clip)">
+                {lines.map((l) => (
+                  <path key={l.key} d={path(l.values)} fill="none" stroke={l.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+                ))}
+              </g>
               {hoverPoint && (
                 <>
                   <line className="netload-crosshair" x1={x(hoverPoint.t)} x2={x(hoverPoint.t)} y1={PAD.top} y2={PAD.top + plotH} />
